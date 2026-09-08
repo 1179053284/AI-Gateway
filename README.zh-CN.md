@@ -53,8 +53,8 @@
 > 需要 Python 3.12+。
 
 ```bash
-git clone https://github.com/<your-username>/model-gateway.git
-cd model-gateway
+git clone https://github.com/1179053284/AI-Gateway.git
+cd AI-Gateway
 python3 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -e .
@@ -118,6 +118,8 @@ models:                      # 对工具端暴露的系统模型
 - **单用户。** 无注册无登录，管理界面按本机自用设计为免鉴权——请只在自己的设备上运行；`/v1/*` 调用由访问令牌保护。
 
 ## 状态与路线图
+
+> **说明**：项目仍在持续更新优化，仅供个人研究使用。功能目前还比较简单，主要适配作者自身的使用场景；有好的意见欢迎在 [Issues](https://github.com/1179053284/AI-Gateway/issues) 交流。
 
 当前版本：**v0.1.0** —— 199/199 测试通过，并经过真实厂商调用验证。
 

@@ -53,8 +53,8 @@ Additional guards: each upstream attempt times out after 60s; failed-switch budg
 > Requires Python 3.12+.
 
 ```bash
-git clone https://github.com/<your-username>/model-gateway.git
-cd model-gateway
+git clone https://github.com/1179053284/AI-Gateway.git
+cd AI-Gateway
 python3 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -e .
@@ -118,6 +118,8 @@ Vendor presets pre-fill protocol and endpoints (SenseNova ships both `api` and `
 - **Single user.** No accounts or login. The admin console is unauthenticated by design — run it on your own machine; `/v1/*` calls are protected by access tokens.
 
 ## Status & roadmap
+
+> **Note:** This project is under continuous development and provided for personal research use only. The feature set is still simple — it primarily targets the maintainer's own use cases. Ideas and feedback are welcome in [Issues](https://github.com/1179053284/AI-Gateway/issues).
 
 Current version: **v0.1.0** — 199/199 tests passing, verified against live providers.
 
