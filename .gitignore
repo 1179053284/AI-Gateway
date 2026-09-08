@@ -14,7 +14,7 @@ CLAUDE.md
 .cursorrules
 
 # ===== 实测过程记录（内部开发证据，不上传）=====
-docs/changes/
+docs/
 
 # ===== 诊断脚本输出（历史调试日志，不上传）=====
 scripts/diag_out*.txt
