@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>模板 · 技能（参考 /console/skills 1:1 复刻）</title>
+<link rel="stylesheet" href="/css/base.css">
+</head>
+<body>
+<!-- ============================================================
+  模板：技能页（复刻自参考项目 ConsolePage.tsx :1097-1332，只读提取）
+  用途：新管理页面 = 复制本文件 → 替换导航/数据/面板 → 保持类名与结构。
+  组件规范（逐像素值）：docs/specs/frontend-spec.md
+  演示交互：分段 tab 联动 / 分类过滤 / 搜索过滤 / 开关 / toast。
+  URL 加 ?theme=dark 可预览暗色（令牌自动反转）。
+============================================================ -->
+<div class="app">
+  <!-- 侧栏（与供应商模板同一骨架，active = 技能） -->
+  <aside class="sidenav">
+    <div class="brand">
+      <span class="brand-mark">C</span>
+      <span class="brand-text">
+        <span class="brand-name">Console</span>
+        <span class="brand-sub">AI Management</span>
+      </span>
+    </div>
+    <nav class="nav-list">
+      <div class="nav-group">
+        <div class="nav-group-title">模型管理</div>
+        <button class="nav-item" title="模型供应商">
+          <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></svg>
+          <span>模型供应商</span>
+        </button>
+        <button class="nav-item" title="模型路由">
+          <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+          <span>模型路由</span>
+        </button>
+        <button class="nav-item" title="核心配置">
+          <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>
+          <span>核心配置</span>
+        </button>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-title">能力扩展</div>
+        <button class="nav-item active" title="技能（待定页面）">
+          <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.106-3.105c.32-.322.863-.22.983.218a6 6 0 0 1-8.259 7.057l-7.91 7.91a1 1 0 0 1-2.999-3l7.91-7.91a6 6 0 0 1 7.057-8.259c.438.12.54.662.219.984z"/></svg>
+          <span>技能（待定页面）</span>
+        </button>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-title">系统设置</div>
+        <button class="nav-item" title="员工权限">
+          <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          <span>员工权限</span>
+        </button>
+        <button class="nav-item" title="安全审计">
+          <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg>
+          <span>安全审计</span>
+        </button>
+        <button class="nav-item" title="基础设置">
+          <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg>
+          <span>基础设置</span>
+        </button>
+      </div>
+    </nav>
+  </aside>
+
+  <div class="main-col">
+    <header class="topbar">
+      <div class="tb-left">
+        <div class="crumb">
+          <span>Console</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+          <span>能力扩展</span>
+        </div>
+        <h1 class="tb-title">技能</h1>
+      </div>
+      <div class="tb-right">
+        <div class="pos-wrap">
+          <button class="profile-btn" id="profile-btn" aria-label="展开账号菜单">
+            <span style="text-align:right;line-height:1">
+              <span class="profile-name">truman@solobrave.ai</span>
+              <span class="profile-role" style="display:block">Owner</span>
+            </span>
+            <span class="avatar">T</span>
+          </button>
+          <div class="dropdown hidden" id="profile-menu">
+            <button class="dropdown-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+              账号信息
+            </button>
+            <button class="dropdown-item danger">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg>
+              退出登录
+            </button>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- 内容区（参考 :536-537：p-3 全宽，本页无 max-w 限宽） -->
+    <main class="content">
+      <!-- 工具行（参考 SkillsPanel :1125-1146：mb-3 flex-wrap gap-3 · 双分段 tab，市场阶段隐藏分类 tab） -->
+      <div style="display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-bottom:12px">
+        <div class="tabs" id="stage-tabs">
+          <button class="tab active" data-stage="discover">发现</button>
+          <button class="tab" data-stage="installed">已安装</button>
+          <button class="tab" data-stage="market">市场</button>
+        </div>
+        <div class="tabs" id="cat-tabs">
+          <button class="tab active" data-cat="all">全部</button>
+          <button class="tab" data-cat="skill">Skill</button>
+          <button class="tab" data-cat="mcp">MCP</button>
+        </div>
+      </div>
+
+      <!-- 阶段：发现（参考 :1151-1173 · 搜索框 + 列表卡片行） -->
+      <section id="panel-discover">
+        <div style="display:flex;gap:8px">
+          <div class="input-group">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+            <input id="search-discover" placeholder="搜索技能名称、描述或市场">
+          </div>
+        </div>
+        <div class="list-card" style="margin-top:12px" id="list-discover">
+          <div class="list-row" data-name="adlc" data-desc="Agentforce Agent Development Life Cycle，支持 author、discover、scaffold、deploy、test 与 optimize。" data-source="claude-plugins-official" data-cats="skill">
+            <div style="min-width:0;flex:1">
+              <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px">
+                <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:800;letter-spacing:-.01em;color:var(--text)">adlc</div>
+                <span class="badge b-ok">Skill</span>
+              </div>
+              <div class="clamp-2" style="margin-top:4px;font-size:13px;font-weight:500;line-height:20px;color:var(--text-tertiary)">Agentforce Agent Development Life Cycle，支持 author、discover、scaffold、deploy、test 与 optimize。</div>
+              <div style="margin-top:4px;font-size:12px;font-weight:600;color:var(--text-faint)">来自 claude-plugins-official</div>
+            </div>
+            <button class="btn" data-install="adlc" style="flex:none">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg>
+              安装
+            </button>
+          </div>
+          <div class="list-row" data-name="adspirer-ads-agent" data-desc="跨平台广告管理，覆盖 Google Ads、Meta Ads、TikTok Ads 和 LinkedIn Ads。" data-source="claude-plugins-official" data-cats="skill mcp">
+            <div style="min-width:0;flex:1">
+              <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px">
+                <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:800;letter-spacing:-.01em;color:var(--text)">adspirer-ads-agent</div>
+                <span class="badge b-purple">Agent</span>
+                <span class="badge b-cool">MCP</span>
+              </div>
+              <div class="clamp-2" style="margin-top:4px;font-size:13px;font-weight:500;line-height:20px;color:var(--text-tertiary)">跨平台广告管理，覆盖 Google Ads、Meta Ads、TikTok Ads 和 LinkedIn Ads。</div>
+              <div style="margin-top:4px;font-size:12px;font-weight:600;color:var(--text-faint)">来自 claude-plugins-official</div>
+            </div>
+            <button class="btn" data-install="adspirer-ads-agent" style="flex:none">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg>
+              安装
+            </button>
+          </div>
+          <div class="list-row" data-name="agent-sdk-dev" data-desc="面向 Claude Agent SDK 的开发工具包，用于调试 Agent、Command 与本地工作流。" data-source="claude-plugins-official" data-cats="skill">
+            <div style="min-width:0;flex:1">
+              <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px">
+                <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:800;letter-spacing:-.01em;color:var(--text)">agent-sdk-dev</div>
+                <span class="badge b-purple">Agent</span>
+                <span class="badge b-cool">Command</span>
+              </div>
+              <div class="clamp-2" style="margin-top:4px;font-size:13px;font-weight:500;line-height:20px;color:var(--text-tertiary)">面向 Claude Agent SDK 的开发工具包，用于调试 Agent、Command 与本地工作流。</div>
+              <div style="margin-top:4px;font-size:12px;font-weight:600;color:var(--text-faint)">来自 claude-plugins-official</div>
+            </div>
+            <button class="btn" data-install="agent-sdk-dev" style="flex:none">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg>
+              安装
+            </button>
+          </div>
+          <div class="list-row" data-name="claude-md-management" data-desc="维护和改进 CLAUDE.md 文件，支持质量审计、会话经验捕获和规范修正。" data-source="claude-plugins-official" data-cats="skill">
+            <div style="min-width:0;flex:1">
+              <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px">
+                <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:800;letter-spacing:-.01em;color:var(--text)">claude-md-management</div>
+                <span class="badge b-cool">Command</span>
+                <span class="badge b-ok">Skill</span>
+              </div>
+              <div class="clamp-2" style="margin-top:4px;font-size:13px;font-weight:500;line-height:20px;color:var(--text-tertiary)">维护和改进 CLAUDE.md 文件，支持质量审计、会话经验捕获和规范修正。</div>
+              <div style="margin-top:4px;font-size:12px;font-weight:600;color:var(--text-faint)">来自 claude-plugins-official</div>
+            </div>
+            <button class="btn" data-install="claude-md-management" style="flex:none">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg>
+              安装
+            </button>
+          </div>
+          <div class="list-row" data-name="hookify" data-desc="通过简单 Markdown 规则创建自定义 hooks，阻止不符合预期的行为。" data-source="claude-plugins-official" data-cats="skill mcp">
+            <div style="min-width:0;flex:1">
+              <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px">
+                <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:800;letter-spacing:-.01em;color:var(--text)">hookify</div>
+                <span class="badge b-purple">Agent</span>
+                <span class="badge b-cool">Command</span>
+                <span class="badge b-ok">Skill</span>
+                <span class="badge b-warn">Hook</span>
+              </div>
+              <div class="clamp-2" style="margin-top:4px;font-size:13px;font-weight:500;line-height:20px;color:var(--text-tertiary)">通过简单 Markdown 规则创建自定义 hooks，阻止不符合预期的行为。</div>
+              <div style="margin-top:4px;font-size:12px;font-weight:600;color:var(--text-faint)">来自 claude-plugins-official</div>
+            </div>
+            <button class="btn" data-install="hookify" style="flex:none">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg>
+              安装
+            </button>
+          </div>
+          <div class="list-empty hidden" data-empty>没有符合条件的技能</div>
+        </div>
+      </section>
+
+      <!-- 阶段：已安装（参考 :1154-1161 · 搜索框 + h-11 主按钮 + 开关/删除行） -->
+      <section id="panel-installed" class="hidden">
+        <div style="display:flex;gap:8px">
+          <div class="input-group">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+            <input id="search-installed" placeholder="搜索技能名称、描述或市场">
+          </div>
+          <button class="btn btn-primary btn-lg" id="manual-install" style="flex:none">手动安装</button>
+        </div>
+        <div class="list-card" style="margin-top:12px" id="list-installed">
+          <div class="list-row" data-name="claude-api" data-desc="暂无描述" data-source="anthropic-agent-skills" data-cats="skill">
+            <div style="min-width:0;flex:1">
+              <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px">
+                <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:800;letter-spacing:-.01em;color:var(--text)">claude-api</div>
+                <span style="font-size:12px;font-weight:700;color:var(--text-faint)">v690f15cac7f7</span>
+                <span class="badge b-ok">Skill</span>
+                <span class="badge b-purple">User</span>
+              </div>
+              <div class="clamp-2" style="margin-top:4px;font-size:13px;font-weight:500;line-height:20px;color:var(--text-tertiary)">暂无描述</div>
+              <div style="margin-top:4px;font-size:12px;font-weight:600;color:var(--text-faint)">来自 anthropic-agent-skills</div>
+            </div>
+            <div style="display:flex;flex:none;align-items:center;gap:8px">
+              <button class="switch on" data-skill-switch aria-label="启停技能"></button>
+              <button class="icon-btn danger" data-skill-del aria-label="删除技能">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="list-empty hidden" data-empty>当前没有已安装技能</div>
+        </div>
+      </section>
+
+      <!-- 阶段：市场（参考 MarketPanel :1291-1332 · 搜索 + 添加市场 + 提示行 + 市场列表） -->
+      <section id="panel-market" class="hidden">
+        <div style="display:flex;gap:8px">
+          <div class="input-group">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+            <input id="search-market" placeholder="输入市场来源，例如 owner/repo">
+          </div>
+          <button class="btn btn-primary btn-lg" id="add-market" style="flex:none">添加市场</button>
+        </div>
+        <div style="margin-top:8px;font-size:12px;font-weight:600;color:var(--text-faint)">
+          示例：anthropics/claude-plugins-official、https://github.com/org/repo.git、/path/to/local-marketplace</div>
+        <div class="list-card" style="margin-top:12px">
+          <div class="list-row">
+            <div style="min-width:0;flex:1">
+              <div style="font-size:14px;font-weight:800;color:var(--text)">anthropic-agent-skills</div>
+              <div style="margin-top:4px;font-size:12px;font-weight:600;color:var(--text-tertiary)">anthropics/skills</div>
+              <div class="clamp-2" style="margin-top:4px;font-size:13px;font-weight:500;line-height:20px;color:var(--text-tertiary)">Anthropic Agent Skills 官方技能源。</div>
+              <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px">
+                <span class="badge b-gray">3 个可用</span>
+                <span class="badge b-gray">更新于 2026/05/27 19:07</span>
+              </div>
+            </div>
+            <button class="icon-btn danger" data-market-del aria-label="删除市场">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            </button>
+          </div>
+          <div class="list-row">
+            <div style="min-width:0;flex:1">
+              <div style="font-size:14px;font-weight:800;color:var(--text)">claude-plugins-official</div>
+              <div style="margin-top:4px;font-size:12px;font-weight:600;color:var(--text-tertiary)">anthropics/claude-plugins-official</div>
+              <div class="clamp-2" style="margin-top:4px;font-size:13px;font-weight:500;line-height:20px;color:var(--text-tertiary)">Claude Code 扩展集合，包含开发工具、生产力插件和 MCP 集成。</div>
+              <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px">
+                <span class="badge b-gray">145 个可用</span>
+                <span class="badge b-gray">更新于 2026/04/21 09:46</span>
+              </div>
+            </div>
+            <button class="icon-btn danger" data-market-del aria-label="删除市场">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            </button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<div id="toast-wrap"></div>
+
+<script>
+/* ---- 演示交互（复刻参考行为；新页面接入真实数据后替换）---- */
+function toast(msg, type) {
+  const el = document.createElement("div");
+  el.className = "toast " + (type || "");
+  el.textContent = msg;
+  document.getElementById("toast-wrap").append(el);
+  setTimeout(() => el.remove(), 2400);
+}
+const stages = { discover: "panel-discover", installed: "panel-installed", market: "panel-market" };
+let stage = "discover", cat = "all";
+function applyFilter() {
+  const panel = document.getElementById(stages[stage]);
+  const input = panel.querySelector("input");
+  const kw = (input ? input.value : "").trim().toLowerCase();
+  let visible = 0;
+  panel.querySelectorAll(".list-row").forEach((row) => {
+    const okCat = cat === "all" || (row.dataset.cats || "").split(" ").includes(cat);
+    const okKw = !kw || row.dataset.name.toLowerCase().includes(kw)
+      || row.dataset.desc.toLowerCase().includes(kw)
+      || row.dataset.source.toLowerCase().includes(kw);
+    const show = okCat && okKw;
+    row.classList.toggle("hidden", !show);
+    if (show) visible++;
+  });
+  const empty = panel.querySelector("[data-empty]");
+  if (empty) empty.classList.toggle("hidden", visible > 0);
+}
+/* 阶段 tab（市场阶段隐藏分类 tab，参考 :1135-1145） */
+document.querySelectorAll("#stage-tabs .tab").forEach((b) => b.onclick = () => {
+  document.querySelectorAll("#stage-tabs .tab").forEach((x) => x.classList.remove("active"));
+  b.classList.add("active");
+  stage = b.dataset.stage;
+  Object.values(stages).forEach((id) => document.getElementById(id).classList.add("hidden"));
+  document.getElementById(stages[stage]).classList.remove("hidden");
+  document.getElementById("cat-tabs").classList.toggle("hidden", stage === "market");
+  applyFilter();
+});
+/* 分类 tab */
+document.querySelectorAll("#cat-tabs .tab").forEach((b) => b.onclick = () => {
+  document.querySelectorAll("#cat-tabs .tab").forEach((x) => x.classList.remove("active"));
+  b.classList.add("active");
+  cat = b.dataset.cat;
+  applyFilter();
+});
+/* 搜索 */
+["search-discover", "search-installed", "search-market"].forEach((id) =>
+  document.getElementById(id).oninput = applyFilter);
+/* 开关 / 演示按钮 */
+document.querySelectorAll("[data-skill-switch]").forEach((b) =>
+  b.onclick = () => { b.classList.toggle("on"); toast("技能启停稍后接入"); });
+document.querySelectorAll("[data-install]").forEach((b) =>
+  b.onclick = () => toast("已添加到安装队列", "ok"));
+document.getElementById("manual-install").onclick = () => toast("手动安装稍后接入");
+document.getElementById("add-market").onclick = () => toast("添加市场稍后接入");
+document.querySelectorAll("[data-skill-del]").forEach((b) => b.onclick = () => toast("删除技能稍后接入"));
+document.querySelectorAll("[data-market-del]").forEach((b) => b.onclick = () => toast("删除市场稍后接入"));
+/* 账号下拉 */
+const menu = document.getElementById("profile-menu");
+document.getElementById("profile-btn").onclick = (e) => { e.stopPropagation(); menu.classList.toggle("hidden"); };
+document.addEventListener("click", () => menu.classList.add("hidden"));
+/* ?theme=dark 暗色预览 */
+if (location.search.includes("theme=dark")) document.documentElement.dataset.theme = "dark";
+</script>
+</body>
+</html>

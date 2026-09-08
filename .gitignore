@@ -1,0 +1,35 @@
+# ===== 私密数据（绝不入库）=====
+# 运行时数据：明文密钥配置、调用流水、运行日志（铁律 1）
+data/
+
+# ===== AI 工具管理过程文件（内部工作区，不上传）=====
+# AGENTS.md = AI 导航总文件（项目管理入口）
+AGENTS.md
+# 规则 + 项目长期记忆（runbook/decisions/pitfalls）
+.cursor/
+.trae/
+.zcode/
+.claude/
+CLAUDE.md
+.cursorrules
+
+# ===== 实测过程记录（内部开发证据，不上传）=====
+docs/changes/
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ===== 编辑器/系统 =====
+.DS_Store
+.idea/
+*.swp

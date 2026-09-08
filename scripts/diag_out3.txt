@@ -1,0 +1,107 @@
+[vendor] port=63228
+[gw] port=63229
+[anyio] scope 10946e210 enter by Task-1 shield=True parent=None
+[anyio] scope 10946e210 enter by Task-1 shield=True parent=None
+[anyio] scope 109489d10 enter by Task-1 shield=False parent=None
+[anyio] scope 109489e50 enter by Task-1 shield=False parent=109489d10
+[anyio] scope 10948a030 enter by Task-1 shield=False parent=109489e50
+[anyio] scope 109489f90 enter by anyio._core._sockets.connect_tcp.<locals>.try_connect shield=False parent=109489e50
+[anyio] scope 109489e50 cancel() by anyio._core._sockets.connect_tcp.<locals>.try_connect tasks=[] shield=False host=Task-1
+[anyio] scope 109489e50 cancel() by Task-1 tasks=['anyio._core._sockets.connect_tcp.<locals>.try_connect', 'Task-1'] shield=False host=Task-1
+[anyio] scope 10948a030 enter by Task-1 shield=False parent=109489e50
+[anyio] scope 109489e50 cancel() by Task-1 tasks=[] shield=False host=Task-1
+[anyio] scope 10948a490 enter by Task-1 shield=True parent=None
+[anyio] scope 109489d10 enter by Task-1 shield=False parent=None
+[anyio] scope 109489d10 enter by Task-1 shield=False parent=None
+[anyio] scope 109489e50 enter by Task-1 shield=False parent=None
+[anyio] scope 109489ef0 enter by Task-9 shield=False parent=None
+[anyio] scope 10948a670 enter by starlette.responses.StreamingResponse.__call__.<locals>.wrap shield=False parent=109489ef0
+[anyio] scope 10948a850 enter by Task-10 shield=True parent=None
+[anyio] scope 10948a850 enter by Task-10 shield=True parent=None
+[anyio] scope 109489bd0 enter by Task-10 shield=False parent=None
+[anyio] scope 10948aad0 enter by Task-10 shield=False parent=109489bd0
+[anyio] scope 109489b30 enter by Task-10 shield=False parent=10948aad0
+[client] status=200
+[anyio] scope 10948ad50 enter by Task-1 shield=False parent=None
+[anyio] scope 10948ac10 enter by anyio._core._sockets.connect_tcp.<locals>.try_connect shield=False parent=10948aad0
+[anyio] scope 10948aad0 cancel() by anyio._core._sockets.connect_tcp.<locals>.try_connect tasks=[] shield=False host=Task-10
+[anyio] scope 10948aad0 cancel() by Task-10 tasks=['anyio._core._sockets.connect_tcp.<locals>.try_connect', 'Task-10'] shield=False host=Task-10
+[anyio] scope 109489b30 enter by Task-10 shield=False parent=10948aad0
+[anyio] scope 10948aad0 cancel() by Task-10 tasks=[] shield=False host=Task-10
+[anyio] scope 10948b070 enter by Task-10 shield=True parent=None
+[anyio] scope 10948aad0 enter by Task-10 shield=False parent=None
+[anyio] scope 10948aad0 enter by Task-10 shield=False parent=None
+[anyio] scope 10948aad0 enter by Task-10 shield=False parent=None
+[anyio] scope 10948ae90 enter by Task-12 shield=False parent=None
+[anyio] scope 10948b2f0 enter by starlette.responses.StreamingResponse.__call__.<locals>.wrap shield=False parent=10948ae90
+[upstream] stream opened
+[upstream] line: data: {"id": "chatcmpl-fake", "object": 
+[upstream] line: 
+[upstream] line: data: {"id": "chatcmpl-fake", "object": 
+[upstream] line: 
+[anyio] scope 10948b4d0 enter by Task-10 shield=False parent=None
+[anyio] scope 10948ad50 enter by Task-1 shield=False parent=None
+[anyio] scope 109489a90 enter by Task-1 shield=False parent=None
+[upstream] line: data: {"id": "chatcmpl-fake", "object": 
+[upstream] line: 
+[anyio] scope 10948b4d0 enter by Task-10 shield=False parent=None
+[client] closing
+[anyio] scope 109489a90 enter by Task-1 shield=True parent=None
+[httpcore] byte-stream aclose: task=Task-1
+[httpcore] _response_closed ENTER task=Task-1 cancelling=0 (our=DONE, their=SEND_BODY)
+[anyio] scope 10948b430 enter by Task-1 shield=True parent=109489a90
+[httpcore] AsyncHTTP11Connection.aclose() called (state=1)
+[httpcore] _response_closed DONE cancelling=0
+[httpcore] byte-stream aclose DONE
+[anyio] scope 109489a90 enter by Task-1 shield=True parent=None
+[anyio] scope 109489a90 enter by Task-1 shield=True parent=None
+[anyio] scope 109489ef0 cancel() by Task-9 tasks=['Task-9'] shield=False host=Task-9
+[anyio] scope 10948a8f0 enter by Task-9 shield=False parent=109489ef0
+[body_stream] exc: CancelledError cancelling=1
+[body_stream] finally → task.cancel() (pull cancelling=0)
+[body_stream] after cancel (pull cancelling=1)
+[anyio] scope 10948b4d0 enter by Task-10 shield=True parent=None
+[httpcore] byte-stream aclose: task=Task-10
+[httpcore] _response_closed ENTER task=Task-10 cancelling=2 (our=DONE, their=SEND_BODY)
+[anyio] scope 10948b430 enter by Task-10 shield=True parent=10948b4d0
+[anyio] scope 109489ef0 cancel() by Task-9 tasks=[] shield=False host=Task-9
+[httpcore] _response_closed EXC: CancelledError cancelling=3 msg=("Cancelled via cancel scope 109489ef0 by <Task pending name='Task-9' coro=<RequestResponseCycle.run_asgi() running at /Users/w/Desktop/Model-Gateway/.venv/lib/python3.12/site-packages/uvicorn/protocols/http/h11_impl.py:416> cb=[set.discard()]>",)
+Traceback (most recent call last):
+  File "/Users/w/Desktop/Model-Gateway/scripts/diag_gateway_shape.py", line 76, in _traced_response_closed
+    await _orig_response_closed(self)
+  File "/Users/w/Desktop/Model-Gateway/.venv/lib/python3.12/site-packages/httpcore/_async/http11.py", line 239, in _response_closed
+    async with self._state_lock:
+               ^^^^^^^^^^^^^^^^
+  File "/Users/w/Desktop/Model-Gateway/.venv/lib/python3.12/site-packages/httpcore/_synchronization.py", line 77, in __aenter__
+    await self._anyio_lock.acquire()
+  File "/Users/w/Desktop/Model-Gateway/.venv/lib/python3.12/site-packages/anyio/_backends/_asyncio.py", line 1893, in acquire
+    await AsyncIOBackend.cancel_shielded_checkpoint()
+  File "/Users/w/Desktop/Model-Gateway/.venv/lib/python3.12/site-packages/anyio/_backends/_asyncio.py", line 2521, in cancel_shielded_checkpoint
+    await sleep(0)
+  File "/Users/w/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/asyncio/tasks.py", line 656, in sleep
+    await __sleep0()
+  File "/Users/w/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/asyncio/tasks.py", line 650, in __sleep0
+    yield
+asyncio.exceptions.CancelledError: Cancelled via cancel scope 109489ef0 by <Task pending name='Task-9' coro=<RequestResponseCycle.run_asgi() running at /Users/w/Desktop/Model-Gateway/.venv/lib/python3.12/site-packages/uvicorn/protocols/http/h11_impl.py:416> cb=[set.discard()]>
+[httpcore] byte-stream aclose EXC: CancelledError
+[anyio] scope 10948b4d0 enter by Task-10 shield=True parent=None
+[httpcore] byte-stream aclose: task=Task-10
+[httpcore] byte-stream aclose DONE
+[anyio] scope 10948b4d0 enter by Task-10 shield=True parent=None
+[upstream] aiter exc: CancelledError
+[upstream] outer exc: CancelledError
+[upstream] finally (will __aexit__ close stream)
+[upstream] gen done
+[pull] exc: CancelledError
+[pull] finally → put END
+[body_stream] pull task awaited (pull cancelling=3, done=True)
+[anyio] scope 10948a350 enter by Task-18 shield=True parent=None
+[httpcore] byte-stream aclose: task=Task-18
+[httpcore] byte-stream aclose DONE
+[anyio] scope 10948ae90 cancel() by starlette.responses.StreamingResponse.__call__.<locals>.wrap tasks=['Task-12'] shield=False host=Task-12
+[anyio] scope 10948ae90 cancel() by Task-12 tasks=['Task-12', 'starlette.responses.StreamingResponse.__call__.<locals>.wrap'] shield=False host=Task-12
+[anyio] scope 10948b2f0 enter by Task-12 shield=False parent=10948ae90
+[anyio] scope 10948ae90 cancel() by Task-12 tasks=[] shield=False host=Task-12
+[main] vendor NEVER observed cancellation
+[anyio] scope 10945bb10 enter by Task-1 shield=True parent=None
+[httpcore] AsyncHTTP11Connection.aclose() called (state=1)
