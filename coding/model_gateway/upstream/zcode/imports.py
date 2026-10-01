@@ -111,6 +111,9 @@ FORM_GATEWAY = "gateway"
 FORM_SWITCH = "switch"
 #: 面板/小店粘贴形态（jwt / family+credentials）
 FORM_PASTE = "paste"
+#: DSH 插件 zcode 凭据（`~/.dsh/.credentials.yaml` refs：`zcode_jwt` + `bigmodel_access_token`
+#: + `device_mid` + `account_label`）—— 第四种本机工具形态（2026-10-01 用户数据实测）
+FORM_DSH = "dsh"
 #: 旧网关形态（仅 `name` + `device_mid` 之类，无凭据材料）——按现状直通 store
 FORM_META = "meta"
 #: 无法识别（由调用方决定拒绝还是回落既有路径）
@@ -226,6 +229,11 @@ def detect_payload_form(obj) -> str:
     if _pick(o, "jwt", "jwtToken", "zcodejwttoken", "token", "apiKey") or (
             isinstance(creds, dict) and "family" in o):
         return FORM_PASTE
+    # DSH 插件 zcode 凭据（`~/.dsh/.credentials.yaml` refs 的 `ZCODE_ACCOUNT_*`：裸对象、
+    # `zcode_jwt` 下划线键 —— 与上面 `zcodejwttoken` 不是同一个键，故不落 paste）；
+    # 必须排在 `meta` 前：该形态也带 `device_mid`，否则会被 meta 兜住 → 只落设备码、丢凭据。
+    if isinstance(o.get("zcode_jwt"), str) and o["zcode_jwt"].strip():
+        return FORM_DSH
     if _pick(o, "name", "id", "accountName") or \
             _pick(o, "device_mid", "deviceMid", "mid", "deviceId"):
         return FORM_META
@@ -484,6 +492,50 @@ def paste_to_payload(obj, *, template=None, secret: str | None = None) -> dict:
     if problems:
         raise ImportValidationError("verify", "导入自检未通过：" + "；".join(problems))
     return payload
+
+
+def dsh_to_payload(obj, *, template=None, secret: str | None = None) -> dict:
+    """DSH 插件 zcode 凭据（`~/.dsh/.credentials.yaml` refs）→ 网关载荷。
+
+    实测形态（2026-10-01，`ZCODE_ACCOUNT_*` refs 逐键核对）：
+    `{zcode_jwt, bigmodel_access_token, device_mid, account_label, app_version, source}`。
+    键映射按**网关 zcode 运行时**的口径（`oauth.py:24-25`：计费/权益接口只认
+    `zcodejwttoken`；API Key 通道 = `oauth:<family>:access_token`）：
+
+    | DSH 键 | 网关键 | 依据 |
+    |---|---|---|
+    | `zcode_jwt` | `zcodejwttoken`（加密写） | `oauth.py:150` 唯一正确 token |
+    | `bigmodel_access_token` | `oauth:bigmodel:access_token` | `oauth.py:154` 同源键名口径；family=bigmodel（该记录只带 bigmodel token，不编造 zai） |
+    | `device_mid` | 原样（硬约束 2，不重生成） | §15.1 |
+    | `account_label` | `name`（缺则调用方 fallback） | 面板 `DEFAULT_FAMILY` 同款兜底思路 |
+
+    走既有 `paste_to_payload` 管道（自检/加密/config 模板全部同源，不另写一份）。
+    """
+    data = obj
+    if isinstance(data, str):
+        t = data.strip().lstrip("\ufeff")
+        try:
+            data = json.loads(t)
+        except ValueError as e:
+            raise ImportValidationError("not-json", f"不是合法 JSON：{e}") from None
+    if not isinstance(data, dict):
+        raise ImportValidationError("not-object", "需要是一个对象")
+    o = _unwrap(data)
+    jwt = o.get("zcode_jwt")
+    if not isinstance(jwt, str) or not jwt.strip():
+        raise ImportValidationError("missing-jwt", "DSH 凭据缺少 zcode_jwt（没有可导入的登录态）")
+    credentials: dict = {}
+    bigmodel = o.get("bigmodel_access_token")
+    if isinstance(bigmodel, str) and bigmodel.strip():
+        credentials["oauth:bigmodel:access_token"] = bigmodel
+    label = o.get("account_label")
+    return paste_to_payload({
+        "name": label if isinstance(label, str) and label.strip() else "",
+        "jwt": jwt,
+        "device_mid": o.get("device_mid"),
+        "family": "bigmodel",
+        "credentials": credentials,
+    }, template=template, secret=secret)
 
 
 # ---------- 面板账号库（整目录透传）----------
@@ -753,6 +805,8 @@ def payload_for_form(obj, form: str, *, template=None, secret: str | None = None
     """
     if form == FORM_PASTE:
         return paste_to_payload(obj, template=template, secret=secret)
+    if form == FORM_DSH:
+        return dsh_to_payload(obj, template=template, secret=secret)
     if form in (FORM_SWITCH, FORM_GATEWAY, FORM_META):
         data = obj
         if isinstance(data, str):
@@ -769,4 +823,4 @@ def payload_for_form(obj, form: str, *, template=None, secret: str | None = None
     raise ImportValidationError(
         "unknown-form",
         "无法识别的导入形态（支持：面板/小店粘贴 JSON、zcode-switch 账号 JSON、"
-        "网关载荷 JSON）")
+        "DSH 插件凭据 JSON、网关载荷 JSON）")

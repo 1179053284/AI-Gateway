@@ -403,3 +403,48 @@ def test_payload_for_form_dispatches():
     p = zim.payload_for_form({"name": "s", "jwt": JWT, "device_mid": MID},
                              zim.FORM_PASTE)
     assert "credentials.json" in p
+
+
+# ---------- DSH 插件形态（2026-10-01 用户数据实测；第四种本机工具来源）----------
+
+def _dsh_payload(**over):
+    o = {"zcode_jwt": JWT, "bigmodel_access_token": "eyJbm-fake-bigmodel-token",
+         "device_mid": MID, "account_label": "pvtord11",
+         "app_version": "3.14.3", "source": "plugin"}
+    o.update(over)
+    return o
+
+
+def test_detect_dsh_form_beats_meta():
+    """`zcode_jwt` 形态必须判成 dsh —— 排 meta 前（否则只落设备码、丢凭据）。"""
+    assert zim.detect_payload_form(_dsh_payload()) == zim.FORM_DSH
+    assert zim.detect_payload_form(json.dumps(_dsh_payload())) == zim.FORM_DSH
+    # 无 zcode_jwt 的同形对象落 meta（不假装认识）
+    o = _dsh_payload()
+    del o["zcode_jwt"]
+    assert zim.detect_payload_form(o) == zim.FORM_META
+
+
+def test_dsh_to_payload_maps_keys_and_encrypts():
+    p = zim.payload_for_form(_dsh_payload(), zim.FORM_DSH)
+    assert p["name"] == "pvtord11"
+    assert p["device_mid"] == MID                       # 硬约束 2：原样复用
+    cred = p["credentials.json"]
+    assert crypto.decrypt(cred["zcodejwttoken"]) == JWT        # 加密写（oauth.py:150 唯一正确 token）
+    assert crypto.decrypt(cred["oauth:active_provider"]) == "bigmodel"
+    assert crypto.decrypt(cred["oauth:bigmodel:access_token"]) == "eyJbm-fake-bigmodel-token"
+    assert p["config.json"]["provider"]                  # 走 paste 管道：config 同形生成
+
+
+def test_dsh_to_payload_missing_jwt_rejected():
+    with pytest.raises(zim.ImportValidationError) as ei:
+        zim.dsh_to_payload(_dsh_payload(zcode_jwt="  "))
+    assert ei.value.code == "missing-jwt"
+
+
+def test_dsh_to_payload_no_bigmodel_token_ok():
+    """取不到 bigmodel token 就不填 —— 不编造（family 仍按记录口径 bigmodel）。"""
+    p = zim.dsh_to_payload(_dsh_payload(bigmodel_access_token=""))
+    cred = p["credentials.json"]
+    assert crypto.decrypt(cred["oauth:active_provider"]) == "bigmodel"
+    assert "oauth:bigmodel:access_token" not in cred
