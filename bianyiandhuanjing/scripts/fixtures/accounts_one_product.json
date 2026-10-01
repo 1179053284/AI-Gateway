@@ -1,0 +1,416 @@
+{
+  "products": [
+    {
+      "id": "buddy",
+      "title": "CodeBuddy",
+      "login": "external_link",
+      "protocol": "openai",
+      "base_url": "https://copilot.tencent.com",
+      "device": {
+        "fields": [],
+        "derive": false
+      },
+      "capabilities": {
+        "balance": true,
+        "checkin": true,
+        "onboarding": false,
+        "permanent_lock": true,
+        "refresh": true
+      },
+      "models_source": "remote",
+      "login_alt": [],
+      "models_wired": true,
+      "accounts": [
+        {
+          "name": "buddy-main",
+          "enabled": true,
+          "status": "active",
+          "device": {},
+          "display": {
+            "nickname": "汤臣",
+            "plan": "Pro 月付",
+            "expires_at": "2026-12-31T00:00:00",
+            "via": "external_link"
+          },
+          "runtime": {
+            "quota": {
+              "state": "available",
+              "source": "upstream balance",
+              "detail": "剩余 300 次请求",
+              "checked_at": "2026-09-30T09:12:03"
+            },
+            "watermark": "wm-1"
+          },
+          "runtime_ok": true,
+          "runtime_error": "",
+          "quota": {
+            "state": "unknown",
+            "remaining": null,
+            "reserved": 0,
+            "resources": [],
+            "per_resource": {}
+          },
+          "resource": []
+        },
+        {
+          "name": "buddy-second",
+          "enabled": true,
+          "status": "active",
+          "device": {},
+          "display": {},
+          "runtime": {
+            "quota": {
+              "state": "exhausted",
+              "source": "upstream balance",
+              "detail": "当日额度已耗尽",
+              "checked_at": "2026-09-30T09:12:03"
+            }
+          },
+          "runtime_ok": true,
+          "runtime_error": "",
+          "quota": {
+            "state": "exhausted",
+            "remaining": 0,
+            "reserved": 0,
+            "resources": [
+              "res-buddy-2"
+            ],
+            "per_resource": {
+              "res-buddy-2": {
+                "remaining": 0,
+                "reserved": 0
+              }
+            }
+          },
+          "resource": [
+            {
+              "id": "res-buddy-2",
+              "enabled": true
+            }
+          ]
+        },
+        {
+          "name": "buddy-nojson",
+          "enabled": false,
+          "status": "disabled",
+          "device": {},
+          "display": {},
+          "runtime": {},
+          "runtime_ok": true,
+          "runtime_error": "",
+          "quota": {
+            "state": "unknown",
+            "remaining": null,
+            "reserved": 0,
+            "resources": [],
+            "per_resource": {}
+          },
+          "resource": []
+        },
+        {
+          "name": "buddy-unknown",
+          "enabled": true,
+          "status": "active",
+          "device": {},
+          "display": {},
+          "runtime": {
+            "quota": {
+              "state": "unknown",
+              "source": "unknown",
+              "detail": "未能取到额度（未知不当零）",
+              "checked_at": "2026-09-30T09:12:03"
+            }
+          },
+          "runtime_ok": true,
+          "runtime_error": "",
+          "quota": {
+            "state": "unknown",
+            "remaining": null,
+            "reserved": 0,
+            "resources": [],
+            "per_resource": {}
+          },
+          "resource": []
+        },
+        {
+          "name": "buddy-spare",
+          "enabled": true,
+          "status": "active",
+          "device": {},
+          "display": {
+            "nickname": "备用号"
+          },
+          "runtime": {
+            "quota": {
+              "state": "available",
+              "source": "upstream balance",
+              "detail": "剩余 1200 次",
+              "checked_at": "2026-09-30T09:12:03"
+            }
+          },
+          "runtime_ok": true,
+          "runtime_error": "",
+          "quota": {
+            "state": "available",
+            "remaining": 1200,
+            "reserved": 200,
+            "resources": [
+              "res-buddy-5"
+            ],
+            "per_resource": {
+              "res-buddy-5": {
+                "remaining": 1200,
+                "reserved": 200
+              }
+            }
+          },
+          "resource": [
+            {
+              "id": "res-buddy-5",
+              "enabled": true
+            }
+          ]
+        },
+        {
+          "name": "buddy-unreadable",
+          "enabled": true,
+          "status": "unknown",
+          "device": {},
+          "display": {},
+          "runtime": {},
+          "runtime_ok": false,
+          "runtime_error": "RuntimeUnreadable: runtime.json 不是合法 JSON（第 3 行）",
+          "quota": {
+            "state": "unknown",
+            "remaining": null,
+            "reserved": 0,
+            "resources": [],
+            "per_resource": {}
+          },
+          "resource": []
+        }
+      ]
+    },
+    {
+      "id": "workbuddy",
+      "title": "WorkBuddy（国际版）",
+      "login": "external_link",
+      "protocol": "openai",
+      "base_url": "https://www.workbuddy.ai",
+      "device": {
+        "fields": [],
+        "derive": false
+      },
+      "capabilities": {
+        "balance": true,
+        "checkin": false,
+        "onboarding": false,
+        "permanent_lock": true,
+        "refresh": true
+      },
+      "models_source": "remote",
+      "login_alt": [],
+      "models_wired": true,
+      "accounts": []
+    },
+    {
+      "id": "lobsterai",
+      "title": "LobsterAI",
+      "login": "local_callback",
+      "protocol": "openai",
+      "base_url": "https://lobsterai-server.youdao.com",
+      "device": {
+        "fields": [
+          "uuid"
+        ],
+        "derive": false
+      },
+      "capabilities": {
+        "balance": true,
+        "checkin": true,
+        "onboarding": false,
+        "permanent_lock": false,
+        "refresh": true
+      },
+      "models_source": "remote",
+      "login_alt": [],
+      "models_wired": true,
+      "accounts": []
+    },
+    {
+      "id": "qoder",
+      "title": "Qoder",
+      "login": "device_code",
+      "protocol": "custom",
+      "base_url": "https://api2.qoder.sh",
+      "device": {
+        "fields": [
+          "machine_id"
+        ],
+        "derive": false
+      },
+      "capabilities": {
+        "balance": true,
+        "checkin": true,
+        "onboarding": false,
+        "permanent_lock": false,
+        "refresh": true
+      },
+      "models_source": "static",
+      "login_alt": [],
+      "models_wired": true,
+      "accounts": []
+    },
+    {
+      "id": "qodercn",
+      "title": "Qoder（中国版）",
+      "login": "device_code",
+      "protocol": "custom",
+      "base_url": "https://gateway.qoder.com.cn",
+      "device": {
+        "fields": [
+          "machine_id"
+        ],
+        "derive": false
+      },
+      "capabilities": {
+        "balance": true,
+        "checkin": true,
+        "onboarding": false,
+        "permanent_lock": false,
+        "refresh": true
+      },
+      "models_source": "static",
+      "login_alt": [],
+      "models_wired": true,
+      "accounts": []
+    },
+    {
+      "id": "trae",
+      "title": "Trae",
+      "login": "local_callback",
+      "protocol": "custom",
+      "base_url": "https://trae-api-cn.mchost.guru",
+      "device": {
+        "fields": [
+          "machine_id",
+          "device_id"
+        ],
+        "derive": true
+      },
+      "capabilities": {
+        "balance": true,
+        "checkin": true,
+        "onboarding": false,
+        "permanent_lock": false,
+        "refresh": true
+      },
+      "models_source": "remote",
+      "login_alt": [],
+      "models_wired": true,
+      "accounts": []
+    },
+    {
+      "id": "cline",
+      "title": "Cline",
+      "login": "device_code",
+      "protocol": "openai",
+      "base_url": "https://api.cline.bot/api/v1",
+      "device": {
+        "fields": [],
+        "derive": false
+      },
+      "capabilities": {
+        "balance": true,
+        "checkin": false,
+        "onboarding": false,
+        "permanent_lock": false,
+        "refresh": true
+      },
+      "models_source": "remote",
+      "login_alt": [],
+      "models_wired": true,
+      "accounts": []
+    },
+    {
+      "id": "loomy",
+      "title": "Loomy",
+      "login": "qr",
+      "protocol": "openai",
+      "base_url": "https://loomyad.xunfei.cn/api/v1",
+      "device": {
+        "fields": [],
+        "derive": false
+      },
+      "capabilities": {
+        "balance": true,
+        "checkin": true,
+        "onboarding": true,
+        "permanent_lock": true,
+        "refresh": false
+      },
+      "models_source": "remote",
+      "login_alt": [
+        "sms_code"
+      ],
+      "models_wired": true,
+      "accounts": []
+    },
+    {
+      "id": "raccoon",
+      "title": "Raccoon",
+      "login": "qr",
+      "protocol": "openai",
+      "base_url": "https://xiaohuanxiong.com/api/web/llm/v2",
+      "device": {
+        "fields": [
+          "device_id"
+        ],
+        "derive": false
+      },
+      "capabilities": {
+        "balance": true,
+        "checkin": false,
+        "onboarding": true,
+        "permanent_lock": false,
+        "refresh": true
+      },
+      "models_source": "remote",
+      "login_alt": [
+        "sms_code"
+      ],
+      "models_wired": true,
+      "accounts": []
+    },
+    {
+      "id": "zcode",
+      "title": "ZCode",
+      "login": "device_code",
+      "protocol": "anthropic",
+      "base_url": "https://zcode.z.ai/api/v1/zcode-plan/anthropic",
+      "device": {
+        "fields": [
+          "device_mid"
+        ],
+        "derive": false
+      },
+      "capabilities": {
+        "balance": true,
+        "checkin": true,
+        "onboarding": false,
+        "permanent_lock": false,
+        "refresh": false
+      },
+      "models_source": "static",
+      "login_alt": [],
+      "models_wired": true,
+      "accounts": []
+    }
+  ],
+  "counts": {
+    "products": 10,
+    "accounts": 6,
+    "enabled": 5,
+    "disabled": 1
+  }
+}

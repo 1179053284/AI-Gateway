@@ -1,0 +1,89 @@
+# Model-Gateway 样例配置（对应 PRD v1.5 §6 + tech-design §4.7 运行参数；Q18 资源扁平化）
+#
+# 使用：复制到 data/config.yaml 后修改；密钥仅存本地明文（铁律 1），data/ 不入 git。
+# 参数默认值即终审确认点 4 落定值，未写出的字段走内置默认。
+#
+# Q18-②：资源 = 厂商 + Key（扁平一层，无账号/实例层级）；
+#         resources[].id 与 access_tokens[].id/value 由系统自动生成（管理界面保存时补齐），无需手填。
+
+gateway:
+  host: 0.0.0.0                    # 监听全部网卡（本机 + 局域网调用均支持）
+  port: 8300
+  max_concurrent_requests: 0       # 网关整体并发上限；0 = 不限（超限 429 + Retry-After）
+  attempt_timeout_seconds: 60     # 单次上游尝试超时（终审由 120 调小）
+  request_total_budget_seconds: 300  # 请求总预算：只管失败重试切换总时长，不管成功任务执行时长
+  heartbeat_seconds: 15           # SSE 心跳注释帧间隔
+  retention_days: 7               # 事件流水保留天数
+  access_tokens:                  # 网关接入密钥（工具端 Bearer 凭据；API 接入页管理）
+    - id: tok-xxxxxxxx            # id/value 系统自动生成（tok- / mg- 前缀）
+      name: Trae                  # 用途标注（区分不同工具调用）
+      value: mg-xxxxxxxxxxxxxxxxxxxxxxxx
+      enabled: true
+    # quotas:                     # P1 预留（M1 读入保留、不校验上限）
+    #   daily_tokens: 0           # 0 = 不限制
+
+scheduling:                       # 调度参数全局唯一（Q18-③：一套机制管控所有模型，无模型级覆盖）
+  max_active_per_model: 2         # x：并发溢出生效集（Q13；x=1 即纯顺序集中）
+  fail_threshold: 2               # y：连续失败次数（跨请求累计；先判定，Q14）
+  retry_per_request: 3            # m：单请求单资源重试上限（耗尽即切换，Q14）
+  retry_backoff_seconds: 0       # RETRYABLE 同资源重试间隔（0 = 立即）
+  quota_retry: 2                  # 429 短指数退避重试次数
+  quota_backoff_base_seconds: 1   # 第 n 次退避 = base × 2^(n-1)
+  cooldown_seconds: 60            # api 模式默认冷却时长
+  cooldown_seconds_plan: 18000    # plan 模式默认冷却（对齐商汤滚动 5h 窗口）
+
+# 错误分类覆写（可选；type 精确匹配优先于 HTTP 通用映射）
+# 典型用例：商汤 failed_precondition_error 默认 BAD_REQUEST 透传（终审确认点 5），
+# 实测后若「引擎不可用」类需走切换续跑，取消注释下面两行即可：
+# error_rules:
+#   - { http: 400, type: failed_precondition_error, class: RETRYABLE }
+
+resources:                        # 厂商资源（扁平：厂商 + Key；账号仅次要备注字段）
+  - id: res-xxxxxxxx              # 系统自动生成，无需手填
+    name: 商汤·主Key               # 备注（显示用，可空）
+    preset: sensenova-api         # 厂商预设（sensenova-api / sensenova-tokenplan / 空 = 自定义）
+    access_mode: api              # api | plan
+    protocol: openai              # openai | anthropic | gemini
+    base_url: https://api.sensenova.cn/compatible-mode/v2
+    api_key: sk-xxxxxxxx          # 明文；后续支持 ${SENSENOVA_API_KEY} 环境变量引用（P1）
+    account: 主账号               # 账号标识（次要信息：区分/备注该 Key 属于哪个账号，可空）
+    product: ""                   # 产品归属（可空）：非空 = 该资源由某产品的账号体系供给，
+                                    # 运营类操作按产品匹配参与方（tech-design §14.2 阶段一）
+                                    # 例：zcode —— 配合 `mgw zcode` 系列命令与自动签到领取
+    enabled: true                 # 资源开关（false 退出全部调度）
+  # - id: res-yyyyyyyy            # 示例：同一厂商第二个 Key = 新增一条资源
+  #   name: 商汤·备用Key
+  #   preset: sensenova-tokenplan
+  #   access_mode: plan
+  #   protocol: openai
+  #   base_url: https://token.sensenova.cn/v1
+  #   api_key: sk-yyyyyyyy
+  #   account: 备用账号
+  #   product: zcode            # 订阅/积分制资源常伴随产品账号体系
+  #   enabled: true
+
+models:                           # 系统模型定义（调度参数全局，无模型级覆盖，Q18-③）
+  - name: deepseek-v4-flash       # 统一名（枚举池条目或自定义）
+    group: 编程
+    endpoint: chat               # chat | images（默认 chat）
+    enabled: true                # 模型启用开关（false 时 /v1/models 不返回且请求 404 model_disabled）
+    params: {}                   # 网关级模型参数（Q24；仅 chat 注入。工具传参 > 此处设置 > 厂商内置；
+                                 # 官方默认已在管理界面「资源池设置」一键带入，此处可留空）
+    resources:                   # 有序 = 优先级（并发溢出生效集 + 失败切换续跑，Q13）
+      - resource: res-xxxxxxxx   # 引用 resources[].id
+        model: deepseek-v4-flash # 厂商侧模型 ID
+        reasoning:               # 资源级推理默认（可选，Q15；请求级指定优先）
+          enabled: true
+          effort: high
+  - name: sensenova-u1-fast      # 图像生成模型（独立 images 端点，不入 chat 池）
+    group: 图像生成
+    endpoint: images
+    resources:
+      - resource: res-xxxxxxxx
+        model: sensenova-u1-fast
+
+pricing:                         # 成本估算（双口径）
+  - { provider: sensenova-api, model: deepseek-v4-flash, currency: CNY,
+      input_per_1m: 0.0, output_per_1m: 0.0 }      # api 模式：token 单价
+  - { provider: sensenova-api, model: sensenova-u1-fast, currency: CNY,
+      per_image: 0.0 }                            # api 模式：图像按张单价

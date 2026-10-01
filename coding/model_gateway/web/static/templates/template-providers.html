@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>模板 · 模型供应商（参考 /console/providers 1:1 复刻）</title>
+<link rel="stylesheet" href="/css/base.css">
+</head>
+<body>
+<!-- ============================================================
+  模板：模型供应商页（复刻自参考项目 ConsolePage.tsx :429-1036，只读提取）
+  用途：新管理页面 = 复制本文件 → 替换导航/数据/面板 → 保持类名与结构。
+  组件规范（逐像素值）：docs/specs/frontend-spec.md
+  演示交互：模式切换 / 行内编辑 / 开关 / 药丸 tab / 下拉菜单 / toast。
+  URL 加 ?theme=dark 可预览暗色（令牌自动反转）。
+============================================================ -->
+<div class="app">
+  <!-- 侧栏（参考 :429-474：220px 白底 border-r #f6f7f8 · 品牌 60px · 分组导航） -->
+  <aside class="sidenav">
+    <div class="brand">
+      <span class="brand-mark">C</span>
+      <span class="brand-text">
+        <span class="brand-name">Console</span>
+        <span class="brand-sub">AI Management</span>
+      </span>
+    </div>
+    <nav class="nav-list">
+      <div class="nav-group">
+        <div class="nav-group-title">模型管理</div>
+        <button class="nav-item active" title="模型供应商">
+          <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></svg>
+          <span>模型供应商</span>
+        </button>
+        <button class="nav-item" title="模型路由">
+          <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+          <span>模型路由</span>
+        </button>
+        <button class="nav-item" title="核心配置">
+          <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>
+          <span>核心配置</span>
+        </button>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-title">能力扩展</div>
+        <button class="nav-item" title="技能（待定页面）">
+          <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.106-3.105c.32-.322.863-.22.983.218a6 6 0 0 1-8.259 7.057l-7.91 7.91a1 1 0 0 1-2.999-3l7.91-7.91a6 6 0 0 1 7.057-8.259c.438.12.54.662.219.984z"/></svg>
+          <span>技能（待定页面）</span>
+        </button>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-title">系统设置</div>
+        <button class="nav-item" title="员工权限">
+          <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          <span>员工权限</span>
+        </button>
+        <button class="nav-item" title="安全审计">
+          <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg>
+          <span>安全审计</span>
+        </button>
+        <button class="nav-item" title="基础设置">
+          <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg>
+          <span>基础设置</span>
+        </button>
+      </div>
+    </nav>
+  </aside>
+
+  <div class="main-col">
+    <!-- 顶栏（参考 :477-522：60px px-3 border-b · 面包屑 12px + 标题 15px · 右侧用户块） -->
+    <header class="topbar">
+      <div class="tb-left">
+        <div class="crumb">
+          <span>Console</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+          <span>模型管理</span>
+        </div>
+        <h1 class="tb-title">模型供应商</h1>
+      </div>
+      <div class="tb-right">
+        <div class="pos-wrap">
+          <button class="profile-btn" id="profile-btn" aria-label="展开账号菜单">
+            <span style="text-align:right;line-height:1">
+              <span class="profile-name">truman@solobrave.ai</span>
+              <span class="profile-role" style="display:block">Owner</span>
+            </span>
+            <span class="avatar">T</span>
+          </button>
+          <div class="dropdown hidden" id="profile-menu">
+            <button class="dropdown-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+              账号信息
+            </button>
+            <button class="dropdown-item danger">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg>
+              退出登录
+            </button>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- 内容区（参考 :524-569：bg#fbfcfc · 左子侧栏 248px + 右滚动区 p-3，本页内容 max-w-980 居中） -->
+    <div style="display:flex;min-height:0;background:var(--content)">
+
+      <!-- 子侧栏：供应商列表（参考 ProviderList :590-671） -->
+      <aside class="subnav">
+        <div class="subnav-scroll">
+          <!-- 分组：默认供应商 -->
+          <div style="margin-bottom:20px">
+            <div class="nav-group-title" style="padding:0">默认供应商</div>
+            <div>
+              <!-- 双模式供应商卡（参考 :625-652：rounded-12 bg#fbfcfc p-2 inset 描边） -->
+              <div class="group-card">
+                <div style="display:flex;height:28px;align-items:center;gap:8px;padding:0 4px;margin-bottom:6px">
+                  <span class="mark-sm dark">Z</span>
+                  <span style="min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:800;color:var(--text-soft)">Z.AI</span>
+                </div>
+                <button class="mode-btn active" data-mode="package">
+                  <span style="min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left">编程套餐</span>
+                  <span class="dot"></span>
+                </button>
+                <button class="mode-btn" data-mode="api">
+                  <span style="min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left">API Key</span>
+                  <span class="dot on"></span>
+                </button>
+              </div>
+              <!-- 普通供应商行（参考 :654-667：h-38 rounded-10 px-2.5 + 状态圆点） -->
+              <button class="anchor-item" data-provider="bigmodel" style="display:flex;width:100%;margin-top:4px">
+                <span class="mark-sm" style="background:#2947a9;color:#fff">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20v2"/><path d="M12 2v2"/><path d="M17 20v2"/><path d="M17 2v2"/><path d="M2 12h2"/><path d="M2 17h2"/><path d="M2 7h2"/><path d="M20 12h2"/><path d="M20 17h2"/><path d="M20 7h2"/><path d="M7 20v2"/><path d="M7 2v2"/><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="8" y="8" width="8" height="8" rx="1"/></svg>
+                </span>
+                <span style="min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Bigmodel</span>
+                <span class="dot"></span>
+              </button>
+              <button class="anchor-item" data-provider="moonshot" style="display:flex;width:100%">
+                <span class="mark-sm"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></svg></span>
+                <span style="min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Moonshot</span>
+                <span class="dot"></span>
+              </button>
+              <button class="anchor-item" data-provider="minimax" style="display:flex;width:100%">
+                <span class="mark-sm"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></svg></span>
+                <span style="min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">MiniMax</span>
+                <span class="dot"></span>
+              </button>
+              <button class="anchor-item" data-provider="deepseek" style="display:flex;width:100%">
+                <span class="mark-sm"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></svg></span>
+                <span style="min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">DeepSeek</span>
+                <span class="dot"></span>
+              </button>
+              <button class="anchor-item" data-provider="mimo" style="display:flex;width:100%">
+                <span class="mark-sm"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></svg></span>
+                <span style="min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">MiMo</span>
+                <span class="dot"></span>
+              </button>
+              <button class="anchor-item" data-provider="qwen" style="display:flex;width:100%">
+                <span class="mark-sm"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></svg></span>
+                <span style="min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Qwen</span>
+                <span class="dot"></span>
+              </button>
+            </div>
+          </div>
+          <!-- 分组：自定义供应商 -->
+          <div style="margin-bottom:20px">
+            <div class="nav-group-title" style="padding:0">自定义供应商</div>
+            <div>
+              <button class="anchor-item" data-provider="openrouter" style="display:flex;width:100%">
+                <span class="mark-sm"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></svg></span>
+                <span style="min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">openrouter</span>
+                <span class="dot"></span>
+              </button>
+              <button class="anchor-item" data-provider="openai-compatible" style="display:flex;width:100%">
+                <span class="mark-sm"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></svg></span>
+                <span style="min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">OpenAI 兼容代理</span>
+                <span class="dot"></span>
+              </button>
+              <button class="anchor-item" data-provider="local-gateway" style="display:flex;width:100%">
+                <span class="mark-sm"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></svg></span>
+                <span style="min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">本地模型网关</span>
+                <span class="dot"></span>
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class="subnav-foot">
+          <button class="side-add" id="add-provider">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+            添加供应商
+          </button>
+        </div>
+      </aside>
+
+      <!-- 主内容（参考 :536-537：p-3 · mx-auto max-w-[980px]） -->
+      <main class="content" style="flex:1">
+        <div style="max-width:980px;margin:0 auto;width:100%">
+
+          <!-- 面板 A：编程套餐（参考 PackageConnectionPanel :829-876） -->
+          <section id="panel-package">
+            <div class="card" style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+              <div style="display:flex;min-width:0;align-items:center;gap:12px">
+                <span class="logo-block dark">Z</span>
+                <div style="min-width:0">
+                  <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:15px;font-weight:800;letter-spacing:-.02em;color:var(--text)">Z.AI - 编程套餐</div>
+                  <div style="margin-top:4px;font-size:12px;font-weight:600;color:var(--text-faint)">未登录，登录后显示已订阅套餐包</div>
+                </div>
+              </div>
+              <button class="btn btn-primary" id="login-zai" style="flex:none">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m10 17 5-5-5-5"/><path d="M15 12H3"/><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/></svg>
+                登录 Z.AI
+              </button>
+            </div>
+
+            <div style="margin-top:12px;display:flex;flex-direction:column;gap:12px">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+                <div style="font-size:13px;font-weight:800;color:var(--text-soft)">编程套餐</div>
+                <div class="pill-tabs">
+                  <button class="pill-tab">月付</button>
+                  <button class="pill-tab active">季付</button>
+                  <button class="pill-tab">年付</button>
+                </div>
+              </div>
+              <section class="card">
+                <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px">
+                  <div>
+                    <div style="font-size:16px;font-weight:800;letter-spacing:-.02em;color:var(--text)">GLM Coding Lite</div>
+                    <p class="clamp-2" style="margin-top:8px;max-width:560px;font-size:13px;font-weight:500;line-height:20px;color:var(--text-tertiary)">
+                      登录 Z.AI 后，这里显示当前账号已订阅的编程套餐、额度、到期时间和可用模型。</p>
+                    <div style="margin-top:12px;font-size:18px;font-weight:800;color:var(--text)">$48.60 美元</div>
+                  </div>
+                  <button class="btn btn-primary" id="subscribe" style="flex:none">订阅</button>
+                </div>
+              </section>
+            </div>
+          </section>
+
+          <!-- 面板 B：API Key 配置（参考 ApiConfigPanel :878-998） -->
+          <section id="panel-api" class="hidden">
+            <!-- 头卡（参考 ApiProviderHeader :792-827） -->
+            <div class="card" style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+              <div style="display:flex;min-width:0;align-items:center;gap:12px">
+                <span class="logo-block dark">Z</span>
+                <div style="min-width:0">
+                  <div style="display:flex;min-width:0;align-items:center;gap:6px">
+                    <button class="edit-name" data-edit title="点击编辑供应商名称">Z.AI</button>
+                    <button class="icon-btn sm" data-edit-trigger aria-label="编辑供应商名称">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+                    </button>
+                  </div>
+                  <div style="margin-top:4px;font-size:12px;font-weight:600;color:var(--text-faint)">API Key 配置</div>
+                </div>
+              </div>
+              <div style="display:flex;flex:none;align-items:center;gap:8px">
+                <button class="btn" id="toggle-provider">禁用</button>
+                <!-- 仅自定义供应商显示删除（参考 :816-824）：
+                <button class="icon-btn lg danger" aria-label="删除供应商">
+                  <svg …trash2…/><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg>
+                    </button>
+                  </div>
+                </div>
+              </section>
+
+              <!-- 卡 2：模型列表（参考 :930-950 · 行 h-46 px-4 · SectionLabel + Mock 药丸） -->
+              <section class="card">
+                <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:12px;margin-bottom:12px">
+                  <div>
+                    <div style="font-size:13px;font-weight:800;color:var(--text-soft)">模型列表</div>
+                    <div style="margin-top:4px;font-size:12px;font-weight:500;color:var(--text-faint)">供应商可用模型，当前为前端 mock 数据</div>
+                  </div>
+                  <span class="badge b-ok b-pill" style="flex:none">
+                    <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="#16d76d" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+                    Mock
+                  </span>
+                </div>
+                <div class="list-card" id="model-list">
+                  <div class="list-row" style="height:46px;padding:0 16px">
+                    <button class="edit-name sm" data-edit style="flex:1">glm-5v-turbo</button>
+                    <button class="icon-btn sm" title="检测模型"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20v2"/><path d="M12 2v2"/><path d="M17 20v2"/><path d="M17 2v2"/><path d="M2 12h2"/><path d="M2 17h2"/><path d="M2 7h2"/><path d="M20 12h2"/><path d="M20 17h2"/><path d="M20 7h2"/><path d="M7 20v2"/><path d="M7 2v2"/><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="8" y="8" width="8" height="8" rx="1"/></svg></button>
+                    <button class="icon-btn sm danger" title="删除模型"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
+                  </div>
+                  <div class="list-row" style="height:46px;padding:0 16px">
+                    <button class="edit-name sm" data-edit style="flex:1">glm-5.1</button>
+                    <button class="icon-btn sm" title="检测模型"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20v2"/><path d="M12 2v2"/><path d="M17 20v2"/><path d="M17 2v2"/><path d="M2 12h2"/><path d="M2 17h2"/><path d="M2 7h2"/><path d="M20 12h2"/><path d="M20 17h2"/><path d="M20 7h2"/><path d="M7 20v2"/><path d="M7 2v2"/><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="8" y="8" width="8" height="8" rx="1"/></svg></button>
+                    <button class="icon-btn sm danger" title="删除模型"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
+                  </div>
+                  <div class="list-row" style="height:46px;padding:0 16px">
+                    <button class="edit-name sm" data-edit style="flex:1">glm-5-turbo</button>
+                    <button class="icon-btn sm" title="检测模型"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20v2"/><path d="M12 2v2"/><path d="M17 20v2"/><path d="M17 2v2"/><path d="M2 12h2"/><path d="M2 17h2"/><path d="M2 7h2"/><path d="M20 12h2"/><path d="M20 17h2"/><path d="M20 7h2"/><path d="M7 20v2"/><path d="M7 2v2"/><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="8" y="8" width="8" height="8" rx="1"/></svg></button>
+                    <button class="icon-btn sm danger" title="删除模型"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
+                  </div>
+                  <div class="list-row" style="height:46px;padding:0 16px">
+                    <button class="edit-name sm" data-edit style="flex:1">glm-5</button>
+                    <button class="icon-btn sm" title="检测模型"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20v2"/><path d="M12 2v2"/><path d="M17 20v2"/><path d="M17 2v2"/><path d="M2 12h2"/><path d="M2 17h2"/><path d="M2 7h2"/><path d="M20 12h2"/><path d="M20 17h2"/><path d="M20 7h2"/><path d="M7 20v2"/><path d="M7 2v2"/><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="8" y="8" width="8" height="8" rx="1"/></svg></button>
+                    <button class="icon-btn sm danger" title="删除模型"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
+                  </div>
+                  <div class="list-row" style="height:46px;padding:0 16px">
+                    <button class="edit-name sm" data-edit style="flex:1">glm-4.7</button>
+                    <button class="icon-btn sm" title="检测模型"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20v2"/><path d="M12 2v2"/><path d="M17 20v2"/><path d="M17 2v2"/><path d="M2 12h2"/><path d="M2 17h2"/><path d="M2 7h2"/><path d="M20 12h2"/><path d="M20 17h2"/><path d="M20 7h2"/><path d="M7 20v2"/><path d="M7 2v2"/><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="8" y="8" width="8" height="8" rx="1"/></svg></button>
+                    <button class="icon-btn sm danger" title="删除模型"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
+                  </div>
+                  <div class="list-row" style="height:46px;padding:0 16px">
+                    <button class="edit-name sm" data-edit style="flex:1">glm-4.7-flash</button>
+                    <button class="icon-btn sm" title="检测模型"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20v2"/><path d="M12 2v2"/><path d="M17 20v2"/><path d="M17 2v2"/><path d="M2 12h2"/><path d="M2 17h2"/><path d="M2 7h2"/><path d="M20 12h2"/><path d="M20 17h2"/><path d="M20 7h2"/><path d="M7 20v2"/><path d="M7 2v2"/><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="8" y="8" width="8" height="8" rx="1"/></svg></button>
+                    <button class="icon-btn sm danger" title="删除模型"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
+                  </div>
+                  <div class="list-row" style="height:46px;padding:0 16px">
+                    <button class="edit-name sm" data-edit style="flex:1">glm-4.6</button>
+                    <button class="icon-btn sm" title="检测模型"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20v2"/><path d="M12 2v2"/><path d="M17 20v2"/><path d="M17 2v2"/><path d="M2 12h2"/><path d="M2 17h2"/><path d="M2 7h2"/><path d="M20 12h2"/><path d="M20 17h2"/><path d="M20 7h2"/><path d="M7 20v2"/><path d="M7 2v2"/><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="8" y="8" width="8" height="8" rx="1"/></svg></button>
+                    <button class="icon-btn sm danger" title="删除模型"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
+                  </div>
+                  <div class="list-row" style="height:46px;padding:0 16px">
+                    <button class="edit-name sm" data-edit style="flex:1">glm-4.5-air</button>
+                    <button class="icon-btn sm" title="检测模型"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20v2"/><path d="M12 2v2"/><path d="M17 20v2"/><path d="M17 2v2"/><path d="M2 12h2"/><path d="M2 17h2"/><path d="M2 7h2"/><path d="M20 12h2"/><path d="M20 17h2"/><path d="M20 7h2"/><path d="M7 20v2"/><path d="M7 2v2"/><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="8" y="8" width="8" height="8" rx="1"/></svg></button>
+                    <button class="icon-btn sm danger" title="删除模型"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
+                  </div>
+                </div>
+                <button class="btn btn-soft" id="add-model" style="margin-top:8px">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+                  添加模型
+                </button>
+              </section>
+
+              <!-- 卡 3：Claude 模型映射（参考 :952-995 · 头行 + 开关 · space-y-3 表单行） -->
+              <section class="card">
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px">
+                  <div>
+                    <div style="font-size:13px;font-weight:800;color:var(--text-soft)">Claude 模型映射</div>
+                    <div style="margin-top:4px;font-size:12px;font-weight:500;color:var(--text-faint)">按任务档位选择默认模型</div>
+                  </div>
+                  <button class="switch on" id="mapping-switch" aria-label="开启 Claude 模型映射"></button>
+                </div>
+                <div id="mapping-rows" style="display:flex;flex-direction:column;gap:12px">
+                  <div class="form-row" style="margin-bottom:0">
+                    <label>Opus <span style="font-weight:600;color:var(--text-faint)">（复杂任务）</span></label>
+                    <select>
+                      <option value="">未设置</option>
+                      <option selected>glm-5</option><option>glm-5.1</option><option>glm-5-turbo</option>
+                      <option>glm-4.7</option><option>glm-4.7-flash</option><option>glm-4.6</option>
+                    </select>
+                  </div>
+                  <div class="form-row" style="margin-bottom:0">
+                    <label>Sonnet <span style="font-weight:600;color:var(--text-faint)">（常规任务）</span></label>
+                    <select>
+                      <option value="">未设置</option>
+                      <option selected>glm-5.1</option><option>glm-5</option><option>glm-5-turbo</option>
+                      <option>glm-4.7</option><option>glm-4.7-flash</option><option>glm-4.6</option>
+                    </select>
+                  </div>
+                  <div class="form-row" style="margin-bottom:0">
+                    <label>Haiku <span style="font-weight:600;color:var(--text-faint)">（轻量任务）</span></label>
+                    <select>
+                      <option value="">未设置</option>
+                      <option selected>glm-4.7-flash</option><option>glm-5</option><option>glm-5.1</option>
+                      <option>glm-5-turbo</option><option>glm-4.7</option><option>glm-4.6</option>
+                    </select>
+                  </div>
+                </div>
+              </section>
+            </div>
+          </section>
+
+        </div>
+      </main>
+    </div>
+  </div>
+</div>
+
+<div id="toast-wrap"></div>
+
+<script>
+/* ---- 演示交互（复刻参考行为；新页面接入真实数据后替换）---- */
+function toast(msg, type) {
+  const el = document.createElement("div");
+  el.className = "toast " + (type || "");
+  el.textContent = msg;
+  document.getElementById("toast-wrap").append(el);
+  setTimeout(() => el.remove(), 2400);
+}
+/* 模式切换（编程套餐 / API Key） */
+document.querySelectorAll(".mode-btn").forEach((b) => b.onclick = () => {
+  document.querySelectorAll(".mode-btn").forEach((x) => x.classList.remove("active"));
+  b.classList.add("active");
+  document.getElementById("panel-package").classList.toggle("hidden", b.dataset.mode !== "package");
+  document.getElementById("panel-api").classList.toggle("hidden", b.dataset.mode !== "api");
+});
+/* 供应商行选中（演示） */
+document.querySelectorAll("[data-provider]").forEach((b) => b.onclick = () => {
+  document.querySelectorAll(".mode-btn").forEach((x) => x.classList.remove("active"));
+  document.getElementById("panel-package").classList.add("hidden");
+  document.getElementById("panel-api").classList.remove("hidden");
+  toast("已选中供应商「" + b.textContent.trim() + "」（模板演示）", "ok");
+});
+/* 账号下拉 */
+const menu = document.getElementById("profile-menu");
+document.getElementById("profile-btn").onclick = (e) => { e.stopPropagation(); menu.classList.toggle("hidden"); };
+document.addEventListener("click", () => menu.classList.add("hidden"));
+menu.querySelectorAll(".dropdown-item").forEach((b) =>
+  b.onclick = () => { menu.classList.add("hidden"); toast("「" + b.textContent.trim() + "」稍后接入"); });
+/* 开关 */
+document.getElementById("mapping-switch").onclick = function () {
+  this.classList.toggle("on");
+  document.getElementById("mapping-rows").classList.toggle("hidden", !this.classList.contains("on"));
+};
+document.getElementById("toggle-provider").onclick = function () {
+  this.textContent = this.textContent === "禁用" ? "启用" : "禁用";
+  toast("供应商已" + (this.textContent === "禁用" ? "启用" : "禁用"), "ok");
+};
+/* 药丸 tab */
+document.querySelectorAll(".pill-tab").forEach((b) => b.onclick = () => {
+  b.parentElement.querySelectorAll(".pill-tab").forEach((x) => x.classList.remove("active"));
+  b.classList.add("active");
+});
+/* 注：此处原有「API Key 显隐」块，引用了 #toggle-key 与 #apikey-input 两个**本模板并不存在**的元素；
+   `null.onclick = ...` 会让初始化脚本抛错中断，导致其后全部绑定（添加供应商 / 添加模型 / Z.AI 登录 /
+   套餐订阅 四个演示按钮）以及末尾的 `?theme=dark` 暗色预览逻辑**统统不执行**（实测暗色打开仍是浅色）。
+   该功能在本模板中已不存在，故删除此孤立块。（2026-09-24 全面体检发现） */
+/* 行内编辑（供应商名 15px / 模型名 13px 两种规格） */
+document.querySelectorAll("[data-edit],[data-edit-trigger]").forEach((b) => b.onclick = () => {
+  const nameBtn = b.hasAttribute("data-edit") ? b : b.parentElement.querySelector("[data-edit]");
+  if (!nameBtn || nameBtn.tagName === "INPUT") return;
+  const isSm = nameBtn.classList.contains("sm");
+  const row = nameBtn.closest(".list-row");
+  if (row) row.classList.add("editing");
+  const input = document.createElement("input");
+  input.value = nameBtn.textContent;
+  Object.assign(input.style, isSm
+    ? { height: "32px", flex: "1", minWidth: "0", border: "none", outline: "none", background: "transparent",
+        font: "700 13px -apple-system,'PingFang SC',sans-serif", color: "var(--text-soft)" }
+    : { height: "32px", minWidth: "180px", maxWidth: "320px", border: "1px solid var(--text)",
+        borderRadius: "10px", background: "var(--surface)", padding: "0 10px", outline: "none",
+        font: "800 15px -apple-system,'PingFang SC',sans-serif", letterSpacing: "-.02em", color: "var(--text)" });
+  nameBtn.replaceWith(input);
+  input.focus(); input.select();
+  const save = () => { nameBtn.textContent = input.value.trim() || nameBtn.textContent;
+    input.replaceWith(nameBtn); if (row) row.classList.remove("editing");
+    toast("已更新名称", "ok"); };
+  input.onblur = save;
+  input.onkeydown = (e) => { if (e.key === "Enter") save();
+    if (e.key === "Escape") { input.replaceWith(nameBtn); if (row) row.classList.remove("editing"); } };
+});
+/* 演示按钮 */
+document.getElementById("add-provider").onclick = () => toast("已添加供应商（模板演示）", "ok");
+document.getElementById("add-model").onclick = () => toast("已添加模型（模板演示）", "ok");
+document.getElementById("login-zai").onclick = () => toast("Z.AI 登录鉴权稍后接入");
+document.getElementById("subscribe").onclick = () => toast("套餐订阅稍后接入");
+/* ?theme=dark 暗色预览 */
+if (location.search.includes("theme=dark")) document.documentElement.dataset.theme = "dark";
+</script>
+</body>
+</html>

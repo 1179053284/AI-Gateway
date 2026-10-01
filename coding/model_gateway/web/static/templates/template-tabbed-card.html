@@ -1,0 +1,981 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>T-15 · 多端账号授权集成（大卡内页签） · v1.0</title>
+<link rel="stylesheet" href="/css/base.css">
+</head>
+<body>
+<!-- ============================================================
+  T-15 · 多端账号授权集成（大卡内页签） · A 族 · TB-1 · v1.0
+  用途：页头下方一个整合大卡；卡内页签切换「卡内部」内容（不整页跳转）
+  页签：复用 .tabs > .tab（分段式 h-32 rounded-9），状态写 URL（history.replaceState）
+  状态演示：工具行右端「状态」分段 tab 切 data-state（frontend-spec §9 八项）
+  组件规范（逐像素值）：docs/specs/frontend-spec.md
+============================================================ -->
+<div class="app">
+  <!-- 侧栏 -->
+  <aside class="sidenav">
+    <div class="brand">
+      <span class="brand-mark">M</span>
+      <span class="brand-text">
+        <span class="brand-name">Model-Gateway</span>
+        <span class="brand-sub">LLM Gateway Console</span>
+      </span>
+    </div>
+    <nav class="nav-list">
+      <div class="nav-group">
+        <div class="nav-group-title">概览</div>
+        <button class="nav-item" title="总览">
+          <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></svg>
+          <span>总览</span>
+        </button>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-title">模板预览</div>
+        <button class="nav-item active" title="模板主页">
+          <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="7" x="3" y="3" rx="1"/><rect width="9" height="7" x="3" y="14" rx="1"/><rect width="5" height="7" x="16" y="14" rx="1"/></svg>
+          <span>模板主页</span>
+        </button>
+      </div>
+    </nav>
+  </aside>
+
+  <div class="main-col">
+    <!-- 顶栏 -->
+    <header class="topbar">
+      <div class="tb-left">
+        <div class="crumb">
+          <span>Console</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+          <span>模板运行</span>
+        </div>
+        <h1 class="tb-title">多端账号授权集成 · 大卡内页签</h1>
+      </div>
+      <div class="tb-right">
+        <button class="btn btn-sm" onclick="showToast('配置已重载')">重载配置</button>
+      </div>
+    </header>
+
+    <!-- 内容区 -->
+    <div class="content">
+      <div id="page-wrap" style="display:flex; flex-direction:column; gap:12px">
+
+        <!-- §6.0 标注条（12px 灰字） -->
+        <div class="form-hint">T-15 · 需求预演（演示数据） · 多端账号授权集成（大卡内页签） · A 族 · TB-1 · v1.0</div>
+
+        <!-- 工具行：状态演示 tab + 主题 tab（两组并排 gap 12，TB-2） -->
+        <div class="page-head">
+          <div class="tabs" id="state-tabs">
+            <button class="tab" data-state="default">默认</button>
+            <button class="tab" data-state="empty">空态</button>
+            <button class="tab" data-state="noresult">无结果</button>
+            <button class="tab" data-state="loading">加载</button>
+            <button class="tab" data-state="error">错误</button>
+            <button class="tab" data-state="restricted">受限</button>
+            <button class="tab" data-state="off">停用</button>
+            <button class="tab" data-state="narrow">窄屏</button>
+          </div>
+          <div class="page-actions">
+            <div class="tabs" id="theme-tabs">
+              <button class="tab" data-theme="light">浅色</button>
+              <button class="tab" data-theme="dark">深色</button>
+            </div>
+          </div>
+        </div>
+        <div class="form-hint" id="state-desc">当前状态：默认（有数据）</div>
+
+        <!-- 整合大卡：rounded-13 / padding 12 / --shadow-card / 浅色无边框（全由 .card 提供） -->
+        <div class="card" id="big-card">
+
+          <!-- 卡头（与页签行间距 12px，由 .sec-head 的 margin-bottom 提供） -->
+          <div class="sec-head">
+            <span class="t">多端账号授权集成</span>
+            <div style="display:flex; align-items:center; gap:8px">
+              <div class="input-group" style="max-width:240px">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" x2="16.65" y1="21" y2="16.65"/></svg>
+                <input id="q" type="text" placeholder="过滤产品 / 账号 / 模型…" oninput="applyFilter()">
+              </div>
+              <button class="btn btn-lg btn-primary" onclick="bindNew()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px; height:14px"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+                绑定新账号
+              </button>
+            </div>
+          </div>
+
+          <!-- 卡内页签行（TB-1：切换卡内部面板，不整页刷新，行位置固定） -->
+          <div class="tabs" id="card-tabs" style="margin-bottom:12px">
+            <button class="tab" data-tab="auth">授权<span style="margin-left:4px; font-size:11px; font-weight:700">4</span></button>
+            <button class="tab" data-tab="account">账号<span style="margin-left:4px; font-size:11px; font-weight:700">16</span></button>
+            <button class="tab" data-tab="health">体检<span style="margin-left:4px; font-size:11px; font-weight:700">16</span></button>
+            <button class="tab" data-tab="dialect">方言<span style="margin-left:4px; font-size:11px; font-weight:700">3</span></button>
+          </div>
+
+          <!-- 面板区 -->
+          <div id="panel-area">
+
+            <!-- 面板 1 · 接入产品 -->
+            <div data-panel="auth" hidden>
+              <div class="card-body">
+                <div class="sec-head">
+                  <span class="t">接入产品</span>
+                  <span class="d">4 个产品 · 16 个账号</span>
+                </div>
+                <div class="table-wrap">
+                  <table class="tbl">
+                    <thead>
+                      <tr>
+                        <th>产品</th><th>上游形态</th><th>协议</th>
+                        <th class="num">账号</th><th class="num">可见模型</th><th>状态</th><th class="num">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr data-row data-keys="zcode 智谱 sensenova 官方api openai normal 正常 glm-5.2 deepseek-v4-flash kimi-k3">
+                        <td class="strong">
+                          <div style="display:flex; align-items:center; gap:8px">
+                            <span class="mark-sm dark">Z</span>
+                            <span class="ellip" style="max-width:260px" title="ZCode 智谱 Coding Plan（国内站 · 按量）">ZCode 智谱 Coding Plan（国内站 · 按量）</span>
+                          </div>
+                        </td>
+                        <td><span class="badge b-ok">官方 API</span></td>
+                        <td class="mono">openai</td>
+                        <td class="num">3</td><td class="num">3</td>
+                        <td><span class="badge b-ok"><span class="dot on"></span>正常</span></td>
+                        <td class="num"><button class="btn btn-sm" onclick="probeRow('ZCode')">探活</button></td>
+                      </tr>
+                      <tr data-row data-keys="workbuddy 国际版 官方sdk anthropic normal 正常 deepseek-v4-pro sensenova-u1-fast">
+                        <td class="strong">
+                          <div style="display:flex; align-items:center; gap:8px">
+                            <span class="mark-sm dark">W</span>
+                            <span class="ellip" style="max-width:260px" title="WorkBuddy（国际版 · 托管订阅）">WorkBuddy（国际版 · 托管订阅）</span>
+                          </div>
+                        </td>
+                        <td><span class="badge b-cool">官方 SDK</span></td>
+                        <td class="mono">anthropic</td>
+                        <td class="num">2</td><td class="num">2</td>
+                        <td><span class="badge b-ok"><span class="dot on"></span>正常</span></td>
+                        <td class="num"><button class="btn btn-sm" onclick="probeRow('WorkBuddy')">探活</button></td>
+                      </tr>
+                      <tr data-row data-keys="trae 字节 火山方舟 官方api openai cooling 冷却中 sensenova-6.8-flash-lite sensenova-u1.5-lite deepseek-v4-flash">
+                        <td class="strong">
+                          <div style="display:flex; align-items:center; gap:8px">
+                            <span class="mark-sm dark">T</span>
+                            <span class="ellip" style="max-width:260px" title="TRAE 字节火山方舟（国内站 · 多设备协同）">TRAE 字节火山方舟（国内站 · 多设备协同）</span>
+                          </div>
+                        </td>
+                        <td><span class="badge b-ok">官方 API</span></td>
+                        <td class="mono">openai</td>
+                        <td class="num">3</td><td class="num">2</td>
+                        <td>
+                          <span class="badge b-warn"><span class="dot"></span>冷却中</span>
+                          <span class="badge b-cool">剩余 214s</span>
+                        </td>
+                        <td class="num"><button class="btn btn-sm" onclick="probeRow('TRAE')">探活</button></td>
+                      </tr>
+                      <tr data-row data-keys="qoder 逆向 受限 合规排除 openai restricted deepseek-v4-pro">
+                        <td class="strong">
+                          <div style="display:flex; align-items:center; gap:8px">
+                            <span class="mark-sm dark">Q</span>
+                            <span class="ellip" style="max-width:260px" title="Qoder（设备码绑定 · 逆向形态）">Qoder（设备码绑定 · 逆向形态）</span>
+                          </div>
+                        </td>
+                        <td>
+                          <span class="badge b-warn">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:12px; height:12px"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                            逆向
+                          </span>
+                        </td>
+                        <td class="mono">openai</td>
+                        <td class="num">1</td><td class="num">1</td>
+                        <td><span class="badge b-warn">受限 · 不可进调度池</span></td>
+                        <td class="num"><button class="btn btn-sm" disabled>探活</button></td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div class="form-hint">逆向形态资源一律不进入调度池（合规分层）；协议列用等宽纯文字呈现，不做徽章以免彩色过载。</div>
+              </div>
+            </div>
+
+            <!-- 面板 2 · 账号清单（9 行） -->
+            <div data-panel="account" hidden>
+              <div class="card-body">
+                <div class="sec-head">
+                  <span class="t">平台账号</span>
+                  <span class="d">共 16 个 · 端点 http://127.0.0.1:8300/v1</span>
+                </div>
+                <div class="table-wrap">
+                  <table class="tbl">
+                    <thead>
+                      <tr>
+                        <th>产品</th><th>账号 / 备注</th><th>绑定系统模型</th><th>访问密钥</th>
+                        <th>状态</th><th>分组</th><th>租约占用</th><th class="num">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr data-row data-account="admin@zhipu.cn" data-keys="zcode 智谱 admin@zhipu.cn 平台主账号 glm-5.2 正常 编程 mg-3f9a">
+                        <td class="strong"><span class="g-coding">ZCode</span></td>
+                        <td><span class="mono ellip" style="max-width:180px" title="admin@zhipu.cn · 平台主账号">admin@zhipu.cn</span></td>
+                        <td class="mono">glm-5.2</td>
+                        <td><span class="addr-value">mg-3f9a****c7e8</span></td>
+                        <td><span class="badge b-ok" data-role="status"><span class="dot on"></span>正常</span></td>
+                        <td><span class="badge b-purple">编程</span></td>
+                        <td>
+                          <div style="display:flex; align-items:center; gap:8px">
+                            <div class="progress" style="width:80px"><div class="progress-bar" style="width:42%"></div></div>
+                            <span class="mono" style="font-size:12px; color:var(--text-faint)">42%</span>
+                          </div>
+                        </td>
+                        <td class="num">
+                          <button class="btn btn-sm" onclick="probeRow('admin@zhipu.cn')">探活</button>
+                          <button class="btn btn-sm btn-danger" onclick="askBreak('admin@zhipu.cn', 3)">断开</button>
+                        </td>
+                      </tr>
+<tr data-row data-account="ops@zhipu.cn" 运维值班账号"zcode 智谱 ops@zhipu.cn 平台主账号 glm-5.2 正常 编程 mg-77aa">
+                        <td class="strong"><span class="g-coding">ZCode</span></td>
+                        <td><span class="mono ellip" style="max-width:180px" title="ops@zhipu.cn · 平台主账号">ops@zhipu.cn</span></td>
+                        <td class="mono">glm-5.2</td>
+                        <td><span class="addr-value">mg-77aa****12ef</span></td>
+                        <td><span class="badge b-ok" data-role="status"><span class="dot on"></span>正常</span></td>
+                        <td><span class="badge b-purple">编程</span></td>
+                        <td>
+                          <div style="display:flex; align-items:center; gap:8px">
+                            <div class="progress" style="width:80px"><div class="progress-bar" style="width:61%"></div></div>
+                            <span class="mono" style="font-size:12px; color:var(--text-faint)">61%</span>
+                          </div>
+                        </td>
+                        <td class="num">
+                          <button class="btn btn-sm" onclick="probeRow('ops@zhipu.cn')">探活</button>
+                          <button class="btn btn-sm btn-danger" onclick="askBreak('ops@zhipu.cn', 3)">断开</button>
+                        </td>
+                      </tr>
+                      <tr data-row data-account="dev-coding@zhipu.cn" data-keys="zcode 智谱 dev-coding@zhipu.cn coding plan 余量 deepseek-v4-flash 正常 编程 mg-7b21">
+                        <td class="strong"><span class="g-coding">ZCode</span></td>
+                        <td><span class="mono ellip" style="max-width:180px" title="dev-coding@zhipu.cn · Coding Plan 余量">dev-coding@zhipu.cn</span></td>
+                        <td class="mono">deepseek-v4-flash</td>
+                        <td><span class="addr-value">mg-7b21****d084</span></td>
+                        <td><span class="badge b-ok" data-role="status"><span class="dot on"></span>正常</span></td>
+                        <td><span class="badge b-purple">编程</span></td>
+                        <td>
+                          <div style="display:flex; align-items:center; gap:8px">
+                            <div class="progress" style="width:80px"><div class="progress-bar" style="width:88%"></div></div>
+                            <span class="mono" style="font-size:12px; color:var(--text-faint)">88%</span>
+                          </div>
+                        </td>
+                        <td class="num">
+                          <button class="btn btn-sm" onclick="probeRow('dev-coding@zhipu.cn')">探活</button>
+                          <button class="btn btn-sm btn-danger" onclick="askBreak('dev-coding@zhipu.cn', 2)">断开</button>
+                        </td>
+                      </tr>
+                      <tr data-row data-account="ci-bot@zhipu.cn" data-keys="zcode 智谱 ci-bot@zhipu.cn ci 机器人 kimi-k3 冷却中 mg-2a90">
+                        <td class="strong"><span class="g-coding">ZCode</span></td>
+                        <td><span class="mono ellip" style="max-width:180px" title="ci-bot@zhipu.cn · CI 回归机器人">ci-bot@zhipu.cn</span></td>
+                        <td class="mono">kimi-k3</td>
+                        <td><span class="addr-value">mg-2a90****f31b</span></td>
+                        <td>
+                          <span class="badge b-warn" data-role="status"><span class="dot"></span>冷却中</span>
+                          <span class="badge b-cool">剩余 214s</span>
+                        </td>
+                        <td><span class="badge b-cool">通用</span></td>
+                        <td>
+                          <div style="display:flex; align-items:center; gap:8px">
+                            <div class="progress" style="width:80px"><div class="progress-bar" style="width:61%"></div></div>
+                            <span class="mono" style="font-size:12px; color:var(--text-faint)">61%</span>
+                          </div>
+                        </td>
+                        <td class="num">
+                          <button class="btn btn-sm" onclick="probeRow('ci-bot@zhipu.cn')">探活</button>
+                          <button class="btn btn-sm btn-danger" onclick="askBreak('ci-bot@zhipu.cn', 1)">断开</button>
+                        </td>
+                      </tr>
+<tr data-row data-account="partner@zhipu.cn" 合作伙伴试用"zcode 智谱 partner@zhipu.cn ci 机器人 kimi-k3 冷却中 mg-88bb">
+                        <td class="strong"><span class="g-coding">ZCode</span></td>
+                        <td><span class="mono ellip" style="max-width:180px" title="partner@zhipu.cn · CI 回归机器人">partner@zhipu.cn</span></td>
+                        <td class="mono">kimi-k3</td>
+                        <td><span class="addr-value">mg-88bb****23cd</span></td>
+                        <td>
+                          <span class="badge b-warn" data-role="status"><span class="dot"></span>冷却中</span>
+                          <span class="badge b-cool">剩余 214s</span>
+                        </td>
+                        <td><span class="badge b-cool">通用</span></td>
+                        <td>
+                          <div style="display:flex; align-items:center; gap:8px">
+                            <div class="progress" style="width:80px"><div class="progress-bar" style="width:78%"></div></div>
+                            <span class="mono" style="font-size:12px; color:var(--text-faint)">78%</span>
+                          </div>
+                        </td>
+                        <td class="num">
+                          <button class="btn btn-sm" onclick="probeRow('partner@zhipu.cn')">探活</button>
+                          <button class="btn btn-sm btn-danger" onclick="askBreak('partner@zhipu.cn', 1)">断开</button>
+                        </td>
+                      </tr>
+                      <tr data-row data-account="truman@solobrave.ai" data-keys="workbuddy truman@solobrave.ai 国际版主订阅 deepseek-v4-pro 正常 编程 mg-c4e8">
+                        <td class="strong"><span class="g-generic">WorkBuddy</span></td>
+                        <td><span class="mono ellip" style="max-width:180px" title="truman@solobrave.ai · 国际版主订阅">truman@solobrave.ai</span></td>
+                        <td class="mono">deepseek-v4-pro</td>
+                        <td><span class="addr-value">mg-c4e8****0f92</span></td>
+                        <td><span class="badge b-ok" data-role="status"><span class="dot on"></span>正常</span></td>
+                        <td><span class="badge b-purple">编程</span></td>
+                        <td>
+                          <div style="display:flex; align-items:center; gap:8px">
+                            <div class="progress" style="width:80px"><div class="progress-bar" style="width:12%"></div></div>
+                            <span class="mono" style="font-size:12px; color:var(--text-faint)">12%</span>
+                          </div>
+                        </td>
+                        <td class="num">
+                          <button class="btn btn-sm" onclick="probeRow('truman@solobrave.ai')">探活</button>
+                          <button class="btn btn-sm btn-danger" onclick="askBreak('truman@solobrave.ai', 2)">断开</button>
+                        </td>
+                      </tr>
+<tr data-row data-account="analyst@solobrave.ai" 数据分析席"workbuddy analyst@solobrave.ai 国际版主订阅 deepseek-v4-flash 正常 编程 mg-99cc">
+                        <td class="strong"><span class="g-generic">WorkBuddy</span></td>
+                        <td><span class="mono ellip" style="max-width:180px" title="analyst@solobrave.ai · 国际版主订阅">analyst@solobrave.ai</span></td>
+                        <td class="mono">deepseek-v4-flash</td>
+                        <td><span class="addr-value">mg-99cc****34ab</span></td>
+                        <td><span class="badge b-ok" data-role="status"><span class="dot on"></span>正常</span></td>
+                        <td><span class="badge b-purple">编程</span></td>
+                        <td>
+                          <div style="display:flex; align-items:center; gap:8px">
+                            <div class="progress" style="width:80px"><div class="progress-bar" style="width:23%"></div></div>
+                            <span class="mono" style="font-size:12px; color:var(--text-faint)">23%</span>
+                          </div>
+                        </td>
+                        <td class="num">
+                          <button class="btn btn-sm" onclick="probeRow('analyst@solobrave.ai')">探活</button>
+                          <button class="btn btn-sm btn-danger" onclick="askBreak('analyst@solobrave.ai', 2)">断开</button>
+                        </td>
+                      </tr>
+                      <tr data-row data-account="studio-02@solobrave.ai" data-keys="workbuddy studio-02@solobrave.ai 备用工位 sensenova-u1-fast 已停用 mg-91d4">
+                        <td class="strong"><span class="g-generic">WorkBuddy</span></td>
+                        <td><span class="mono ellip" style="max-width:180px" title="studio-02@solobrave.ai · 备用工位（已停用）">studio-02@solobrave.ai</span></td>
+                        <td class="mono">sensenova-u1-fast</td>
+                        <td><span class="addr-value">mg-91d4****3a77</span></td>
+                        <td><span class="badge b-muted" data-role="status"><span class="dot"></span>已停用</span></td>
+                        <td><span class="badge b-gray">免费活动</span></td>
+                        <td><span class="mono" style="font-size:12px; color:var(--text-faint)">已释放</span></td>
+                        <td class="num">
+                          <button class="btn btn-sm" onclick="probeRow('studio-02@solobrave.ai')">探活</button>
+                          <button class="btn btn-sm btn-danger" onclick="askBreak('studio-02@solobrave.ai', 1)">断开</button>
+                        </td>
+                      </tr>
+<tr data-row data-account="trial-07@solobrave.ai" 体验席位"workbuddy trial-07@solobrave.ai 备用工位 sensenova-u1-fast 已停用 mg-11dd">
+                        <td class="strong"><span class="g-generic">WorkBuddy</span></td>
+                        <td><span class="mono ellip" style="max-width:180px" title="trial-07@solobrave.ai · 备用工位（已停用）">trial-07@solobrave.ai</span></td>
+                        <td class="mono">sensenova-u1-fast</td>
+                        <td><span class="addr-value">mg-11dd****45ef</span></td>
+                        <td><span class="badge b-muted" data-role="status"><span class="dot"></span>已停用</span></td>
+                        <td><span class="badge b-gray">免费活动</span></td>
+                        <td><span class="mono" style="font-size:12px; color:var(--text-faint)">已释放</span></td>
+                        <td class="num">
+                          <button class="btn btn-sm" onclick="probeRow('trial-07@solobrave.ai')">探活</button>
+                          <button class="btn btn-sm btn-danger" onclick="askBreak('trial-07@solobrave.ai', 1)">断开</button>
+                        </td>
+                      </tr>
+                      <tr data-row data-account="dev-cn@bytedance.com" data-keys="trae 字节 dev-cn@bytedance.com 火山方舟主账号 sensenova-6.8-flash-lite 正常 图像生成 mg-5e0a">
+                        <td class="strong"><span class="g-generic">TRAE</span></td>
+                        <td><span class="mono ellip" style="max-width:180px" title="dev-cn@bytedance.com · 火山方舟主账号">dev-cn@bytedance.com</span></td>
+                        <td class="mono">sensenova-6.8-flash-lite</td>
+                        <td><span class="addr-value">mg-5e0a****b213</span></td>
+                        <td><span class="badge b-ok" data-role="status"><span class="dot on"></span>正常</span></td>
+                        <td><span class="badge b-ok">图像生成</span></td>
+                        <td>
+                          <div style="display:flex; align-items:center; gap:8px">
+                            <div class="progress" style="width:80px"><div class="progress-bar" style="width:74%"></div></div>
+                            <span class="mono" style="font-size:12px; color:var(--text-faint)">74%</span>
+                          </div>
+                        </td>
+                        <td class="num">
+                          <button class="btn btn-sm" onclick="probeRow('dev-cn@bytedance.com')">探活</button>
+                          <button class="btn btn-sm btn-danger" onclick="askBreak('dev-cn@bytedance.com', 2)">断开</button>
+                        </td>
+                      </tr>
+<tr data-row data-account="data-cn@bytedance.com" 数据平台账号"trae 字节 data-cn@bytedance.com 火山方舟主账号 sensenova-6.8-flash-lite 正常 图像生成 mg-22ee">
+                        <td class="strong"><span class="g-generic">TRAE</span></td>
+                        <td><span class="mono ellip" style="max-width:180px" title="data-cn@bytedance.com · 火山方舟主账号">data-cn@bytedance.com</span></td>
+                        <td class="mono">sensenova-6.8-flash-lite</td>
+                        <td><span class="addr-value">mg-22ee****56ab</span></td>
+                        <td><span class="badge b-ok" data-role="status"><span class="dot on"></span>正常</span></td>
+                        <td><span class="badge b-ok">图像生成</span></td>
+                        <td>
+                          <div style="display:flex; align-items:center; gap:8px">
+                            <div class="progress" style="width:80px"><div class="progress-bar" style="width:54%"></div></div>
+                            <span class="mono" style="font-size:12px; color:var(--text-faint)">54%</span>
+                          </div>
+                        </td>
+                        <td class="num">
+                          <button class="btn btn-sm" onclick="probeRow('data-cn@bytedance.com')">探活</button>
+                          <button class="btn btn-sm btn-danger" onclick="askBreak('data-cn@bytedance.com', 2)">断开</button>
+                        </td>
+                      </tr>
+<tr data-row data-account="intern@bytedance.com" 实习生账号"trae 字节 intern@bytedance.com 火山方舟主账号 sensenova-u1.5-lite 正常 图像生成 mg-33ff">
+                        <td class="strong"><span class="g-generic">TRAE</span></td>
+                        <td><span class="mono ellip" style="max-width:180px" title="intern@bytedance.com · 火山方舟主账号">intern@bytedance.com</span></td>
+                        <td class="mono">sensenova-u1.5-lite</td>
+                        <td><span class="addr-value">mg-33ff****67bc</span></td>
+                        <td><span class="badge b-ok" data-role="status"><span class="dot on"></span>正常</span></td>
+                        <td><span class="badge b-ok">图像生成</span></td>
+                        <td>
+                          <div style="display:flex; align-items:center; gap:8px">
+                            <div class="progress" style="width:80px"><div class="progress-bar" style="width:12%"></div></div>
+                            <span class="mono" style="font-size:12px; color:var(--text-faint)">12%</span>
+                          </div>
+                        </td>
+                        <td class="num">
+                          <button class="btn btn-sm" onclick="probeRow('intern@bytedance.com')">探活</button>
+                          <button class="btn btn-sm btn-danger" onclick="askBreak('intern@bytedance.com', 2)">断开</button>
+                        </td>
+                      </tr>
+                      <tr data-row data-account="dev-intl@bytedance.com" data-keys="trae 字节 dev-intl@bytedance.com 国际站 deepseek-v4-flash 无效 401 mg-a377">
+                        <td class="strong"><span class="g-generic">TRAE</span></td>
+                        <td><span class="mono ellip" style="max-width:180px" title="dev-intl@bytedance.com · 国际站（401 鉴权失败）">dev-intl@bytedance.com</span></td>
+                        <td class="mono">deepseek-v4-flash</td>
+                        <td><span class="addr-value">mg-a377****9c40</span></td>
+                        <td><span class="badge b-err" data-role="status"><span class="dot"></span>无效 401</span></td>
+                        <td><span class="badge b-cool">通用</span></td>
+                        <td><span class="mono" style="font-size:12px; color:var(--text-faint)">不可用</span></td>
+                        <td class="num">
+                          <button class="btn btn-sm" onclick="probeRow('dev-intl@bytedance.com')">探活</button>
+                          <button class="btn btn-sm btn-danger" onclick="askBreak('dev-intl@bytedance.com', 1)">断开</button>
+                        </td>
+                      </tr>
+                      <tr data-row data-account="qa-team@bytedance.com" data-keys="trae 字节 qa-team@bytedance.com 回归测试 sensenova-u1.5-lite 冷却中 mg-2f18">
+                        <td class="strong"><span class="g-generic">TRAE</span></td>
+                        <td><span class="mono ellip" style="max-width:180px" title="qa-team@bytedance.com · 回归测试组">qa-team@bytedance.com</span></td>
+                        <td class="mono">sensenova-u1.5-lite</td>
+                        <td><span class="addr-value">mg-2f18****6e59</span></td>
+                        <td>
+                          <span class="badge b-warn" data-role="status"><span class="dot"></span>冷却中</span>
+                          <span class="badge b-cool">剩余 47s</span>
+                        </td>
+                        <td><span class="badge b-gray">免费活动</span></td>
+                        <td>
+                          <div style="display:flex; align-items:center; gap:8px">
+                            <div class="progress" style="width:80px"><div class="progress-bar" style="width:53%"></div></div>
+                            <span class="mono" style="font-size:12px; color:var(--text-faint)">53%</span>
+                          </div>
+                        </td>
+                        <td class="num">
+                          <button class="btn btn-sm" onclick="probeRow('qa-team@bytedance.com')">探活</button>
+                          <button class="btn btn-sm btn-danger" onclick="askBreak('qa-team@bytedance.com', 1)">断开</button>
+                        </td>
+                      </tr>
+                      <tr data-row data-account="device-token-qoder" data-keys="qoder device-token-qoder 设备码绑定 逆向 受限 合规排除 deepseek-v4-pro mg-8c62">
+                        <td class="strong"><span class="g-generic">Qoder</span></td>
+                        <td><span class="mono ellip" style="max-width:180px" title="device-token-qoder · 设备码绑定（逆向形态）">device-token-qoder</span></td>
+                        <td class="mono">deepseek-v4-pro</td>
+                        <td><span class="addr-value">mg-8c62****4d95</span></td>
+                        <td>
+                          <span class="badge b-warn" data-role="status">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:12px; height:12px"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                            受限
+                          </span>
+                        </td>
+                        <td><span class="badge b-cool">通用</span></td>
+                        <td><span class="mono" style="font-size:12px; color:var(--text-faint)">已封禁</span></td>
+                        <td class="num">
+                          <button class="btn btn-sm" disabled>探活</button>
+                          <button class="btn btn-sm btn-danger" onclick="askBreak('device-token-qoder', 1)">断开</button>
+                        </td>
+                      </tr>
+<tr data-row data-account="device-token-qoder-b" 设备码绑定 B 机"qoder device-token-qoder-b 设备码绑定 逆向 受限 合规排除 deepseek-v4-pro mg-44aa">
+                        <td class="strong"><span class="g-generic">Qoder</span></td>
+                        <td><span class="mono ellip" style="max-width:180px" title="device-token-qoder-b · 设备码绑定（逆向形态）">device-token-qoder-b</span></td>
+                        <td class="mono">deepseek-v4-pro</td>
+                        <td><span class="addr-value">mg-44aa****78de</span></td>
+                        <td>
+                          <span class="badge b-warn" data-role="status">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:12px; height:12px"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                            受限
+                          </span>
+                        </td>
+                        <td><span class="badge b-cool">通用</span></td>
+                        <td><span class="mono" style="font-size:12px; color:var(--text-faint)">已封禁</span></td>
+                        <td class="num">
+                          <button class="btn btn-sm" disabled>探活</button>
+                          <button class="btn btn-sm btn-danger" onclick="askBreak('device-token-qoder-b', 1)">断开</button>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div class="form-hint">密钥默认脱敏显示（前 5 + **** + 后 4）；未取证属性显示「未核实」，不留空、不虚构。</div>
+              </div>
+            </div>
+
+            <!-- 面板 3 · 连通性体检（9 行） -->
+            <div data-panel="health" hidden>
+              <div class="card-body">
+                <div class="sec-head">
+                  <span class="t">连通性体检</span>
+                  <span class="d">对 16 个账号并发探活 · 端点 http://192.168.1.10:8300/v1</span>
+                </div>
+                <div class="table-wrap">
+                  <table class="tbl">
+                    <thead>
+                      <tr><th>账号</th><th>端点</th><th class="num">延迟</th><th>结论</th><th>可用模型</th><th class="num">操作</th></tr>
+                    </thead>
+                    <tbody>
+                      <tr data-row data-keys="admin@zhipu.cn zcode 通过 215ms glm-5.2">
+                        <td class="strong"><span class="mono ellip" style="max-width:180px" title="admin@zhipu.cn">admin@zhipu.cn</span></td>
+                        <td class="mono">http://192.168.1.10:8300/v1</td>
+                        <td class="num" data-role="latency">215ms</td>
+                        <td><span class="badge b-ok" data-role="verdict"><span class="dot on"></span>通过</span></td>
+                        <td><span class="mono">3 / 3</span></td>
+                        <td class="num"><button class="btn btn-sm" onclick="probeRow('admin@zhipu.cn')">重测</button></td>
+                      </tr>
+<tr data-row data-keys="ops@zhipu.cn zcode 通过 187ms glm-5.2">
+                        <td class="strong"><span class="mono ellip" style="max-width:180px" title="ops@zhipu.cn">ops@zhipu.cn</span></td>
+                        <td class="mono">http://192.168.1.10:8300/v1</td>
+                        <td class="num" data-role="latency">187ms</td>
+                        <td><span class="badge b-ok" data-role="verdict"><span class="dot on"></span>通过</span></td>
+                        <td><span class="mono">3 / 3</span></td>
+                        <td class="num"><button class="btn btn-sm" onclick="probeRow('ops@zhipu.cn')">重测</button></td>
+                      </tr>
+                      <tr data-row data-keys="dev-coding@zhipu.cn zcode 通过 402ms deepseek-v4-flash">
+                        <td class="strong"><span class="mono ellip" style="max-width:180px" title="dev-coding@zhipu.cn">dev-coding@zhipu.cn</span></td>
+                        <td class="mono">http://192.168.1.10:8300/v1</td>
+                        <td class="num" data-role="latency">402ms</td>
+                        <td><span class="badge b-ok" data-role="verdict"><span class="dot on"></span>通过</span></td>
+                        <td><span class="mono">2 / 2</span></td>
+                        <td class="num"><button class="btn btn-sm" onclick="probeRow('dev-coding@zhipu.cn')">重测</button></td>
+                      </tr>
+                      <tr data-row data-keys="ci-bot@zhipu.cn zcode 冷却 冷却中 kimi-k3">
+                        <td class="strong"><span class="mono ellip" style="max-width:180px" title="ci-bot@zhipu.cn">ci-bot@zhipu.cn</span></td>
+                        <td class="mono">http://192.168.1.10:8300/v1</td>
+                        <td class="num" data-role="latency">—</td>
+                        <td><span class="badge b-warn" data-role="verdict"><span class="dot"></span>冷却中</span></td>
+                        <td><span class="mono">未核实</span></td>
+                        <td class="num"><button class="btn btn-sm" onclick="probeRow('ci-bot@zhipu.cn')">重测</button></td>
+                      </tr>
+<tr data-row data-keys="partner@zhipu.cn zcode 冷却 冷却中 kimi-k3">
+                        <td class="strong"><span class="mono ellip" style="max-width:180px" title="partner@zhipu.cn">partner@zhipu.cn</span></td>
+                        <td class="mono">http://192.168.1.10:8300/v1</td>
+                        <td class="num" data-role="latency">—</td>
+                        <td><span class="badge b-warn" data-role="verdict"><span class="dot"></span>冷却中</span></td>
+                        <td><span class="mono">未核实</span></td>
+                        <td class="num"><button class="btn btn-sm" onclick="probeRow('partner@zhipu.cn')">重测</button></td>
+                      </tr>
+                      <tr data-row data-keys="truman@solobrave.ai workbuddy 通过 418ms deepseek-v4-pro">
+                        <td class="strong"><span class="mono ellip" style="max-width:180px" title="truman@solobrave.ai">truman@solobrave.ai</span></td>
+                        <td class="mono">http://192.168.1.10:8300/v1</td>
+                        <td class="num" data-role="latency">418ms</td>
+                        <td><span class="badge b-ok" data-role="verdict"><span class="dot on"></span>通过</span></td>
+                        <td><span class="mono">2 / 2</span></td>
+                        <td class="num"><button class="btn btn-sm" onclick="probeRow('truman@solobrave.ai')">重测</button></td>
+                      </tr>
+<tr data-row data-keys="analyst@solobrave.ai workbuddy 通过 356ms deepseek-v4-pro">
+                        <td class="strong"><span class="mono ellip" style="max-width:180px" title="analyst@solobrave.ai">analyst@solobrave.ai</span></td>
+                        <td class="mono">http://192.168.1.10:8300/v1</td>
+                        <td class="num" data-role="latency">356ms</td>
+                        <td><span class="badge b-ok" data-role="verdict"><span class="dot on"></span>通过</span></td>
+                        <td><span class="mono">2 / 2</span></td>
+                        <td class="num"><button class="btn btn-sm" onclick="probeRow('analyst@solobrave.ai')">重测</button></td>
+                      </tr>
+                      <tr data-row data-keys="studio-02@solobrave.ai workbuddy 已停用">
+                        <td class="strong"><span class="mono ellip" style="max-width:180px" title="studio-02@solobrave.ai">studio-02@solobrave.ai</span></td>
+                        <td class="mono">http://192.168.1.10:8300/v1</td>
+                        <td class="num" data-role="latency">—</td>
+                        <td><span class="badge b-muted" data-role="verdict"><span class="dot"></span>已停用</span></td>
+                        <td><span class="mono">0 / 1</span></td>
+                        <td class="num"><button class="btn btn-sm" onclick="probeRow('studio-02@solobrave.ai')">重测</button></td>
+                      </tr>
+<tr data-row data-keys="trial-07@solobrave.ai workbuddy 已停用">
+                        <td class="strong"><span class="mono ellip" style="max-width:180px" title="trial-07@solobrave.ai">trial-07@solobrave.ai</span></td>
+                        <td class="mono">http://192.168.1.10:8300/v1</td>
+                        <td class="num" data-role="latency">—</td>
+                        <td><span class="badge b-muted" data-role="verdict"><span class="dot"></span>已停用</span></td>
+                        <td><span class="mono">0 / 1</span></td>
+                        <td class="num"><button class="btn btn-sm" onclick="probeRow('trial-07@solobrave.ai')">重测</button></td>
+                      </tr>
+                      <tr data-row data-keys="dev-cn@bytedance.com trae 通过 312ms sensenova-6.8-flash-lite">
+                        <td class="strong"><span class="mono ellip" style="max-width:180px" title="dev-cn@bytedance.com">dev-cn@bytedance.com</span></td>
+                        <td class="mono">http://192.168.1.10:8300/v1</td>
+                        <td class="num" data-role="latency">312ms</td>
+                        <td><span class="badge b-ok" data-role="verdict"><span class="dot on"></span>通过</span></td>
+                        <td><span class="mono">2 / 2</span></td>
+                        <td class="num"><button class="btn btn-sm" onclick="probeRow('dev-cn@bytedance.com')">重测</button></td>
+                      </tr>
+<tr data-row data-keys="data-cn@bytedance.com trae 通过 264ms sensenova-6.8-flash-lite">
+                        <td class="strong"><span class="mono ellip" style="max-width:180px" title="data-cn@bytedance.com">data-cn@bytedance.com</span></td>
+                        <td class="mono">http://192.168.1.10:8300/v1</td>
+                        <td class="num" data-role="latency">264ms</td>
+                        <td><span class="badge b-ok" data-role="verdict"><span class="dot on"></span>通过</span></td>
+                        <td><span class="mono">2 / 2</span></td>
+                        <td class="num"><button class="btn btn-sm" onclick="probeRow('data-cn@bytedance.com')">重测</button></td>
+                      </tr>
+<tr data-row data-keys="intern@bytedance.com trae 通过 421ms sensenova-6.8-flash-lite">
+                        <td class="strong"><span class="mono ellip" style="max-width:180px" title="intern@bytedance.com">intern@bytedance.com</span></td>
+                        <td class="mono">http://192.168.1.10:8300/v1</td>
+                        <td class="num" data-role="latency">421ms</td>
+                        <td><span class="badge b-ok" data-role="verdict"><span class="dot on"></span>通过</span></td>
+                        <td><span class="mono">2 / 2</span></td>
+                        <td class="num"><button class="btn btn-sm" onclick="probeRow('intern@bytedance.com')">重测</button></td>
+                      </tr>
+                      <tr data-row data-keys="dev-intl@bytedance.com trae 失败 401 鉴权失败">
+                        <td class="strong"><span class="mono ellip" style="max-width:180px" title="dev-intl@bytedance.com">dev-intl@bytedance.com</span></td>
+                        <td class="mono">http://192.168.1.10:8300/v1</td>
+                        <td class="num" data-role="latency">—</td>
+                        <td><span class="badge b-err" data-role="verdict"><span class="dot"></span>401 鉴权失败</span></td>
+                        <td><span class="mono">0 / 1</span></td>
+                        <td class="num"><button class="btn btn-sm" onclick="probeRow('dev-intl@bytedance.com')">重测</button></td>
+                      </tr>
+                      <tr data-row data-keys="qa-team@bytedance.com trae 冷却 冷却中 sensenova-u1.5-lite">
+                        <td class="strong"><span class="mono ellip" style="max-width:180px" title="qa-team@bytedance.com">qa-team@bytedance.com</span></td>
+                        <td class="mono">http://192.168.1.10:8300/v1</td>
+                        <td class="num" data-role="latency">—</td>
+                        <td><span class="badge b-warn" data-role="verdict"><span class="dot"></span>冷却中</span></td>
+                        <td><span class="mono">未核实</span></td>
+                        <td class="num"><button class="btn btn-sm" onclick="probeRow('qa-team@bytedance.com')">重测</button></td>
+                      </tr>
+                      <tr data-row data-keys="device-token-qoder qoder 失败 超时 timeout">
+                        <td class="strong"><span class="mono ellip" style="max-width:180px" title="device-token-qoder">device-token-qoder</span></td>
+                        <td class="mono">http://192.168.1.10:8300/v1</td>
+                        <td class="num" data-role="latency">超时</td>
+                        <td><span class="badge b-err" data-role="verdict"><span class="dot"></span>超时 timeout</span></td>
+                        <td><span class="mono">0 / 1</span></td>
+                        <td class="num"><button class="btn btn-sm" onclick="probeRow('device-token-qoder')">重测</button></td>
+                      </tr>
+<tr data-row data-keys="device-token-qoder-b qoder 失败 超时 timeout">
+                        <td class="strong"><span class="mono ellip" style="max-width:180px" title="device-token-qoder-b">device-token-qoder-b</span></td>
+                        <td class="mono">http://192.168.1.10:8300/v1</td>
+                        <td class="num" data-role="latency">超时</td>
+                        <td><span class="badge b-err" data-role="verdict"><span class="dot"></span>超时 timeout</span></td>
+                        <td><span class="mono">0 / 1</span></td>
+                        <td class="num"><button class="btn btn-sm" onclick="probeRow('device-token-qoder-b')">重测</button></td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            <!-- 面板 4 · 参数方言映射 -->
+            <div data-panel="dialect" hidden>
+              <div class="card-body">
+                <div class="sec-head">
+                  <span class="t">参数方言映射</span>
+                  <span class="d">归一化键 → 各产品上游写法</span>
+                </div>
+                <div class="matrix-container">
+                  <table class="matrix-table">
+                    <thead>
+                      <tr><th>映射参数（归一化键）</th><th>ZCode 智谱</th><th>WorkBuddy 国际</th><th>TRAE 字节</th><th>上游映射机制</th></tr>
+                    </thead>
+                    <tbody>
+                      <tr data-row data-keys="深度推理 thinking reasoningLevel reasoning_effort 动态 merge patch">
+                        <td style="font-weight:700">深度推理（thinking）</td>
+                        <td><span class="mono">reasoningLevel</span></td>
+                        <td><span class="mono">thinking</span></td>
+                        <td><span class="mono">reasoning_effort</span></td>
+                        <td>动态 Merge Patch</td>
+                      </tr>
+                      <tr data-row data-keys="单次最大 token 限制 maxOutputTokens max_tokens max_completion_tokens 出站拦截器补丁">
+                        <td style="font-weight:700">单次最大 Token 限制</td>
+                        <td><span class="mono">maxOutputTokens</span></td>
+                        <td><span class="mono">max_tokens</span></td>
+                        <td><span class="mono">max_completion_tokens</span></td>
+                        <td>出站拦截器补丁</td>
+                      </tr>
+                      <tr data-row data-keys="上下文惩罚系数 presence_penalty 方言智能过滤 未核实">
+                        <td style="font-weight:700">上下文惩罚系数</td>
+                        <td><span class="mono">未核实</span></td>
+                        <td><span class="mono">presence_penalty</span></td>
+                        <td><span class="mono">未核实</span></td>
+                        <td>方言智能过滤</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div class="form-hint">各宿主对同一语义参数声明不一致，由网关做归一化映射；未取证的方言写法一律显示「未核实」。</div>
+              </div>
+            </div>
+
+            <!-- §9 状态：空态 · 首次使用（含引导按钮） -->
+            <div data-when="empty" hidden>
+              <div class="empty">
+                <div style="font-size:13px; font-weight:800; color:var(--text-soft)">尚未绑定任何产品账号</div>
+                <div style="margin-top:8px; font-size:12px; font-weight:500; color:var(--text-faint); line-height:1.6">绑定后即可把 ZCode / WorkBuddy / TRAE 等产品的账号权益聚合到统一端点调用。</div>
+                <div style="margin-top:12px"><button class="btn btn-primary" onclick="bindNew()">绑定第一个账号</button></div>
+              </div>
+            </div>
+
+            <!-- §9 状态：空态 · 筛选无结果（含「重置筛选」） -->
+            <div data-when="noresult" hidden>
+              <div class="empty">
+                <div style="font-size:13px; font-weight:800; color:var(--text-soft)">没有符合条件的账号</div>
+                <div style="margin-top:8px; font-size:12px; font-weight:500; color:var(--text-faint); line-height:1.6">试试重置筛选，或换个关键词（可按产品 / 账号 / 系统模型过滤）。</div>
+                <div style="margin-top:12px"><button class="btn" onclick="resetFilter()">重置筛选</button></div>
+              </div>
+            </div>
+
+            <!-- §9 状态：加载 -->
+            <div data-when="loading" hidden>
+              <div class="loading">加载中…（骨架占位，布局不发生跳动）</div>
+            </div>
+
+            <!-- §9 状态：错误（错误码 mono + 重试） -->
+            <div data-when="error" hidden>
+              <div class="alert alert-err">
+                <div class="alert-title">账号清单加载失败</div>
+                <div>网关返回 <span class="mono">HTTP 503</span>（<span class="mono">upstream_unavailable</span>）：上游 3 个产品的凭据服务不可达，已加载 0 / 16 条。</div>
+                <div style="margin-top:12px">
+                  <button class="btn btn-sm" onclick="retryLoad()">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px; height:14px"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+                    重试
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- §9 状态：受限（锁图标 + 原因 + 出路） -->
+            <div data-when="restricted" hidden>
+              <div class="alert alert-warn">
+                <div class="alert-title">
+                  <span style="display:inline-flex; align-items:center; gap:8px">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px; height:14px"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                    该产品形态不可接入
+                  </span>
+                </div>
+                <div>Qoder 属逆向形态（<span class="mono">upstream_form=reverse</span>），按合规分层一律不进入调度池；已保留其账号记录但停用调用。</div>
+                <div style="margin-top:12px"><button class="btn btn-sm" onclick="showToast('已打开合规说明（示例出路）')">了解详情</button></div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 破坏性操作确认弹窗（断开连接 · 正文列明影响面） -->
+<div class="modal-mask hidden" id="break-mask" onclick="if(event.target===this) closeBreak()">
+  <div class="modal">
+    <div class="modal-head">
+      <h3>断开账号连接</h3>
+      <button class="modal-close" aria-label="关闭" onclick="closeBreak()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px; height:14px"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="alert alert-warn">
+        <div class="alert-title">影响面</div>
+        <div id="break-impact">—</div>
+      </div>
+      <div class="form-hint">断开后该账号立即退出调度池，其下系统模型不再可调用；账号记录保留，可重新绑定。</div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeBreak()">取消</button>
+      <button class="btn btn-danger" onclick="doBreak()">确认断开</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast UI -->
+<div id="toast-wrap"></div>
+
+<script>/* ?theme=dark|light 主题预览（与既有基准模板同一约定；须先于主脚本执行） */
+(() => { const t = new URLSearchParams(location.search).get("theme");
+  if (t === "dark" || t === "light") document.documentElement.dataset.theme = t; })();</script>
+
+<script>
+/* ---------- 常量 ---------- */
+var TABS = ["auth", "account", "health", "dialect"];
+var STATES = ["default", "empty", "noresult", "loading", "error", "restricted", "off", "narrow"];
+var STATE_DESC = {
+  "default":    "当前状态：默认（有数据）",
+  "empty":      "当前状态：空态 · 首次使用（含引导按钮）",
+  "noresult":   "当前状态：空态 · 筛选无结果（含「重置筛选」）",
+  "loading":    "当前状态：加载（.loading 骨架，无布局跳动）",
+  "error":      "当前状态：错误（错误码 mono + 重试）",
+  "restricted": "当前状态：受限（锁图标 + 原因 + 出路）",
+  "off":        "当前状态：停用（.off opacity .5 + pointer-events:none）",
+  "narrow":     "当前状态：窄屏（内容区限宽 768px；侧栏抽屉化需宿主页宽切换器）"
+};
+
+var tab = "auth";
+var state = "default";
+var NO_RESULT_Q = "zzz-无匹配";
+var pendingAccount = "";
+var pendingModels = 0;
+
+function param(k) { return new URLSearchParams(location.search).get(k); }
+function curTheme() { return document.documentElement.dataset.theme || "light"; }
+
+/* ---------- URL 状态（history.replaceState，不触发导航、不套娃加载控制台） ---------- */
+function writeUrl() {
+  var u = new URL(location.href);
+  u.searchParams.set("tab", tab);
+  u.searchParams.set("state", state);
+  u.searchParams.set("theme", curTheme());
+  history.replaceState(null, "", u.toString());
+}
+
+/* ---------- 渲染 ---------- */
+function render() {
+  var base = (state === "default" || state === "off" || state === "narrow");
+  var rows = document.querySelectorAll('[data-panel="' + tab + '"] [data-row]');
+  var vis = 0;
+  rows.forEach(function (r) { if (!r.hidden) vis++; });
+  /* none：① 真实过滤后当前页签 0 行；② 状态演示强制切到「无结果」 */
+  var none = (state === "noresult") || (base && rows.length > 0 && vis === 0);
+
+  document.querySelectorAll("[data-panel]").forEach(function (p) {
+    p.hidden = !(base && !none && p.dataset.panel === tab);
+  });
+  document.querySelectorAll("[data-when]").forEach(function (el) {
+    var w = el.dataset.when;
+    el.hidden = !(w === "noresult" ? none : w === state);
+  });
+
+  var card = document.getElementById("big-card");
+  card.classList.toggle("off", state === "off");
+  card.classList.toggle("locked", state === "off");
+
+  var wrap = document.getElementById("page-wrap");
+  wrap.style.maxWidth = state === "narrow" ? "768px" : "";
+  wrap.style.margin = state === "narrow" ? "0 auto" : "";
+
+  document.getElementById("state-desc").textContent = STATE_DESC[state];
+  writeUrl();
+}
+
+function paintTabs() {
+  document.querySelectorAll("#card-tabs .tab").forEach(function (t) {
+    t.classList.toggle("active", t.dataset.tab === tab);
+  });
+  document.querySelectorAll("#state-tabs .tab").forEach(function (t) {
+    t.classList.toggle("active", t.dataset.state === state);
+  });
+  document.querySelectorAll("#theme-tabs .tab").forEach(function (t) {
+    t.classList.toggle("active", t.dataset.theme === curTheme());
+  });
+}
+
+/* ---------- 卡内页签切换（面板 hidden 显隐，不整页刷新，页签行位置固定） ---------- */
+function switchTab(key) {
+  if (TABS.indexOf(key) < 0) key = "auth";
+  tab = key;
+  render();
+  paintTabs();
+}
+
+/* ---------- 状态演示切换 ---------- */
+function switchState(s) {
+  if (STATES.indexOf(s) < 0) s = "default";
+  state = s;
+  /* 「无结果」演示态靠一个不可能命中的关键词真实触发过滤（不是假空态）；
+     离开该态时把哨兵词清掉，避免残留过滤污染默认 / 停用 / 窄屏等状态 */
+  var qi = document.getElementById("q");
+  if (s === "noresult") { qi.value = NO_RESULT_Q; }
+  else if (qi.value === NO_RESULT_Q) { qi.value = ""; }
+  applyFilter();
+  paintTabs();
+}
+
+/* ---------- 主题（沿用 ?theme= 约定，写入 URL 便于分享） ---------- */
+function switchTheme(v) {
+  document.documentElement.dataset.theme = v;
+  render();
+  paintTabs();
+}
+
+/* ---------- 真实过滤（不是假动作） ---------- */
+function applyFilter() {
+  var q = (document.getElementById("q").value || "").trim().toLowerCase();
+  document.querySelectorAll("[data-row]").forEach(function (r) {
+    r.hidden = q !== "" && (r.dataset.keys || "").toLowerCase().indexOf(q) < 0;
+  });
+  render();
+}
+
+function resetFilter() {
+  document.getElementById("q").value = "";
+  state = "default";
+  applyFilter();
+  paintTabs();
+}
+
+/* ---------- 探活（真实改该行的延迟与结论） ---------- */
+function probeRow(account) {
+  var row = document.querySelector('[data-account="' + account + '"]');
+  if (!row) {
+    var k = account.toLowerCase();
+    document.querySelectorAll("[data-row]").forEach(function (r) {
+      if (!row && (r.dataset.keys || "").toLowerCase().indexOf(k) >= 0) row = r;
+    });
+  }
+  var ms = 180 + Math.floor(Math.random() * 320);
+  var lat = row ? row.querySelector('[data-role="latency"]') : null;
+  var vd = row ? row.querySelector('[data-role="verdict"]') : null;
+  if (lat) lat.textContent = ms + "ms";
+  if (vd) { vd.className = "badge b-ok"; vd.innerHTML = '<span class="dot on"></span>通过'; }
+  showToast("探活完成 · " + account + " · " + ms + "ms");
+}
+
+/* ---------- 破坏性操作：确认弹窗 + 影响面 + 真实置为已停用 ---------- */
+function askBreak(account, models) {
+  pendingAccount = account;
+  pendingModels = models;
+  document.getElementById("break-impact").textContent =
+    "账号 " + account + " 将立即退出调度池，其下 " + models + " 个系统模型不可调用；" +
+    "正在途中的请求会被中断并返回 503。";
+  document.getElementById("break-mask").classList.remove("hidden");
+}
+
+function closeBreak() {
+  document.getElementById("break-mask").classList.add("hidden");
+}
+
+function doBreak() {
+  var row = document.querySelector('[data-account="' + pendingAccount + '"]');
+  if (row) {
+    row.classList.add("off");
+    var badge = row.querySelector('[data-role="status"]');
+    if (badge) { badge.className = "badge b-muted"; badge.innerHTML = '<span class="dot"></span>已停用'; }
+    row.querySelectorAll("button").forEach(function (b) { b.disabled = true; });
+  }
+  closeBreak();
+  showToast("已断开 · " + pendingAccount + " 退出调度");
+}
+
+/* ---------- 其他动作 ---------- */
+function bindNew() { showToast("弹出两步式授权向导（loginUrl 需用户点击同步栈内返回）"); }
+function retryLoad() { showToast("已重新发起加载…"); switchState("default"); }
+
+/* ---------- toast ---------- */
+function showToast(text) {
+  var wrap = document.getElementById("toast-wrap");
+  var el = document.createElement("div");
+  el.className = "toast";
+  el.textContent = text;
+  wrap.appendChild(el);
+  setTimeout(function () { el.remove(); }, 2400);
+}
+
+/* ---------- 绑定 ---------- */
+document.querySelectorAll("#card-tabs .tab").forEach(function (t) {
+  t.onclick = function () { switchTab(t.dataset.tab); };
+});
+document.querySelectorAll("#state-tabs .tab").forEach(function (t) {
+  t.onclick = function () { switchState(t.dataset.state); };
+});
+document.querySelectorAll("#theme-tabs .tab").forEach(function (t) {
+  t.onclick = function () { switchTheme(t.dataset.theme); };
+});
+
+/* ---------- 初始化：从 URL 读回页签 / 状态 ---------- */
+var pt = param("tab"), ps = param("state");
+tab = TABS.indexOf(pt) >= 0 ? pt : "auth";
+state = STATES.indexOf(ps) >= 0 ? ps : "default";
+render();
+paintTabs();
+</script>
+
+<style>
+@keyframes toast-in { from { transform: translateY(-8px); opacity: 0; } }
+</style>
+</body>
+</html>

@@ -1,0 +1,2119 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>T-17 · 多端账号授权（产品×账号主从） · A · TB-3 · v1.0</title>
+<link rel="stylesheet" href="/css/base.css">
+</head>
+<body>
+<!-- ============================================================
+  T-17 · 多端账号授权（产品×账号主从） · A 族 · TB-3 · v1.0
+  用途：把 ZCode / WorkBuddy / Trae / Qoder 这类 AI 产品当作上游模型
+        供给方接入网关；每个产品下挂多个授权账号，统一管理授权状态、
+        到期、额度、并发、模型范围与连通体检。
+  演示数据：16 个账号 / 4 个产品 · 端点 http://127.0.0.1:8300/v1
+  组件规范（逐像素值）：docs/specs/frontend-spec.md
+  ⚠ 本页为需求形态预演，非线上功能，数据为虚构演示数据。
+============================================================ -->
+<div style="display:flex; flex-direction:column; height:100vh; overflow:hidden;">
+
+  <!-- 顶栏（与 T-15/T-16/P0 六件套同构：crumb + 页标题 + 右操作区） -->
+  <header class="topbar">
+    <div class="tb-left">
+      <div class="crumb">
+        <span>Console</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+        <span>模板运行</span>
+      </div>
+      <h1 class="tb-title">多端账号授权 · 产品×账号主从</h1>
+    </div>
+    <div class="tb-right">
+      <button class="btn btn-sm" onclick="showToast('配置已重载')">重载配置</button>
+    </div>
+  </header>
+
+  <div style="display:flex; flex-wrap:wrap; flex:1 1 auto; min-height:0; overflow:hidden;">
+
+  <!-- ============ 左：子侧栏 248px（接入产品 × 账号） ============ -->
+  <aside class="subnav">
+    <div class="subnav-scroll">
+      <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px; padding-left:4px;">
+        <span style="font-size:12px; font-weight:700; color:var(--text-faint); letter-spacing:.02em;">接入产品</span>
+        <span class="badge b-brand" style="margin-left:auto;">4 产品 / 16 账号</span>
+      </div>
+
+      <!-- ZCode · 3 -->
+      <div class="group-card" style="margin-bottom:12px;">
+        <div style="display:flex; align-items:center; gap:8px; padding:4px 8px; margin-bottom:4px;">
+          <span class="mark-sm" style="background:var(--brand-weak); color:var(--g-coding);">Z</span>
+          <span style="font-size:13px; font-weight:800; color:var(--text);">ZCode</span>
+          <span class="badge b-gray" style="margin-left:auto;">5</span>
+        </div>
+        <button class="mode-btn active" onclick="pickAccount(this, 'ZCode · 主账号')">主账号<span class="dot on"></span></button>
+        <button class="mode-btn" onclick="pickAccount(this, 'ZCode · 团队账号')" title="ZCode · 团队账号（智谱 MaaS 研发组共享调用池）">团队账号<span class="dot on"></span></button>
+        <button class="mode-btn" onclick="pickAccount(this, 'ZCode · 测试账号')">测试账号<span class="dot"></span></button>
+        <button class="mode-btn" onclick="pickAccount(this, 'ZCode · 运维值班')">运维值班<span class="dot on"></span></button>
+        <button class="mode-btn" onclick="pickAccount(this, 'ZCode · 合作试用')">合作试用<span class="dot"></span></button>
+      </div>
+
+      <!-- WorkBuddy · 2 -->
+      <div class="group-card" style="margin-bottom:12px;">
+        <div style="display:flex; align-items:center; gap:8px; padding:4px 8px; margin-bottom:4px;">
+          <span class="mark-sm" style="background:var(--brand-weak); color:var(--g-generic);">W</span>
+          <span style="font-size:13px; font-weight:800; color:var(--text);">WorkBuddy</span>
+          <span class="badge b-gray" style="margin-left:auto;">4</span>
+        </div>
+        <button class="mode-btn" onclick="pickAccount(this, 'WorkBuddy · 主账号')">主账号<span class="dot on"></span></button>
+        <button class="mode-btn" onclick="pickAccount(this, 'WorkBuddy · 插件沙箱账号')">插件沙箱账号<span class="dot on"></span></button>
+        <button class="mode-btn" onclick="pickAccount(this, 'WorkBuddy · 数据分析')">数据分析<span class="dot on"></span></button>
+        <button class="mode-btn" onclick="pickAccount(this, 'WorkBuddy · 体验席位')">体验席位<span class="dot"></span></button>
+      </div>
+
+      <!-- Trae · 3 -->
+      <div class="group-card" style="margin-bottom:12px;">
+        <div style="display:flex; align-items:center; gap:8px; padding:4px 8px; margin-bottom:4px;">
+          <span class="mark-sm" style="background:var(--brand-weak); color:var(--text-muted);">T</span>
+          <span style="font-size:13px; font-weight:800; color:var(--text);">Trae</span>
+          <span class="badge b-gray" style="margin-left:auto;">5</span>
+        </div>
+        <button class="mode-btn" onclick="pickAccount(this, 'Trae · 主账号')">主账号<span class="dot on"></span></button>
+        <button class="mode-btn" onclick="pickAccount(this, 'Trae · 团队账号 A')" title="Trae · 团队账号 A（字节跳动飞书研发中台共用池）">团队账号 A<span class="dot"></span></button>
+        <button class="mode-btn" onclick="pickAccount(this, 'Trae · 试用账号')">试用账号<span class="dot on"></span></button>
+        <button class="mode-btn" onclick="pickAccount(this, 'Trae · 数据平台')">数据平台<span class="dot on"></span></button>
+        <button class="mode-btn" onclick="pickAccount(this, 'Trae · 实习账号')">实习账号<span class="dot"></span></button>
+      </div>
+
+      <!-- Qoder · 1 -->
+      <div class="group-card">
+        <div style="display:flex; align-items:center; gap:8px; padding:4px 8px; margin-bottom:4px;">
+          <span class="mark-sm" style="background:var(--brand-weak); color:var(--warn);">Q</span>
+          <span style="font-size:13px; font-weight:800; color:var(--text);">Qoder</span>
+          <span class="badge b-gray" style="margin-left:auto;">2</span>
+        </div>
+        <button class="mode-btn" onclick="pickAccount(this, 'Qoder · 主账号')">主账号<span class="dot"></span></button>
+        <button class="mode-btn" onclick="pickAccount(this, 'Qoder · 备用设备')">备用设备<span class="dot"></span></button>
+      </div>
+    </div>
+
+    <div class="subnav-foot">
+      <button class="side-add" onclick="showToast('接入新产品向导（演示）已启动')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><line x1="12" x2="12" y1="5" y2="19"/><line x1="5" x2="19" y1="12" y2="12"/></svg>
+        <span>接入新产品</span>
+      </button>
+      <div class="form-hint" style="margin-top:8px;">演示数据：ZCode 5 · WorkBuddy 4 · Trae 5 · Qoder 2</div>
+    </div>
+  </aside>
+
+  <!-- ============ 右：主区（纵向块间距 12） ============ -->
+  <main style="flex:1 1 320px; min-width:0; overflow-y:auto; padding:12px; background:var(--content);">
+    <div style="max-width:1180px; margin:0 auto; display:flex; flex-direction:column; gap:12px;">
+
+      <!-- 标注条 -->
+      <div style="font-size:12px; font-weight:600; color:var(--text-faint);">T-17 · 需求预演（演示数据） · 多端账号授权（产品×账号主从） · A · TB-3 · v1.0</div>
+
+      <!-- 形态预演声明 -->
+      <div class="alert alert-info" style="margin-bottom:0;">
+        <div class="alert-title">需求形态预演 · 非线上功能</div>
+        <div>本页数据为虚构演示数据。当前网关真实运行态：<span class="mono">1 个资源 / 1 个厂商 / 7 个系统模型</span>（<span class="mono">GET /admin/api/overview</span>），且不含任何产品级授权账号。</div>
+      </div>
+
+      <!-- 头卡：产品 logo + 名称 + 副行 + 徽章 + 操作 -->
+      <div class="card" style="display:flex; align-items:center; gap:12px; justify-content:space-between; flex-wrap:wrap;">
+        <div style="display:flex; align-items:center; gap:12px; min-width:0;">
+          <span class="logo-block dark">Z</span>
+          <div style="display:flex; flex-direction:column; gap:4px; min-width:0;">
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <span class="edit-name">ZCode（智谱）</span>
+              <span class="badge b-cool">openai</span>
+              <span class="badge b-purple">OAuth 设备码</span>
+              <span class="badge b-ok"><span class="dot on"></span>正常</span>
+            </div>
+            <div style="font-size:12px; font-weight:600; color:var(--text-faint);">openai 协议 · OAuth 设备码授权 · 5 个授权账号</div>
+            <div class="addr-group" style="margin-top:4px;">
+              <span class="addr-label">端点</span>
+              <span class="addr-value" style="display:inline-flex; align-items:center; gap:8px;">http://127.0.0.1:8300/v1
+                <button class="icon-btn sm" onclick="showToast('端点已复制到剪贴板')" title="复制端点">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+                </button>
+              </span>
+              <span class="addr-label">密钥</span>
+              <span class="addr-value mono">mg-3f9a****c7e8</span>
+            </div>
+          </div>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <button class="btn btn-primary" onclick="showToast('新增 ZCode 授权账号草稿已创建')">＋ 新增账号</button>
+          <button class="btn" onclick="showToast('已向该产品 5 个账号发起连通检测')">全部检测</button>
+        </div>
+      </div>
+
+      <!-- 状态演示切换器（右端 · 驱动 data-state） -->
+      <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+        <span style="font-size:12px; font-weight:700; color:var(--text-faint);">演示状态</span>
+        <div class="tabs" style="margin-left:auto; overflow-x:auto;">
+          <button class="tab active" data-state="default" onclick="setState('default')">默认</button>
+          <button class="tab" data-state="empty-first" onclick="setState('empty-first')">空·首用</button>
+          <button class="tab" data-state="empty-filter" onclick="setState('empty-filter')">空·筛选</button>
+          <button class="tab" data-state="loading" onclick="setState('loading')">加载</button>
+          <button class="tab" data-state="error" onclick="setState('error')">错误</button>
+          <button class="tab" data-state="restricted" onclick="setState('restricted')">受限</button>
+          <button class="tab" data-state="disabled" onclick="setState('disabled')">停用</button>
+        </div>
+      </div>
+
+      <!-- 停用态出口条（不随内容停用，保证每个状态都有出路） -->
+      <div id="bar-disabled-exit" class="card hidden" style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+        <span class="badge b-gray">产品接入已停用</span>
+        <span style="flex:1; min-width:0; font-size:12px; font-weight:600; color:var(--text-muted);">ZCode 的全部账号已停用，网关不再向该产品侧转发任何请求；恢复后额度与并发上限沿用停用前配置。</span>
+        <button class="btn btn-sm btn-primary" onclick="setState('default'); showToast('已恢复该产品接入')">恢复接入</button>
+        <button class="btn btn-sm" onclick="showToast('停用原因：手工停用（operator=admin@local）')">查看停用原因</button>
+      </div>
+
+      <!-- ================= 看板（页签行 + 五个面板） ================= -->
+      <div id="board" style="display:flex; flex-direction:column; gap:12px;">
+
+        <!-- TB-3 页签行（位置固定，切换不跳动） -->
+        <div class="tabs" id="subtabs" style="align-self:flex-start; overflow-x:auto;">
+          <button class="tab" id="tab-accounts" onclick="setTab('accounts')">账号</button>
+          <button class="tab" id="tab-auth" onclick="setTab('auth')">授权</button>
+          <button class="tab" id="tab-models" onclick="setTab('models')">模型</button>
+          <button class="tab" id="tab-health" onclick="setTab('health')">体检</button>
+          <button class="tab" id="tab-usage" onclick="setTab('usage')">用量</button>
+        </div>
+
+        <!-- ---------- 面板 1：账号 ---------- -->
+        <div id="panel-accounts" data-panel style="display:flex; flex-direction:column; gap:12px;">
+          <!-- 筛选 -->
+          <div class="card">
+            <div class="sec-head">
+              <span class="t">筛选</span>
+              <span class="d">共 16 个账号 · 4 个产品</span>
+            </div>
+            <div class="filter-grid">
+              <div class="form-row" style="gap:8px;">
+                <label for="f-kw">账号关键词</label>
+                <div class="input-group">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+                  <input id="f-kw" type="text" placeholder="按账号名 / 密钥片段过滤（如 MG-ACCT-7F2K9Q）">
+                </div>
+              </div>
+              <div class="form-row" style="gap:8px;">
+                <span style="font-size:13px; font-weight:700; color:var(--text-tertiary);">授权状态</span>
+                <div class="tabs">
+                  <button class="tab active" onclick="showToast('状态筛选：全部')">全部</button>
+                  <button class="tab" onclick="showToast('状态筛选：正常')">正常</button>
+                  <button class="tab" onclick="showToast('状态筛选：异常（冷却/401/受限）')">异常</button>
+                  <button class="tab" onclick="showToast('状态筛选：已停用')">停用</button>
+                </div>
+              </div>
+              <button class="btn btn-lg" onclick="showToast('筛选已应用：0 命中，见「空·筛选」演示态')">应用筛选</button>
+              <button class="btn btn-lg btn-ghost" onclick="showToast('筛选条件已清空')">重置</button>
+            </div>
+          </div>
+
+          <!-- 批量条 -->
+          <div id="bulkbar" class="bulk-bar hidden" style="margin-bottom:0;">
+            <span style="font-size:13px; font-weight:700; color:var(--text-soft);">已选 <span id="bulk-count" class="mono">0</span> 个账号</span>
+            <span style="display:flex; align-items:center; gap:8px;">
+              <button class="btn btn-sm" onclick="showToast('批量启用任务已提交')">批量启用</button>
+              <button class="btn btn-sm" onclick="showToast('批量停用任务已提交')">批量停用</button>
+              <button class="btn btn-sm btn-primary" onclick="showToast('批量连通检测已发起')">批量检测</button>
+              <button class="btn btn-sm btn-ghost" onclick="clearSelection()">取消选择</button>
+            </span>
+          </div>
+
+          <!-- 账号表 -->
+          <div class="card flush">
+            <div class="card-head inset">
+              <span class="card-title">授权账号</span>
+              <span class="value" style="margin-left:auto;">9 行 · 当前生效 ZCode · 主账号</span>
+              <button class="btn btn-sm btn-primary" onclick="showToast('新增 ZCode 授权账号草稿已创建')">＋ 新增账号</button>
+            </div>
+            <div class="table-wrap">
+              <table class="tbl">
+                <thead>
+                  <tr>
+                    <th class="sel"><input type="checkbox" onchange="toggleAll(this)" aria-label="全选"></th>
+                    <th style="min-width:240px;">账号（名称 · 当前生效）</th>
+                    <th>授权状态</th>
+                    <th>到期</th>
+                    <th style="min-width:180px;">额度</th>
+                    <th class="num">并发</th>
+                    <th>启停</th>
+                    <th class="num">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <!-- 1 -->
+                  <tr data-row="1" data-name="ZCode · 主账号" data-models="7" data-inflight="3">
+                    <td class="sel"><input type="checkbox" onchange="syncBulk()" aria-label="选择 ZCode 主账号"></td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <span class="mark-sm" style="background:var(--brand-weak); color:var(--g-coding);">Z</span>
+                        <div style="display:flex; flex-direction:column; gap:4px; min-width:0;">
+                          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                            <span style="font-size:13px; font-weight:700; color:var(--text);">ZCode · 主账号</span>
+                            <span class="badge b-brand">当前生效</span>
+                          </div>
+                          <span class="mono" style="font-size:11px; color:var(--text-faint);">mg-3f9a****c7e8</span>
+                        </div>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                        <span class="dot on"></span><span class="badge b-ok">正常</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; flex-direction:column; gap:4px;">
+                        <span class="mono" style="font-size:12px;">2026-10-01</span>
+                        <span style="font-size:11px; font-weight:600; color:var(--text-faint);">剩 8 天</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; flex-direction:column; gap:4px;">
+                        <div style="display:flex; align-items:center; gap:8px;">
+                          <div class="progress" style="flex:1;"><div class="progress-bar" style="width:87%;"></div></div>
+                          <span class="mono" style="font-size:11px; color:var(--text-muted);">87%</span>
+                        </div>
+                        <span style="font-size:11px; font-weight:600; color:var(--text-faint);">8,742 / 10,000 · 10-01 00:00 重置</span>
+                      </div>
+                    </td>
+                    <td class="num"><span class="mono" style="font-size:12px;">3 / 8</span></td>
+                    <td><div class="switch on" onclick="toggleSwitch(this)" role="switch" aria-checked="true" aria-label="启用 ZCode 主账号"></div></td>
+                    <td class="num">
+                      <div class="pos-wrap" style="display:inline-flex;">
+                        <button class="icon-btn" data-menu-btn data-row="1" onclick="toggleRowMenu(this)" title="更多操作">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+<tr data-row="10" data-name="ZCode · 运维值班" data-models="5" data-inflight="1">
+                    <td class="sel"><input type="checkbox" onchange="syncBulk()" aria-label="选择 ZCode 主账号"></td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <span class="mark-sm" style="background:var(--brand-weak); color:var(--g-coding);">Z</span>
+                        <div style="display:flex; flex-direction:column; gap:4px; min-width:0;">
+                          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                            <span style="font-size:13px; font-weight:700; color:var(--text);">ZCode · 运维值班</span>
+                            <span class="badge b-brand">当前生效</span>
+                          </div>
+                          <span class="mono" style="font-size:11px; color:var(--text-faint);">mg-3f9a****c7e8</span>
+                        </div>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                        <span class="dot on"></span><span class="badge b-ok">正常</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; flex-direction:column; gap:4px;">
+                        <span class="mono" style="font-size:12px;">2026-10-01</span>
+                        <span style="font-size:11px; font-weight:600; color:var(--text-faint);">剩 8 天</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; flex-direction:column; gap:4px;">
+                        <div style="display:flex; align-items:center; gap:8px;">
+                          <div class="progress" style="flex:1;"><div class="progress-bar" style="width:87%;"></div></div>
+                          <span class="mono" style="font-size:11px; color:var(--text-muted);">87%</span>
+                        </div>
+                        <span style="font-size:11px; font-weight:600; color:var(--text-faint);">8,742 / 10,000 · 10-01 00:00 重置</span>
+                      </div>
+                    </td>
+                    <td class="num"><span class="mono" style="font-size:12px;">3 / 8</span></td>
+                    <td><div class="switch on" onclick="toggleSwitch(this)" role="switch" aria-checked="true" aria-label="启用 ZCode 主账号"></div></td>
+                    <td class="num">
+                      <div class="pos-wrap" style="display:inline-flex;">
+                        <button class="icon-btn" data-menu-btn data-row="10" onclick="toggleRowMenu(this)" title="更多操作">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                  <!-- 2 -->
+                  <tr data-row="2" data-name="ZCode · 团队账号（智谱 MaaS 研发组共享调用池）" data-models="6" data-inflight="0">
+                    <td class="sel"><input type="checkbox" onchange="syncBulk()" aria-label="选择 ZCode 团队账号"></td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <span class="mark-sm" style="background:var(--brand-weak); color:var(--g-coding);">Z</span>
+                        <div style="display:flex; flex-direction:column; gap:4px; min-width:0;">
+                          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                            <span style="font-size:13px; font-weight:700; color:var(--text);">ZCode · 团队账号（智谱 MaaS 研发组共享调用池）</span>
+                          </div>
+                          <span class="mono" style="font-size:11px; color:var(--text-faint);">mg-3f9a****c7e8</span>
+                        </div>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                        <span class="dot"></span><span class="badge b-warn">冷却中 · 剩 128s</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; flex-direction:column; gap:4px;">
+                        <span class="mono" style="font-size:12px;">2026-09-30</span>
+                        <span style="font-size:11px; font-weight:600; color:var(--warn);">剩 7 天</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; flex-direction:column; gap:4px;">
+                        <div style="display:flex; align-items:center; gap:8px;">
+                          <div class="progress" style="flex:1;"><div class="progress-bar" style="width:21%;"></div></div>
+                          <span class="mono" style="font-size:11px; color:var(--text-muted);">21%</span>
+                        </div>
+                        <span style="font-size:11px; font-weight:600; color:var(--text-faint);">4,150 / 20,000 · 10-01 00:00 重置</span>
+                      </div>
+                    </td>
+                    <td class="num"><span class="mono" style="font-size:12px;">0 / 16</span></td>
+                    <td><div class="switch on" onclick="toggleSwitch(this)" role="switch" aria-checked="true" aria-label="启用 ZCode 团队账号"></div></td>
+                    <td class="num">
+                      <div class="pos-wrap" style="display:inline-flex;">
+                        <button class="icon-btn" data-menu-btn data-row="2" onclick="toggleRowMenu(this)" title="更多操作">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                  <!-- 3 -->
+                  <tr data-row="3" data-name="ZCode · 测试账号" data-models="2" data-inflight="0">
+                    <td class="sel"><input type="checkbox" onchange="syncBulk()" aria-label="选择 ZCode 测试账号"></td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <span class="mark-sm" style="background:var(--brand-weak); color:var(--g-coding);">Z</span>
+                        <div style="display:flex; flex-direction:column; gap:4px; min-width:0;">
+                          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                            <span style="font-size:13px; font-weight:700; color:var(--text);">ZCode · 测试账号</span>
+                          </div>
+                          <span class="mono" style="font-size:11px; color:var(--text-faint);">mg-3f9a****c7e8</span>
+                        </div>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                        <span class="dot"></span><span class="badge b-gray">已停用</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; flex-direction:column; gap:4px;">
+                        <span class="mono" style="font-size:12px;">2026-09-18</span>
+                        <span style="font-size:11px; font-weight:600; color:var(--err);">已过期 5 天</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; flex-direction:column; gap:4px;">
+                        <div style="display:flex; align-items:center; gap:8px;">
+                          <div class="progress" style="flex:1;"><div class="progress-bar" style="width:31%;"></div></div>
+                          <span class="mono" style="font-size:11px; color:var(--text-muted);">31%</span>
+                        </div>
+                        <span style="font-size:11px; font-weight:600; color:var(--text-faint);">620 / 2,000 · 停用不再重置</span>
+                      </div>
+                    </td>
+                    <td class="num"><span class="mono" style="font-size:12px;">0 / 4</span></td>
+                    <td><div class="switch" onclick="toggleSwitch(this)" role="switch" aria-checked="false" aria-label="启用 ZCode 测试账号"></div></td>
+                    <td class="num">
+                      <div class="pos-wrap" style="display:inline-flex;">
+                        <button class="icon-btn" data-menu-btn data-row="3" onclick="toggleRowMenu(this)" title="更多操作">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+<tr data-row="11" data-name="ZCode · 合作试用" data-models="2" data-inflight="0">
+                    <td class="sel"><input type="checkbox" onchange="syncBulk()" aria-label="选择 ZCode 测试账号"></td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <span class="mark-sm" style="background:var(--brand-weak); color:var(--g-coding);">Z</span>
+                        <div style="display:flex; flex-direction:column; gap:4px; min-width:0;">
+                          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                            <span style="font-size:13px; font-weight:700; color:var(--text);">ZCode · 合作试用</span>
+                          </div>
+                          <span class="mono" style="font-size:11px; color:var(--text-faint);">mg-3f9a****c7e8</span>
+                        </div>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                        <span class="dot"></span><span class="badge b-gray">已停用</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; flex-direction:column; gap:4px;">
+                        <span class="mono" style="font-size:12px;">2026-09-18</span>
+                        <span style="font-size:11px; font-weight:600; color:var(--err);">已过期 5 天</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; flex-direction:column; gap:4px;">
+                        <div style="display:flex; align-items:center; gap:8px;">
+                          <div class="progress" style="flex:1;"><div class="progress-bar" style="width:31%;"></div></div>
+                          <span class="mono" style="font-size:11px; color:var(--text-muted);">31%</span>
+                        </div>
+                        <span style="font-size:11px; font-weight:600; color:var(--text-faint);">620 / 2,000 · 停用不再重置</span>
+                      </div>
+                    </td>
+                    <td class="num"><span class="mono" style="font-size:12px;">0 / 4</span></td>
+                    <td><div class="switch" onclick="toggleSwitch(this)" role="switch" aria-checked="false" aria-label="启用 ZCode 测试账号"></div></td>
+                    <td class="num">
+                      <div class="pos-wrap" style="display:inline-flex;">
+                        <button class="icon-btn" data-menu-btn data-row="11" onclick="toggleRowMenu(this)" title="更多操作">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                  <!-- 4 -->
+                  <tr data-row="4" data-name="WorkBuddy · 主账号" data-models="5" data-inflight="1">
+                    <td class="sel"><input type="checkbox" onchange="syncBulk()" aria-label="选择 WorkBuddy 主账号"></td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <span class="mark-sm" style="background:var(--brand-weak); color:var(--g-generic);">W</span>
+                        <div style="display:flex; flex-direction:column; gap:4px; min-width:0;">
+                          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                            <span style="font-size:13px; font-weight:700; color:var(--text);">WorkBuddy · 主账号</span>
+                          </div>
+                          <span class="mono" style="font-size:11px; color:var(--text-faint);">mg-3f9a****c7e8</span>
+                        </div>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                        <span class="dot on"></span><span class="badge b-ok">正常</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; flex-direction:column; gap:4px;">
+                        <span class="mono" style="font-size:12px;">2026-12-31</span>
+                        <span style="font-size:11px; font-weight:600; color:var(--text-faint);">剩 99 天</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; flex-direction:column; gap:4px;">
+                        <div style="display:flex; align-items:center; gap:8px;">
+                          <div class="progress" style="flex:1;"><div class="progress-bar" style="width:2%;"></div></div>
+                          <span class="mono" style="font-size:11px; color:var(--text-muted);">2%</span>
+                        </div>
+                        <span style="font-size:11px; font-weight:600; color:var(--text-faint);">1,204 / 50,000 · 2027-01-01 00:00 重置</span>
+                      </div>
+                    </td>
+                    <td class="num"><span class="mono" style="font-size:12px;">1 / 32</span></td>
+                    <td><div class="switch on" onclick="toggleSwitch(this)" role="switch" aria-checked="true" aria-label="启用 WorkBuddy 主账号"></div></td>
+                    <td class="num">
+                      <div class="pos-wrap" style="display:inline-flex;">
+                        <button class="icon-btn" data-menu-btn data-row="4" onclick="toggleRowMenu(this)" title="更多操作">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+<tr data-row="12" data-name="WorkBuddy · 数据分析" data-models="4" data-inflight="0">
+                    <td class="sel"><input type="checkbox" onchange="syncBulk()" aria-label="选择 WorkBuddy 主账号"></td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <span class="mark-sm" style="background:var(--brand-weak); color:var(--g-generic);">W</span>
+                        <div style="display:flex; flex-direction:column; gap:4px; min-width:0;">
+                          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                            <span style="font-size:13px; font-weight:700; color:var(--text);">WorkBuddy · 数据分析</span>
+                          </div>
+                          <span class="mono" style="font-size:11px; color:var(--text-faint);">mg-3f9a****c7e8</span>
+                        </div>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                        <span class="dot on"></span><span class="badge b-ok">正常</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; flex-direction:column; gap:4px;">
+                        <span class="mono" style="font-size:12px;">2026-12-31</span>
+                        <span style="font-size:11px; font-weight:600; color:var(--text-faint);">剩 99 天</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; flex-direction:column; gap:4px;">
+                        <div style="display:flex; align-items:center; gap:8px;">
+                          <div class="progress" style="flex:1;"><div class="progress-bar" style="width:2%;"></div></div>
+                          <span class="mono" style="font-size:11px; color:var(--text-muted);">2%</span>
+                        </div>
+                        <span style="font-size:11px; font-weight:600; color:var(--text-faint);">1,204 / 50,000 · 2027-01-01 00:00 重置</span>
+                      </div>
+                    </td>
+                    <td class="num"><span class="mono" style="font-size:12px;">1 / 32</span></td>
+                    <td><div class="switch on" onclick="toggleSwitch(this)" role="switch" aria-checked="true" aria-label="启用 WorkBuddy 主账号"></div></td>
+                    <td class="num">
+                      <div class="pos-wrap" style="display:inline-flex;">
+                        <button class="icon-btn" data-menu-btn data-row="12" onclick="toggleRowMenu(this)" title="更多操作">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                  <!-- 5 -->
+                  <tr data-row="5" data-name="WorkBuddy · 插件沙箱账号" data-models="3" data-inflight="0">
+                    <td class="sel"><input type="checkbox" onchange="syncBulk()" aria-label="选择 WorkBuddy 插件沙箱账号"></td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <span class="mark-sm" style="background:var(--brand-weak); color:var(--g-generic);">W</span>
+                        <div style="display:flex; flex-direction:column; gap:4px; min-width:0;">
+                          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                            <span style="font-size:13px; font-weight:700; color:var(--text);">WorkBuddy · 插件沙箱账号</span>
+                          </div>
+                          <span class="mono" style="font-size:11px; color:var(--text-faint);">mg-3f9a****c7e8</span>
+                        </div>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                        <span class="dot"></span>
+                        <span class="badge b-warn">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:12px; height:12px;"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                          受限
+                        </span>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; flex-direction:column; gap:4px;">
+                        <span class="mono" style="font-size:12px;">2026-10-15</span>
+                        <span style="font-size:11px; font-weight:600; color:var(--text-faint);">剩 22 天</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; flex-direction:column; gap:4px;">
+                        <div style="display:flex; align-items:center; gap:8px;">
+                          <div class="progress" style="flex:1;"><div class="progress-bar" style="width:0%;"></div></div>
+                          <span class="mono" style="font-size:11px; color:var(--text-muted);">0%</span>
+                        </div>
+                        <span style="font-size:11px; font-weight:600; color:var(--text-faint);">0 / 5,000 · 沙箱未下发额度</span>
+                      </div>
+                    </td>
+                    <td class="num"><span class="mono" style="font-size:12px;">0 / 8</span></td>
+                    <td><div class="switch on" onclick="toggleSwitch(this)" role="switch" aria-checked="true" aria-label="启用 WorkBuddy 插件沙箱账号"></div></td>
+                    <td class="num">
+                      <div class="pos-wrap" style="display:inline-flex;">
+                        <button class="icon-btn" data-menu-btn data-row="5" onclick="toggleRowMenu(this)" title="更多操作">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+<tr data-row="13" data-name="WorkBuddy · 体验席位" data-models="2" data-inflight="0">
+                    <td class="sel"><input type="checkbox" onchange="syncBulk()" aria-label="选择 WorkBuddy 插件沙箱账号"></td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <span class="mark-sm" style="background:var(--brand-weak); color:var(--g-generic);">W</span>
+                        <div style="display:flex; flex-direction:column; gap:4px; min-width:0;">
+                          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                            <span style="font-size:13px; font-weight:700; color:var(--text);">WorkBuddy · 体验席位</span>
+                          </div>
+                          <span class="mono" style="font-size:11px; color:var(--text-faint);">mg-3f9a****c7e8</span>
+                        </div>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                        <span class="dot"></span>
+                        <span class="badge b-warn">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:12px; height:12px;"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                          受限
+                        </span>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; flex-direction:column; gap:4px;">
+                        <span class="mono" style="font-size:12px;">2026-10-15</span>
+                        <span style="font-size:11px; font-weight:600; color:var(--text-faint);">剩 22 天</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; flex-direction:column; gap:4px;">
+                        <div style="display:flex; align-items:center; gap:8px;">
+                          <div class="progress" style="flex:1;"><div class="progress-bar" style="width:0%;"></div></div>
+                          <span class="mono" style="font-size:11px; color:var(--text-muted);">0%</span>
+                        </div>
+                        <span style="font-size:11px; font-weight:600; color:var(--text-faint);">0 / 5,000 · 沙箱未下发额度</span>
+                      </div>
+                    </td>
+                    <td class="num"><span class="mono" style="font-size:12px;">0 / 8</span></td>
+                    <td><div class="switch on" onclick="toggleSwitch(this)" role="switch" aria-checked="true" aria-label="启用 WorkBuddy 插件沙箱账号"></div></td>
+                    <td class="num">
+                      <div class="pos-wrap" style="display:inline-flex;">
+                        <button class="icon-btn" data-menu-btn data-row="13" onclick="toggleRowMenu(this)" title="更多操作">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                  <!-- 6 -->
+                  <tr data-row="6" data-name="Trae · 主账号" data-models="7" data-inflight="6">
+                    <td class="sel"><input type="checkbox" onchange="syncBulk()" aria-label="选择 Trae 主账号"></td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <span class="mark-sm" style="background:var(--brand-weak); color:var(--text-muted);">T</span>
+                        <div style="display:flex; flex-direction:column; gap:4px; min-width:0;">
+                          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                            <span style="font-size:13px; font-weight:700; color:var(--text);">Trae · 主账号</span>
+                          </div>
+                          <span class="mono" style="font-size:11px; color:var(--text-faint);">mg-3f9a****c7e8</span>
+                        </div>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                        <span class="dot on"></span><span class="badge b-ok">正常</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; flex-direction:column; gap:4px;">
+                        <span class="mono" style="font-size:12px;">2026-10-08</span>
+                        <span style="font-size:11px; font-weight:600; color:var(--text-faint);">剩 15 天</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; flex-direction:column; gap:4px;">
+                        <div style="display:flex; align-items:center; gap:8px;">
+                          <div class="progress" style="flex:1;"><div class="progress-bar" style="width:73%;"></div></div>
+                          <span class="mono" style="font-size:11px; color:var(--text-muted);">73%</span>
+                        </div>
+                        <span style="font-size:11px; font-weight:600; color:var(--text-faint);">21,986 / 30,000 · 10-08 00:00 重置</span>
+                      </div>
+                    </td>
+                    <td class="num"><span class="mono" style="font-size:12px;">6 / 24</span></td>
+                    <td><div class="switch on" onclick="toggleSwitch(this)" role="switch" aria-checked="true" aria-label="启用 Trae 主账号"></div></td>
+                    <td class="num">
+                      <div class="pos-wrap" style="display:inline-flex;">
+                        <button class="icon-btn" data-menu-btn data-row="6" onclick="toggleRowMenu(this)" title="更多操作">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+<tr data-row="14" data-name="Trae · 数据平台" data-models="5" data-inflight="2">
+                    <td class="sel"><input type="checkbox" onchange="syncBulk()" aria-label="选择 Trae 主账号"></td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <span class="mark-sm" style="background:var(--brand-weak); color:var(--text-muted);">T</span>
+                        <div style="display:flex; flex-direction:column; gap:4px; min-width:0;">
+                          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                            <span style="font-size:13px; font-weight:700; color:var(--text);">Trae · 数据平台</span>
+                          </div>
+                          <span class="mono" style="font-size:11px; color:var(--text-faint);">mg-3f9a****c7e8</span>
+                        </div>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                        <span class="dot on"></span><span class="badge b-ok">正常</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; flex-direction:column; gap:4px;">
+                        <span class="mono" style="font-size:12px;">2026-10-08</span>
+                        <span style="font-size:11px; font-weight:600; color:var(--text-faint);">剩 15 天</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; flex-direction:column; gap:4px;">
+                        <div style="display:flex; align-items:center; gap:8px;">
+                          <div class="progress" style="flex:1;"><div class="progress-bar" style="width:73%;"></div></div>
+                          <span class="mono" style="font-size:11px; color:var(--text-muted);">73%</span>
+                        </div>
+                        <span style="font-size:11px; font-weight:600; color:var(--text-faint);">21,986 / 30,000 · 10-08 00:00 重置</span>
+                      </div>
+                    </td>
+                    <td class="num"><span class="mono" style="font-size:12px;">6 / 24</span></td>
+                    <td><div class="switch on" onclick="toggleSwitch(this)" role="switch" aria-checked="true" aria-label="启用 Trae 主账号"></div></td>
+                    <td class="num">
+                      <div class="pos-wrap" style="display:inline-flex;">
+                        <button class="icon-btn" data-menu-btn data-row="14" onclick="toggleRowMenu(this)" title="更多操作">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                  <!-- 7：长名称 + 4 个徽章，压布局 -->
+                  <tr data-row="7" data-name="Trae · 团队账号 A（字节跳动飞书研发中台共用池）" data-models="6" data-inflight="0">
+                    <td class="sel"><input type="checkbox" onchange="syncBulk()" aria-label="选择 Trae 团队账号 A"></td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <span class="mark-sm" style="background:var(--brand-weak); color:var(--text-muted);">T</span>
+                        <div style="display:flex; flex-direction:column; gap:4px; min-width:0;">
+                          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                            <span style="font-size:13px; font-weight:700; color:var(--text);">Trae · 团队账号 A（字节跳动飞书研发中台共用池）</span>
+                          </div>
+                          <div style="display:flex; align-items:center; gap:4px; flex-wrap:wrap;">
+                            <span class="badge b-cool">openai</span>
+                            <span class="badge b-purple">OAuth 设备码</span>
+                            <span class="badge b-gray">只读令牌</span>
+                            <span class="badge b-brand">自动故障转移</span>
+                          </div>
+                          <span class="mono" style="font-size:11px; color:var(--text-faint);">mg-3f9a****c7e8</span>
+                        </div>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                        <span class="dot"></span><span class="badge b-err">无效 401</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; flex-direction:column; gap:4px;">
+                        <span class="mono" style="font-size:12px;">2026-11-11</span>
+                        <span style="font-size:11px; font-weight:600; color:var(--text-faint);">剩 49 天</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; flex-direction:column; gap:4px;">
+                        <div style="display:flex; align-items:center; gap:8px;">
+                          <div class="progress" style="flex:1;"><div class="progress-bar" style="width:30%;"></div></div>
+                          <span class="mono" style="font-size:11px; color:var(--text-muted);">30%</span>
+                        </div>
+                        <span style="font-size:11px; font-weight:600; color:var(--text-faint);">12,004 / 40,000 · 11-11 00:00 重置</span>
+                      </div>
+                    </td>
+                    <td class="num"><span class="mono" style="font-size:12px;">0 / 24</span></td>
+                    <td><div class="switch on" onclick="toggleSwitch(this)" role="switch" aria-checked="true" aria-label="启用 Trae 团队账号 A"></div></td>
+                    <td class="num">
+                      <div class="pos-wrap" style="display:inline-flex;">
+                        <button class="icon-btn" data-menu-btn data-row="7" onclick="toggleRowMenu(this)" title="更多操作">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                  <!-- 8：超额 -->
+                  <tr data-row="8" data-name="Trae · 试用账号" data-models="4" data-inflight="0">
+                    <td class="sel"><input type="checkbox" onchange="syncBulk()" aria-label="选择 Trae 试用账号"></td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <span class="mark-sm" style="background:var(--brand-weak); color:var(--text-muted);">T</span>
+                        <div style="display:flex; flex-direction:column; gap:4px; min-width:0;">
+                          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                            <span style="font-size:13px; font-weight:700; color:var(--text);">Trae · 试用账号</span>
+                          </div>
+                          <span class="mono" style="font-size:11px; color:var(--text-faint);">mg-3f9a****c7e8</span>
+                        </div>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                        <span class="dot on"></span><span class="badge b-ok">正常</span><span class="badge b-err">额度已超额</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; flex-direction:column; gap:4px;">
+                        <span class="mono" style="font-size:12px;">2026-09-28</span>
+                        <span style="font-size:11px; font-weight:600; color:var(--err);">剩 5 天</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; flex-direction:column; gap:4px;">
+                        <div style="display:flex; align-items:center; gap:8px;">
+                          <div class="progress" style="flex:1;"><div class="progress-bar" style="width:99%; background:var(--err);"></div></div>
+                          <span class="mono" style="font-size:11px; color:var(--err);">99%</span>
+                        </div>
+                        <span style="font-size:11px; font-weight:600; color:var(--text-faint);">9,860 / 10,000 · 09-28 00:00 重置</span>
+                      </div>
+                    </td>
+                    <td class="num"><span class="mono" style="font-size:12px;">0 / 4</span></td>
+                    <td><div class="switch on" onclick="toggleSwitch(this)" role="switch" aria-checked="true" aria-label="启用 Trae 试用账号"></div></td>
+                    <td class="num">
+                      <div class="pos-wrap" style="display:inline-flex;">
+                        <button class="icon-btn" data-menu-btn data-row="8" onclick="toggleRowMenu(this)" title="更多操作">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+<tr data-row="15" data-name="Trae · 实习账号" data-models="3" data-inflight="0">
+                    <td class="sel"><input type="checkbox" onchange="syncBulk()" aria-label="选择 Trae 试用账号"></td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <span class="mark-sm" style="background:var(--brand-weak); color:var(--text-muted);">T</span>
+                        <div style="display:flex; flex-direction:column; gap:4px; min-width:0;">
+                          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                            <span style="font-size:13px; font-weight:700; color:var(--text);">Trae · 实习账号</span>
+                          </div>
+                          <span class="mono" style="font-size:11px; color:var(--text-faint);">mg-3f9a****c7e8</span>
+                        </div>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                        <span class="dot on"></span><span class="badge b-ok">正常</span><span class="badge b-err">额度已超额</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; flex-direction:column; gap:4px;">
+                        <span class="mono" style="font-size:12px;">2026-09-28</span>
+                        <span style="font-size:11px; font-weight:600; color:var(--err);">剩 5 天</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; flex-direction:column; gap:4px;">
+                        <div style="display:flex; align-items:center; gap:8px;">
+                          <div class="progress" style="flex:1;"><div class="progress-bar" style="width:99%; background:var(--err);"></div></div>
+                          <span class="mono" style="font-size:11px; color:var(--err);">99%</span>
+                        </div>
+                        <span style="font-size:11px; font-weight:600; color:var(--text-faint);">9,860 / 10,000 · 09-28 00:00 重置</span>
+                      </div>
+                    </td>
+                    <td class="num"><span class="mono" style="font-size:12px;">0 / 4</span></td>
+                    <td><div class="switch on" onclick="toggleSwitch(this)" role="switch" aria-checked="true" aria-label="启用 Trae 试用账号"></div></td>
+                    <td class="num">
+                      <div class="pos-wrap" style="display:inline-flex;">
+                        <button class="icon-btn" data-menu-btn data-row="15" onclick="toggleRowMenu(this)" title="更多操作">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                  <!-- 9 -->
+                  <tr data-row="9" data-name="Qoder · 主账号" data-models="3" data-inflight="0">
+                    <td class="sel"><input type="checkbox" onchange="syncBulk()" aria-label="选择 Qoder 主账号"></td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <span class="mark-sm" style="background:var(--brand-weak); color:var(--warn);">Q</span>
+                        <div style="display:flex; flex-direction:column; gap:4px; min-width:0;">
+                          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                            <span style="font-size:13px; font-weight:700; color:var(--text);">Qoder · 主账号</span>
+                          </div>
+                          <span class="mono" style="font-size:11px; color:var(--text-faint);">mg-3f9a****c7e8</span>
+                        </div>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                        <span class="dot"></span><span class="badge b-gray">已停用</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; flex-direction:column; gap:4px;">
+                        <span class="mono" style="font-size:12px;">2026-09-20</span>
+                        <span style="font-size:11px; font-weight:600; color:var(--err);">已过期 3 天</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; flex-direction:column; gap:4px;">
+                        <div style="display:flex; align-items:center; gap:8px;">
+                          <div class="progress" style="flex:1;"><div class="progress-bar" style="width:30%;"></div></div>
+                          <span class="mono" style="font-size:11px; color:var(--text-muted);">30%</span>
+                        </div>
+                        <span style="font-size:11px; font-weight:600; color:var(--text-faint);">300 / 1,000 · 停用不再重置</span>
+                      </div>
+                    </td>
+                    <td class="num"><span class="mono" style="font-size:12px;">0 / 4</span></td>
+                    <td><div class="switch" onclick="toggleSwitch(this)" role="switch" aria-checked="false" aria-label="启用 Qoder 主账号"></div></td>
+                    <td class="num">
+                      <div class="pos-wrap" style="display:inline-flex;">
+                        <button class="icon-btn" data-menu-btn data-row="9" onclick="toggleRowMenu(this)" title="更多操作">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+<tr data-row="16" data-name="Qoder · 备用设备" data-models="2" data-inflight="0">
+                    <td class="sel"><input type="checkbox" onchange="syncBulk()" aria-label="选择 Qoder 主账号"></td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <span class="mark-sm" style="background:var(--brand-weak); color:var(--warn);">Q</span>
+                        <div style="display:flex; flex-direction:column; gap:4px; min-width:0;">
+                          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                            <span style="font-size:13px; font-weight:700; color:var(--text);">Qoder · 备用设备</span>
+                          </div>
+                          <span class="mono" style="font-size:11px; color:var(--text-faint);">mg-3f9a****c7e8</span>
+                        </div>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                        <span class="dot"></span><span class="badge b-gray">已停用</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; flex-direction:column; gap:4px;">
+                        <span class="mono" style="font-size:12px;">2026-09-20</span>
+                        <span style="font-size:11px; font-weight:600; color:var(--err);">已过期 3 天</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; flex-direction:column; gap:4px;">
+                        <div style="display:flex; align-items:center; gap:8px;">
+                          <div class="progress" style="flex:1;"><div class="progress-bar" style="width:30%;"></div></div>
+                          <span class="mono" style="font-size:11px; color:var(--text-muted);">30%</span>
+                        </div>
+                        <span style="font-size:11px; font-weight:600; color:var(--text-faint);">300 / 1,000 · 停用不再重置</span>
+                      </div>
+                    </td>
+                    <td class="num"><span class="mono" style="font-size:12px;">0 / 4</span></td>
+                    <td><div class="switch" onclick="toggleSwitch(this)" role="switch" aria-checked="false" aria-label="启用 Qoder 主账号"></div></td>
+                    <td class="num">
+                      <div class="pos-wrap" style="display:inline-flex;">
+                        <button class="icon-btn" data-menu-btn data-row="16" onclick="toggleRowMenu(this)" title="更多操作">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="pager">
+            <span>共 9 条 · 每页 20 条</span>
+            <button class="btn btn-sm" disabled>上一页</button>
+            <button class="btn btn-sm" disabled>下一页</button>
+          </div>
+        </div>
+
+        <!-- ---------- 面板 2：授权（两步式登录） ---------- -->
+        <div id="panel-auth" data-panel class="hidden" style="display:flex; flex-direction:column; gap:12px;">
+          <div class="split-50">
+            <!-- 左：两步式登录 -->
+            <div class="card">
+              <div class="sec-head">
+                <span class="t">两步式登录授权</span>
+                <span class="d">OAuth 设备码 · 有效期 600s</span>
+              </div>
+              <div class="timeline">
+                <div class="tl-item ok">
+                  <div class="tl-time">Step 1 · 已完成</div>
+                  <div class="tl-title">生成登录地址</div>
+                  <div class="tl-desc">网关已向产品侧申请设备码 <span class="mono">MG-ACCT-7F2K9Q</span></div>
+                </div>
+                <div class="tl-item">
+                  <div class="tl-time">Step 2 · 待完成</div>
+                  <div class="tl-title">浏览器内确认授权</div>
+                  <div class="tl-desc">打开 loginUrl，在产品侧页面点「允许」，勾选将要下放的模型范围</div>
+                </div>
+                <div class="tl-item">
+                  <div class="tl-time">Step 3 · 待完成</div>
+                  <div class="tl-title">回填凭据至网关</div>
+                  <div class="tl-desc">网关轮询授权结果，写回 refresh_token 并立即做一次连通体检</div>
+                </div>
+              </div>
+
+              <div class="form-row">
+                <label>登录地址 loginUrl</label>
+                <div class="addr-group">
+                  <span class="addr-value" style="display:inline-flex; align-items:center; gap:8px; word-break:break-all;">http://127.0.0.1:8300/admin/oauth/device?product=zcode&amp;code=MG-ACCT-7F2K9Q
+                    <button class="icon-btn sm" onclick="showToast('loginUrl 已复制到剪贴板')" title="复制登录地址">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+                    </button>
+                  </span>
+                </div>
+              </div>
+              <div class="form-hint">授权态三态演示（点击右侧按钮切换）：待授权 → 授权中 → 成功 / 失败。</div>
+
+              <!-- 演示态切换 -->
+              <div class="tabs" style="align-self:flex-start;">
+                <button class="tab active" id="atab-idle" onclick="setAuth('idle')">待授权</button>
+                <button class="tab" id="atab-pending" onclick="setAuth('pending')">授权中</button>
+                <button class="tab" id="atab-ok" onclick="setAuth('ok')">成功</button>
+                <button class="tab" id="atab-err" onclick="setAuth('err')">失败</button>
+              </div>
+
+              <!-- 态 1：待授权 -->
+              <div id="auth-idle" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                <button class="btn btn-primary" onclick="setAuth('pending')">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px; height:14px;"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" x2="3" y1="12" y2="12"/></svg>
+                  点击授权
+                </button>
+                <span style="font-size:12px; font-weight:600; color:var(--text-faint);">尚未开始授权 · 设备码 600s 后失效</span>
+              </div>
+
+              <!-- 态 2：授权中 -->
+              <div id="auth-pending" class="hidden" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                <span class="badge b-cool">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:12px; height:12px;"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                  等待授权中…
+                </span>
+                <span style="font-size:12px; font-weight:600; color:var(--text-faint);">已轮询 12 次 · 剩余等待 480s</span>
+                <button class="btn btn-sm" onclick="setAuth('ok')">模拟用户确认</button>
+                <button class="btn btn-sm btn-ghost" onclick="setAuth('err')">模拟超时</button>
+              </div>
+
+              <!-- 态 3：成功 -->
+              <div id="auth-ok" class="hidden" style="display:flex; flex-direction:column; gap:8px;">
+                <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                  <span class="badge b-ok">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:12px; height:12px;"><path d="M20 6 9 17l-5-5"/></svg>
+                    授权成功
+                  </span>
+                  <span class="mono" style="font-size:12px; color:var(--text-muted);">access_token 剩余 7,182s · refresh_token 有效期 30 天</span>
+                </div>
+                <div class="alert alert-warn" style="margin-bottom:0;">
+                  <div class="alert-title">还有一步：模型范围待取证</div>
+                  <div>授权已生效，但该账号下 <span class="mono">7</span> 个模型的上下文 / 最大输出 / 工具调用能力尚未核实，建议执行「全部检测」补全。</div>
+                </div>
+                <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                  <button class="btn btn-sm btn-primary" onclick="showToast('已发起 7 个模型的能力取证')">立即取证</button>
+                  <button class="btn btn-sm" onclick="setAuth('idle')">重新授权</button>
+                </div>
+              </div>
+
+              <!-- 态 4：失败 -->
+              <div id="auth-err" class="hidden" style="display:flex; flex-direction:column; gap:8px;">
+                <div class="alert alert-err" style="margin-bottom:0;">
+                  <div class="alert-title"><span class="mono">MG-OAUTH-408</span> · 授权等待超时</div>
+                  <div>设备码 <span class="mono">MG-ACCT-7F2K9Q</span> 已过期（<span class="mono">expires_in=600s</span>）；用户在产品侧未完成确认。</div>
+                </div>
+                <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                  <button class="btn btn-sm btn-primary" onclick="setAuth('pending')">重试授权</button>
+                  <button class="btn btn-sm" onclick="setAuth('idle')">重新生成设备码</button>
+                  <button class="btn btn-sm btn-ghost" onclick="showToast('已切换到 API Key 手动接入')">改用手动接入</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- 右：已授权凭据 + 调用示例 -->
+            <div class="card">
+              <div class="sec-head">
+                <span class="t">已授权凭据</span>
+                <span class="d">密钥一律脱敏显示</span>
+              </div>
+              <div class="list-card">
+                <div class="list-row">
+                  <span class="logo-block" style="width:20px; height:20px; border-radius:var(--radius-sm);">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"/><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"/></svg>
+                  </span>
+                  <div style="display:flex; flex-direction:column; gap:4px; min-width:0;">
+                    <span style="font-size:13px; font-weight:700; color:var(--text);">ZCode · 主账号</span>
+                    <span class="mono" style="font-size:11px; color:var(--text-faint);">mg-3f9a****c7e8</span>
+                  </div>
+                  <span class="badge b-ok" style="margin-left:auto;">已接入</span>
+                  <button class="icon-btn" onclick="showToast('凭据已复制到剪贴板')" title="复制">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+                  </button>
+                </div>
+                <div class="list-row">
+                  <span class="logo-block" style="width:20px; height:20px; border-radius:var(--radius-sm);">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"/><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"/></svg>
+                  </span>
+                  <div style="display:flex; flex-direction:column; gap:4px; min-width:0;">
+                    <span style="font-size:13px; font-weight:700; color:var(--text);">Trae · 团队账号 A</span>
+                    <span class="mono" style="font-size:11px; color:var(--text-faint);">mg-3f9a****c7e8</span>
+                  </div>
+                  <span class="badge b-err" style="margin-left:auto;">无效 401</span>
+                  <button class="icon-btn" onclick="showToast('凭据已复制到剪贴板')" title="复制">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+                  </button>
+                </div>
+              </div>
+
+              <div class="sec-head" style="margin-top:12px;">
+                <span class="t">网关侧调用示例</span>
+                <span class="d">走统一网关端点，与上游产品解耦</span>
+              </div>
+              <div class="code-tabs">
+                <button class="code-tab active" id="ctab-curl" onclick="setSnippet('curl')">cURL</button>
+                <button class="code-tab" id="ctab-py" onclick="setSnippet('py')">Python</button>
+              </div>
+              <div class="code-block" id="snippet">curl -sS http://127.0.0.1:8300/v1/chat/completions \
+  -H "Authorization: Bearer mg-3f9a****c7e8" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"ping"}]}'</div>
+              <div class="form-hint">下游只认网关端点与系统模型名；上游哪个产品的哪个账号承接，由网关按权重 / 额度 / 健康度调度。</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ---------- 面板 3：模型（可用范围 + 覆盖矩阵） ---------- -->
+        <div id="panel-models" data-panel class="hidden" style="display:flex; flex-direction:column; gap:12px;">
+          <div class="card flush">
+            <div class="card-head inset">
+              <span class="card-title">可用模型范围</span>
+              <span class="value">产品内模型名 → 系统模型池（7 个）</span>
+              <span style="margin-left:auto; display:flex; align-items:center; gap:8px;">
+                <span class="badge b-gray">未核实项不下发到拓扑</span>
+                <button class="btn btn-sm btn-primary" onclick="showToast('已发起 8 条映射的能力取证')">取证刷新</button>
+              </span>
+            </div>
+            <div class="table-wrap">
+              <table class="tbl">
+                <thead>
+                  <tr>
+                    <th>产品内模型名</th>
+                    <th>映射到的系统模型</th>
+                    <th>分组</th>
+                    <th class="num">上下文</th>
+                    <th class="num">最大输出</th>
+                    <th>模态</th>
+                    <th>推理</th>
+                    <th>工具调用</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td class="mono">zcode-glm-coding-max</td>
+                    <td class="mono">glm-5.2</td>
+                    <td><span class="badge b-purple">编程</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">131,072</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">32,768</span></td>
+                    <td><span style="font-size:12px; font-weight:600; color:var(--text-muted);">文本</span></td>
+                    <td><span style="font-size:13px; font-weight:800; color:var(--ok);">✓</span></td>
+                    <td><span style="font-size:13px; font-weight:800; color:var(--ok);">✓</span></td>
+                  </tr>
+                  <tr>
+                    <td class="mono">zcode-glm-flash</td>
+                    <td class="mono">deepseek-v4-flash</td>
+                    <td><span class="badge b-cool">通用</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">65,536</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">8,192</span></td>
+                    <td><span style="font-size:12px; font-weight:600; color:var(--text-muted);">文本</span></td>
+                    <td><span style="font-size:13px; font-weight:800; color:var(--ok);">✓</span></td>
+                    <td><span style="font-size:13px; font-weight:800; color:var(--text-tertiary);">—</span></td>
+                  </tr>
+                  <tr>
+                    <td class="mono">workbuddy-generic-turbo</td>
+                    <td class="mono">deepseek-v4-flash</td>
+                    <td><span class="badge b-cool">通用</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">65,536</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">8,192</span></td>
+                    <td><span style="font-size:12px; font-weight:600; color:var(--text-muted);">文本</span></td>
+                    <td><span style="font-size:13px; font-weight:800; color:var(--text-tertiary);">—</span></td>
+                    <td><span style="font-size:13px; font-weight:800; color:var(--ok);">✓</span></td>
+                  </tr>
+                  <tr>
+                    <td class="mono">workbuddy-vision-u1</td>
+                    <td class="mono">sensenova-u1.5-lite</td>
+                    <td><span class="badge b-ok">图像生成</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">32,768</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">4,096</span></td>
+                    <td><span style="font-size:12px; font-weight:600; color:var(--text-muted);">多模态</span></td>
+                    <td><span style="font-size:13px; font-weight:800; color:var(--text-tertiary);">—</span></td>
+                    <td><span style="font-size:13px; font-weight:800; color:var(--text-tertiary);">—</span></td>
+                  </tr>
+                  <tr>
+                    <td class="mono">trae-code-pro</td>
+                    <td class="mono">deepseek-v4-pro</td>
+                    <td><span class="badge b-purple">编程</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">131,072</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">16,384</span></td>
+                    <td><span style="font-size:12px; font-weight:600; color:var(--text-muted);">文本</span></td>
+                    <td><span style="font-size:13px; font-weight:800; color:var(--ok);">✓</span></td>
+                    <td><span style="font-size:13px; font-weight:800; color:var(--ok);">✓</span></td>
+                  </tr>
+                  <tr>
+                    <td class="mono">trae-free-activity</td>
+                    <td class="mono">kimi-k3</td>
+                    <td><span class="badge b-gray">免费活动</span></td>
+                    <td class="num"><span class="badge b-gray">未核实</span></td>
+                    <td class="num"><span class="badge b-gray">未核实</span></td>
+                    <td><span class="badge b-gray">未核实</span></td>
+                    <td><span class="badge b-gray">未核实</span></td>
+                    <td><span class="badge b-gray">未核实</span></td>
+                  </tr>
+                  <tr>
+                    <td class="mono">qoder-lite-fast</td>
+                    <td class="mono">sensenova-u1-fast</td>
+                    <td><span class="badge b-cool">通用</span></td>
+                    <td class="num"><span class="badge b-gray">未核实</span></td>
+                    <td class="num"><span class="badge b-gray">未核实</span></td>
+                    <td><span style="font-size:12px; font-weight:600; color:var(--text-muted);">多模态</span></td>
+                    <td><span style="font-size:13px; font-weight:800; color:var(--text-tertiary);">—</span></td>
+                    <td><span class="badge b-gray">未核实</span></td>
+                  </tr>
+                  <tr>
+                    <td class="mono">qoder-long-context</td>
+                    <td class="mono">sensenova-6.8-flash-lite</td>
+                    <td><span class="badge b-cool">通用</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">262,144</span></td>
+                    <td class="num"><span class="badge b-gray">未核实</span></td>
+                    <td><span style="font-size:12px; font-weight:600; color:var(--text-muted);">文本</span></td>
+                    <td><span style="font-size:13px; font-weight:800; color:var(--text-tertiary);">—</span></td>
+                    <td><span style="font-size:13px; font-weight:800; color:var(--ok);">✓</span></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="sec-head">
+              <span class="t">产品 × 系统模型覆盖矩阵</span>
+              <span class="d">✓= 至少一个账号可用 · —= 无账号映射</span>
+            </div>
+            <div class="matrix-container">
+              <table class="matrix-table">
+                <thead>
+                  <tr>
+                    <th>系统模型（网关池）</th>
+                    <th>ZCode</th>
+                    <th>WorkBuddy</th>
+                    <th>Trae</th>
+                    <th>Qoder</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td class="mono">sensenova-6.8-flash-lite</td>
+                    <td><span style="color:var(--text-faint);">—</span></td>
+                    <td><span style="color:var(--text-faint);">—</span></td>
+                    <td><span style="color:var(--text-faint);">—</span></td>
+                    <td><span style="color:var(--ok); font-weight:800;">✓</span></td>
+                  </tr>
+                  <tr>
+                    <td class="mono">deepseek-v4-flash</td>
+                    <td><span style="color:var(--ok); font-weight:800;">✓</span></td>
+                    <td><span style="color:var(--ok); font-weight:800;">✓</span></td>
+                    <td><span style="color:var(--text-faint);">—</span></td>
+                    <td><span style="color:var(--text-faint);">—</span></td>
+                  </tr>
+                  <tr>
+                    <td class="mono">deepseek-v4-pro</td>
+                    <td><span style="color:var(--text-faint);">—</span></td>
+                    <td><span style="color:var(--text-faint);">—</span></td>
+                    <td><span style="color:var(--ok); font-weight:800;">✓</span></td>
+                    <td><span style="color:var(--text-faint);">—</span></td>
+                  </tr>
+                  <tr>
+                    <td class="mono">glm-5.2</td>
+                    <td><span style="color:var(--ok); font-weight:800;">✓</span></td>
+                    <td><span style="color:var(--text-faint);">—</span></td>
+                    <td><span style="color:var(--text-faint);">—</span></td>
+                    <td><span style="color:var(--text-faint);">—</span></td>
+                  </tr>
+                  <tr>
+                    <td class="mono">kimi-k3</td>
+                    <td><span style="color:var(--text-faint);">—</span></td>
+                    <td><span style="color:var(--text-faint);">—</span></td>
+                    <td><span style="color:var(--ok); font-weight:800;">✓</span></td>
+                    <td><span style="color:var(--text-faint);">—</span></td>
+                  </tr>
+                  <tr>
+                    <td class="mono">sensenova-u1-fast</td>
+                    <td><span style="color:var(--text-faint);">—</span></td>
+                    <td><span style="color:var(--text-faint);">—</span></td>
+                    <td><span style="color:var(--text-faint);">—</span></td>
+                    <td><span style="color:var(--ok); font-weight:800;">✓</span></td>
+                  </tr>
+                  <tr>
+                    <td class="mono">sensenova-u1.5-lite</td>
+                    <td><span style="color:var(--text-faint);">—</span></td>
+                    <td><span style="color:var(--ok); font-weight:800;">✓</span></td>
+                    <td><span style="color:var(--text-faint);">—</span></td>
+                    <td><span style="color:var(--text-faint);">—</span></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="form-hint" style="margin-top:12px;">同一系统模型可被多个产品承接（如 deepseek-v4-flash 由 ZCode 与 WorkBuddy 双供给），网关按健康度自动切换。</div>
+          </div>
+        </div>
+
+        <!-- ---------- 面板 4：体检 ---------- -->
+        <div id="panel-health" data-panel class="hidden" style="display:flex; flex-direction:column; gap:12px;">
+          <div class="card flush">
+            <div class="card-head inset">
+              <span class="card-title">逐账号连通体检</span>
+              <span class="value">最近一轮 2026-09-23 14:02:11</span>
+              <span style="margin-left:auto; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                <span class="badge b-ok">全部通过 7</span>
+                <span class="badge b-warn">部分通过 4</span>
+                <span class="badge b-err">失败 5</span>
+                <button class="btn btn-sm btn-primary" id="btn-probe-all" onclick="runAllProbe()">全部检测</button>
+              </span>
+            </div>
+            <div class="table-wrap">
+              <table class="tbl">
+                <thead>
+                  <tr>
+                    <th style="min-width:200px;">账号</th>
+                    <th>体检结果</th>
+                    <th class="num">延迟</th>
+                    <th style="min-width:220px;">错误摘要</th>
+                    <th>最近检测</th>
+                    <th class="num">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><span style="font-size:13px; font-weight:600; color:var(--text);">ZCode · 主账号</span></td>
+                    <td><span class="badge b-ok">全部通过</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px; color:var(--ok);">312 ms</span></td>
+                    <td><span style="font-size:12px; color:var(--text-faint); font-weight:600;">无错误记录</span></td>
+                    <td><span class="mono" style="font-size:12px;">14:02:11</span></td>
+                    <td class="num"><button class="icon-btn" onclick="showToast('已重测 ZCode · 主账号')" title="重测">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+                    </button></td>
+                  </tr>
+                  <tr>
+                    <td><span style="font-size:13px; font-weight:600; color:var(--text);">ZCode · 运维值班</span></td>
+                    <td><span class="badge b-ok">全部通过</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px; color:var(--ok);">289 ms</span></td>
+                    <td><span style="font-size:12px; color:var(--text-faint); font-weight:600;">无错误记录</span></td>
+                    <td><span class="mono" style="font-size:12px;">14:02:11</span></td>
+                    <td class="num"><button class="icon-btn" onclick="showToast('已重测 ZCode · 运维值班')" title="重测">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+                    </button></td>
+                  </tr>
+                  <tr>
+                    <td><span style="font-size:13px; font-weight:600; color:var(--text);">ZCode · 团队账号</span></td>
+                    <td><span class="badge b-warn">部分通过</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px; color:var(--warn);">1,284 ms</span></td>
+                    <td><span class="mono" style="font-size:12px; color:var(--warn);">429 Rate limited · 冷却剩 128s</span></td>
+                    <td><span class="mono" style="font-size:12px;">14:02:11</span></td>
+                    <td class="num"><button class="icon-btn" onclick="showToast('已重测 ZCode · 团队账号')" title="重测">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+                    </button></td>
+                  </tr>
+                  <tr>
+                    <td><span style="font-size:13px; font-weight:600; color:var(--text);">ZCode · 测试账号</span></td>
+                    <td><span class="badge b-err">失败</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px; color:var(--text-faint);">未检测</span></td>
+                    <td><span class="mono" style="font-size:12px; color:var(--text-faint);">账号已停用 · 已跳过拨测</span></td>
+                    <td><span class="mono" style="font-size:12px;">14:02:11</span></td>
+                    <td class="num"><button class="icon-btn" onclick="showToast('请先启用该账号再重测')" title="重测">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+                    </button></td>
+                  </tr>
+                  <tr>
+                    <td><span style="font-size:13px; font-weight:600; color:var(--text);">ZCode · 合作试用</span></td>
+                    <td><span class="badge b-err">失败</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px; color:var(--text-faint);">未检测</span></td>
+                    <td><span class="mono" style="font-size:12px; color:var(--text-faint);">账号已停用 · 已跳过拨测</span></td>
+                    <td><span class="mono" style="font-size:12px;">14:02:11</span></td>
+                    <td class="num"><button class="icon-btn" onclick="showToast('请先启用该账号再重测')" title="重测">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+                    </button></td>
+                  </tr>
+                  <tr>
+                    <td><span style="font-size:13px; font-weight:600; color:var(--text);">WorkBuddy · 主账号</span></td>
+                    <td><span class="badge b-ok">全部通过</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px; color:var(--ok);">418 ms</span></td>
+                    <td><span style="font-size:12px; color:var(--text-faint); font-weight:600;">无错误记录</span></td>
+                    <td><span class="mono" style="font-size:12px;">14:02:11</span></td>
+                    <td class="num"><button class="icon-btn" onclick="showToast('已重测 WorkBuddy · 主账号')" title="重测">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+                    </button></td>
+                  </tr>
+                  <tr>
+                    <td><span style="font-size:13px; font-weight:600; color:var(--text);">WorkBuddy · 数据分析</span></td>
+                    <td><span class="badge b-ok">全部通过</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px; color:var(--ok);">402 ms</span></td>
+                    <td><span style="font-size:12px; color:var(--text-faint); font-weight:600;">无错误记录</span></td>
+                    <td><span class="mono" style="font-size:12px;">14:02:11</span></td>
+                    <td class="num"><button class="icon-btn" onclick="showToast('已重测 WorkBuddy · 数据分析')" title="重测">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+                    </button></td>
+                  </tr>
+                  <tr>
+                    <td><span style="font-size:13px; font-weight:600; color:var(--text);">WorkBuddy · 插件沙箱账号</span></td>
+                    <td><span class="badge b-warn">部分通过</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px; color:var(--warn);">874 ms</span></td>
+                    <td><span class="mono" style="font-size:12px; color:var(--warn);">403 无 deepseek-v4-pro 调用权限</span></td>
+                    <td><span class="mono" style="font-size:12px;">14:02:11</span></td>
+                    <td class="num"><button class="icon-btn" onclick="showToast('已重测 WorkBuddy · 插件沙箱账号')" title="重测">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+                    </button></td>
+                  </tr>
+                  <tr>
+                    <td><span style="font-size:13px; font-weight:600; color:var(--text);">WorkBuddy · 体验席位</span></td>
+                    <td><span class="badge b-warn">部分通过</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px; color:var(--warn);">1,190 ms</span></td>
+                    <td><span class="mono" style="font-size:12px; color:var(--warn);">429 Rate limited · 冷却剩 62s</span></td>
+                    <td><span class="mono" style="font-size:12px;">14:02:11</span></td>
+                    <td class="num"><button class="icon-btn" onclick="showToast('已重测 WorkBuddy · 体验席位')" title="重测">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+                    </button></td>
+                  </tr>
+                  <tr>
+                    <td><span style="font-size:13px; font-weight:600; color:var(--text);">Trae · 主账号</span></td>
+                    <td><span class="badge b-ok">全部通过</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px; color:var(--ok);">365 ms</span></td>
+                    <td><span style="font-size:12px; color:var(--text-faint); font-weight:600;">无错误记录</span></td>
+                    <td><span class="mono" style="font-size:12px;">14:02:11</span></td>
+                    <td class="num"><button class="icon-btn" onclick="showToast('已重测 Trae · 主账号')" title="重测">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+                    </button></td>
+                  </tr>
+                  <tr>
+                    <td><span style="font-size:13px; font-weight:600; color:var(--text);">Trae · 数据平台</span></td>
+                    <td><span class="badge b-ok">全部通过</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px; color:var(--ok);">347 ms</span></td>
+                    <td><span style="font-size:12px; color:var(--text-faint); font-weight:600;">无错误记录</span></td>
+                    <td><span class="mono" style="font-size:12px;">14:02:11</span></td>
+                    <td class="num"><button class="icon-btn" onclick="showToast('已重测 Trae · 数据平台')" title="重测">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+                    </button></td>
+                  </tr>
+                  <tr>
+                    <td><span style="font-size:13px; font-weight:600; color:var(--text);">Trae · 团队账号 A</span></td>
+                    <td><span class="badge b-err">失败</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px; color:var(--err);">timeout</span></td>
+                    <td><span class="mono" style="font-size:12px; color:var(--err);">401 Unauthorized · access_token 已失效</span></td>
+                    <td><span class="mono" style="font-size:12px;">14:02:11</span></td>
+                    <td class="num"><button class="icon-btn" onclick="showToast('已重测 Trae · 团队账号 A')" title="重测">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+                    </button></td>
+                  </tr>
+                  <tr>
+                    <td><span style="font-size:13px; font-weight:600; color:var(--text);">Trae · 试用账号</span></td>
+                    <td><span class="badge b-ok">全部通过</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px; color:var(--ok);">296 ms</span></td>
+                    <td><span style="font-size:12px; color:var(--text-faint); font-weight:600;">无错误记录</span></td>
+                    <td><span class="mono" style="font-size:12px;">14:02:11</span></td>
+                    <td class="num"><button class="icon-btn" onclick="showToast('已重测 Trae · 试用账号')" title="重测">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+                    </button></td>
+                  </tr>
+                  <tr>
+                    <td><span style="font-size:13px; font-weight:600; color:var(--text);">Trae · 实习账号</span></td>
+                    <td><span class="badge b-warn">部分通过</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px; color:var(--warn);">933 ms</span></td>
+                    <td><span class="mono" style="font-size:12px; color:var(--warn);">403 无 sensenova-u1.5-lite 调用权限</span></td>
+                    <td><span class="mono" style="font-size:12px;">14:02:11</span></td>
+                    <td class="num"><button class="icon-btn" onclick="showToast('已重测 Trae · 实习账号')" title="重测">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+                    </button></td>
+                  </tr>
+                  <tr>
+                    <td><span style="font-size:13px; font-weight:600; color:var(--text);">Qoder · 主账号</span></td>
+                    <td><span class="badge b-err">失败</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px; color:var(--text-faint);">未检测</span></td>
+                    <td><span class="mono" style="font-size:12px; color:var(--text-faint);">已停用 + refresh_token 过期</span></td>
+                    <td><span class="mono" style="font-size:12px;">14:02:11</span></td>
+                    <td class="num"><button class="icon-btn" onclick="showToast('请先启用该账号并重做授权')" title="重测">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+                    </button></td>
+                  </tr>
+                  <tr>
+                    <td><span style="font-size:13px; font-weight:600; color:var(--text);">Qoder · 备用设备</span></td>
+                    <td><span class="badge b-err">失败</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px; color:var(--text-faint);">未检测</span></td>
+                    <td><span class="mono" style="font-size:12px; color:var(--text-faint);">已停用 + refresh_token 过期</span></td>
+                    <td><span class="mono" style="font-size:12px;">14:02:11</span></td>
+                    <td class="num"><button class="icon-btn" onclick="showToast('请先启用该账号并重做授权')" title="重测">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+                    </button></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="alert alert-info" style="margin-bottom:0;">
+            <div class="alert-title">三态着色口径</div>
+            <div>全部通过（绿）：账号下所有模型映射拨测 2xx；部分通过（橙）：≥1 个模型限流/无权限；失败（红）：401 / 停用 / 连接超时。</div>
+          </div>
+        </div>
+
+        <!-- ---------- 面板 5：用量 ---------- -->
+        <div id="panel-usage" data-panel class="hidden" style="display:flex; flex-direction:column; gap:12px;">
+          <div class="card-grid">
+            <div class="card metric-card">
+              <span class="metric-ico mi-blue">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg>
+              </span>
+              <div class="metric-main">
+                <div class="metric-value">76,091 <span class="cv">次调用</span></div>
+                <div class="metric-label">近 7 日 · 16 个账号合计</div>
+              </div>
+            </div>
+            <div class="card metric-card">
+              <span class="metric-ico mi-green">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m6.08 9.5-3.5 1.6a1 1 0 0 0 0 1.81l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9a1 1 0 0 0 0-1.83l-3.5-1.59"/><path d="m6.08 14.5-3.5 1.6a1 1 0 0 0 0 1.81l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9a1 1 0 0 0 0-1.83l-3.5-1.59"/></svg>
+              </span>
+              <div class="metric-main">
+                <div class="metric-value">101.2 <span class="cv">M Token</span></div>
+                <div class="metric-label">近 7 日 · 输入 + 输出</div>
+              </div>
+            </div>
+            <div class="card metric-card">
+              <span class="metric-ico mi-orange">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+              </span>
+              <div class="metric-main">
+                <div class="metric-value">0.97 <span class="cv">% 失败率</span></div>
+                <div class="metric-label">近 7 日 · 含限流与 401</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card flush">
+            <div class="card-head inset">
+              <span class="card-title">分账号用量明细</span>
+              <span class="value">统计口径 近 7 日 · 2026-09-16 → 2026-09-23</span>
+              <span style="margin-left:auto; display:flex; align-items:center; gap:8px;">
+                <span class="badge b-gray">成本为演示估算值</span>
+                <button class="btn btn-sm" onclick="showToast('用量明细已刷新')">刷新</button>
+              </span>
+            </div>
+            <div class="table-wrap">
+              <table class="tbl">
+                <thead>
+                  <tr>
+                    <th style="min-width:200px;">账号</th>
+                    <th class="num">调用次数</th>
+                    <th class="num">Token</th>
+                    <th class="num">失败率</th>
+                    <th class="num">成本估算</th>
+                    <th style="min-width:160px;">占比</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><span style="font-size:13px; font-weight:600; color:var(--text);">ZCode · 主账号</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">18,402</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">24.6 M</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px; color:var(--ok);">0.4%</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">¥ 128.40</span></td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <div class="progress" style="flex:1;"><div class="progress-bar" style="width:24%;"></div></div>
+                        <span class="mono" style="font-size:11px; color:var(--text-muted);">24%</span>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><span style="font-size:13px; font-weight:600; color:var(--text);">ZCode · 运维值班</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">3,204</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">4.1 M</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px; color:var(--ok);">0.3%</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">¥ 23.40</span></td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <div class="progress" style="flex:1;"><div class="progress-bar" style="width:4%;"></div></div>
+                        <span class="mono" style="font-size:11px; color:var(--text-muted);">4%</span>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><span style="font-size:13px; font-weight:600; color:var(--text);">ZCode · 团队账号</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">9,113</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">12.8 M</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px; color:var(--warn);">1.2%</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">¥ 66.20</span></td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <div class="progress" style="flex:1;"><div class="progress-bar" style="width:12%;"></div></div>
+                        <span class="mono" style="font-size:11px; color:var(--text-muted);">12%</span>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><span style="font-size:13px; font-weight:600; color:var(--text);">ZCode · 测试账号</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">402</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">0.6 M</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px; color:var(--ok);">0.0%</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">¥ 2.10</span></td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <div class="progress" style="flex:1;"><div class="progress-bar" style="width:1%;"></div></div>
+                        <span class="mono" style="font-size:11px; color:var(--text-muted);">1%</span>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><span style="font-size:13px; font-weight:600; color:var(--text);">ZCode · 合作试用</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">0</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">0</span></td>
+                    <td class="num"><span style="font-size:12px; color:var(--text-faint); font-weight:600;">—</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">¥ 0.00</span></td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <div class="progress" style="flex:1;"><div class="progress-bar" style="width:0%;"></div></div>
+                        <span class="mono" style="font-size:11px; color:var(--text-muted);">0%</span>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><span style="font-size:13px; font-weight:600; color:var(--text);">WorkBuddy · 主账号</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">6,204</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">8.9 M</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px; color:var(--ok);">0.2%</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">¥ 41.30</span></td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <div class="progress" style="flex:1;"><div class="progress-bar" style="width:8%;"></div></div>
+                        <span class="mono" style="font-size:11px; color:var(--text-muted);">8%</span>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><span style="font-size:13px; font-weight:600; color:var(--text);">WorkBuddy · 数据分析</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">4,186</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">5.8 M</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px; color:var(--ok);">0.5%</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">¥ 27.90</span></td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <div class="progress" style="flex:1;"><div class="progress-bar" style="width:5%;"></div></div>
+                        <span class="mono" style="font-size:11px; color:var(--text-muted);">5%</span>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><span style="font-size:13px; font-weight:600; color:var(--text);">WorkBuddy · 插件沙箱账号</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">0</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">0</span></td>
+                    <td class="num"><span style="font-size:12px; color:var(--text-faint); font-weight:600;">—</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">¥ 0.00</span></td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <div class="progress" style="flex:1;"><div class="progress-bar" style="width:0%;"></div></div>
+                        <span class="mono" style="font-size:11px; color:var(--text-muted);">0%</span>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><span style="font-size:13px; font-weight:600; color:var(--text);">WorkBuddy · 体验席位</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">812</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">1.1 M</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px; color:var(--warn);">1.8%</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">¥ 5.60</span></td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <div class="progress" style="flex:1;"><div class="progress-bar" style="width:1%;"></div></div>
+                        <span class="mono" style="font-size:11px; color:var(--text-muted);">1%</span>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><span style="font-size:13px; font-weight:600; color:var(--text);">Trae · 主账号</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">14,880</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">19.4 M</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px; color:var(--ok);">0.6%</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">¥ 97.60</span></td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <div class="progress" style="flex:1;"><div class="progress-bar" style="width:20%;"></div></div>
+                        <span class="mono" style="font-size:11px; color:var(--text-muted);">20%</span>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><span style="font-size:13px; font-weight:600; color:var(--text);">Trae · 数据平台</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">7,942</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">10.3 M</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px; color:var(--ok);">0.7%</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">¥ 52.10</span></td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <div class="progress" style="flex:1;"><div class="progress-bar" style="width:10%;"></div></div>
+                        <span class="mono" style="font-size:11px; color:var(--text-muted);">10%</span>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><span style="font-size:13px; font-weight:600; color:var(--text);">Trae · 团队账号 A</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">5,921</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">7.2 M</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px; color:var(--err);">4.8%</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">¥ 38.10</span></td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <div class="progress" style="flex:1;"><div class="progress-bar" style="width:8%;"></div></div>
+                        <span class="mono" style="font-size:11px; color:var(--text-muted);">8%</span>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><span style="font-size:13px; font-weight:600; color:var(--text);">Trae · 试用账号</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">3,320</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">4.1 M</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px; color:var(--ok);">0.9%</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">¥ 21.70</span></td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <div class="progress" style="flex:1;"><div class="progress-bar" style="width:4%;"></div></div>
+                        <span class="mono" style="font-size:11px; color:var(--text-muted);">4%</span>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><span style="font-size:13px; font-weight:600; color:var(--text);">Trae · 实习账号</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">1,205</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">1.6 M</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px; color:var(--warn);">2.1%</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">¥ 8.30</span></td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <div class="progress" style="flex:1;"><div class="progress-bar" style="width:2%;"></div></div>
+                        <span class="mono" style="font-size:11px; color:var(--text-muted);">2%</span>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><span style="font-size:13px; font-weight:600; color:var(--text);">Qoder · 主账号</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">500</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">0.7 M</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px; color:var(--warn);">2.4%</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">¥ 3.30</span></td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <div class="progress" style="flex:1;"><div class="progress-bar" style="width:1%;"></div></div>
+                        <span class="mono" style="font-size:11px; color:var(--text-muted);">1%</span>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><span style="font-size:13px; font-weight:600; color:var(--text);">Qoder · 备用设备</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">0</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">0</span></td>
+                    <td class="num"><span style="font-size:12px; color:var(--text-faint); font-weight:600;">—</span></td>
+                    <td class="num"><span class="mono" style="font-size:12px;">¥ 0.00</span></td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <div class="progress" style="flex:1;"><div class="progress-bar" style="width:0%;"></div></div>
+                        <span class="mono" style="font-size:11px; color:var(--text-muted);">0%</span>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ---------- 状态：空·首用 ---------- -->
+        <div id="pane-empty-first" class="hidden" style="display:flex; flex-direction:column; gap:12px;">
+          <div class="empty">
+            <div style="display:flex; flex-direction:column; align-items:center; gap:12px;">
+              <span class="logo-block">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m6.08 9.5-3.5 1.6a1 1 0 0 0 0 1.81l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9a1 1 0 0 0 0-1.83l-3.5-1.59"/><path d="m6.08 14.5-3.5 1.6a1 1 0 0 0 0 1.81l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9a1 1 0 0 0 0-1.83l-3.5-1.59"/></svg>
+              </span>
+              <div style="font-size:15px; font-weight:800; color:var(--text);">尚未接入任何产品账号</div>
+              <div style="max-width:460px; font-size:12px; font-weight:600; color:var(--text-muted); line-height:1.6;">接入后可在同一页面管理每个产品的多个授权账号：授权状态、到期时间、额度与重置、并发上限、可用模型范围与连通体检。</div>
+              <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:center;">
+                <button class="btn btn-primary" onclick="showToast('接入向导（演示）已启动：选择产品 → 两步式授权 → 勾选模型范围')">＋ 接入第一个产品账号</button>
+                <button class="btn" onclick="showToast('打开接入文档（演示）')">查看接入文档</button>
+              </div>
+            </div>
+          </div>
+          <div class="alert alert-info" style="margin-bottom:0;">
+            <div class="alert-title">这个空态不是假想的</div>
+            <div>当前真实网关正是这个形态：<span class="mono">1 个资源 / 1 个厂商 / 7 个系统模型</span>，没有产品级授权账号；本页其余视图均为需求形态预演。</div>
+          </div>
+        </div>
+
+        <!-- ---------- 状态：空·筛选 ---------- -->
+        <div id="pane-empty-filter" class="hidden" style="display:flex; flex-direction:column; gap:12px;">
+          <div class="card flush">
+            <div class="card-head inset">
+              <span class="card-title">授权账号</span>
+              <span style="margin-left:auto; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                <span class="badge b-cool">产品 = Trae</span>
+                <span class="badge b-warn">状态 = 无效 401</span>
+                <span class="badge b-gray">关键词 = MG-ACCT-7F2K9Q</span>
+                <span class="badge b-brand">并发 &gt; 24</span>
+                <button class="btn btn-sm btn-ghost" onclick="showToast('已移除全部筛选条件')">清除条件</button>
+              </span>
+            </div>
+            <div class="list-empty" style="display:flex; flex-direction:column; align-items:center; gap:12px; text-align:center; padding:24px 12px;">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:20px; height:20px; color:var(--text-faint);"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+              <div style="font-size:13px; font-weight:700; color:var(--text-soft);">没有符合当前筛选条件的账号</div>
+              <div style="max-width:420px; font-size:12px; font-weight:600; color:var(--text-faint); line-height:1.6;">共 16 个账号参与过滤，命中 0 个。可放宽任一条件，或直接重置后再看全量。</div>
+              <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:center;">
+                <button class="btn btn-sm btn-primary" onclick="setState('default'); showToast('筛选已重置，回到全量 16 行')">重置筛选</button>
+                <button class="btn btn-sm" onclick="showToast('已放宽：仅保留「产品 = Trae」')">仅保留产品条件</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ---------- 状态：加载 ---------- -->
+        <div id="pane-loading" class="hidden" style="display:flex; flex-direction:column; gap:12px;">
+          <div class="card">
+            <div class="sec-head">
+              <span class="t">授权账号</span>
+              <span class="d">首次载入最长 30s 超时</span>
+            </div>
+            <div class="loading">正在载入 4 个产品 / 16 个账号的授权状态、额度与用量…</div>
+            <div style="display:flex; flex-direction:column; gap:12px; padding:12px;">
+              <div style="height:20px; background:var(--surface-muted); border-radius:var(--radius-sm);"></div>
+              <div style="height:20px; width:80%; background:var(--surface-muted); border-radius:var(--radius-sm);"></div>
+              <div style="height:20px; width:60%; background:var(--surface-muted); border-radius:var(--radius-sm);"></div>
+            </div>
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <button class="btn btn-sm btn-ghost" onclick="setState('default'); showToast('已停止载入，展示上一次数据')">停止载入</button>
+              <button class="btn btn-sm" onclick="showToast('已改为后台载入，完成后自动刷新')">转为后台载入</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ---------- 状态：错误 ---------- -->
+        <div id="pane-error" class="hidden" style="display:flex; flex-direction:column; gap:12px;">
+          <div class="card">
+            <div class="sec-head">
+              <span class="t">账号列表载入失败</span>
+              <span class="d">2026-09-23 14:02:11</span>
+            </div>
+            <div class="alert alert-err">
+              <div class="alert-title"><span class="mono">MG-ACC-LIST-503</span> · 凭证服务暂时不可用</div>
+              <div>未能载入产品账号列表：<span class="mono">GET /admin/api/vendor-accounts</span> 返回 <span class="mono">503</span>，响应头 <span class="mono">retry_after=30s</span>。已缓存数据最后更新于 14:00，可能已过期。</div>
+            </div>
+            <div class="form-hint">重试前建议确认：凭证服务进程存活、网关与产品侧 OAuth 端点之间的网络连通、以及管理令牌是否过期。</div>
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <button class="btn btn-primary" onclick="setState('loading'); showToast('已提交重试请求')">重试载入</button>
+              <button class="btn" onclick="showToast('打开请求日志（演示）')">查看网关日志</button>
+              <button class="btn btn-ghost" onclick="setState('default'); showToast('已切到离线缓存数据')">使用离线缓存继续</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ---------- 状态：受限 ---------- -->
+        <div id="pane-restricted" class="hidden" style="display:flex; flex-direction:column; gap:12px;">
+          <div class="card">
+            <div style="display:flex; align-items:flex-start; gap:12px; flex-wrap:wrap;">
+              <span class="logo-block">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+              </span>
+              <div style="display:flex; flex-direction:column; gap:8px; min-width:0; flex:1 1 320px;">
+                <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                  <span style="font-size:15px; font-weight:800; color:var(--text);">当前角色无「产品账号」读权限</span>
+                  <span class="badge b-warn">受限</span>
+                </div>
+                <div style="font-size:13px; font-weight:600; color:var(--text-muted); line-height:1.6;">角色 <span class="mono">viewer</span> 只能看到脱敏后的账号数量，不能查看授权密钥、额度明细与模型范围。查看完整信息需要权限 <span class="mono">vendor:read</span>。</div>
+                <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                  <span class="badge b-gray">可见：产品名 / 账号数</span>
+                  <span class="badge b-gray">隐藏：密钥 / 到期 / 额度</span>
+                  <span class="badge b-gray">隐藏：并发 / 模型范围 / 用量</span>
+                </div>
+                <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                  <button class="btn btn-primary" onclick="showToast('权限申请已提交，等待管理员审批（演示）')">申请提升权限</button>
+                  <button class="btn" onclick="setState('default'); showToast('已切换到只读预览（脱敏）')">切换至只读预览</button>
+                  <button class="btn btn-ghost" onclick="showToast('已返回上层页面（演示）')">返回概览</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div><!-- /#board -->
+    </div>
+  </main>
+</div>
+
+<!-- 行操作菜单（复用，插入被点击单元格的 .pos-wrap 内） -->
+<div id="row-menu" class="dropdown hidden">
+  <button class="dropdown-item" data-act="edit" onclick="rowAct(this)">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497Z"/><path d="m15 5 4 4"/></svg>
+    <span>编辑授权</span>
+  </button>
+  <button class="dropdown-item" data-act="probe" onclick="rowAct(this)">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+    <span>连通检测</span>
+  </button>
+  <button class="dropdown-item danger" data-act="disconnect" onclick="rowAct(this)">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/></svg>
+    <span>断开授权</span>
+  </button>
+  <button class="dropdown-item danger" data-act="delete" onclick="rowAct(this)">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
+    <span>删除账号</span>
+  </button>
+</div>
+
+<!-- 确认弹窗（删除 / 断开共用） -->
+<div id="mask" class="modal-mask hidden" onclick="if (event.target === this) closeConfirm();">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="m-title">
+    <div class="modal-head">
+      <h3 id="m-title">确认</h3>
+      <button class="modal-close" onclick="closeConfirm()" title="关闭">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px; height:14px;"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div style="font-size:13px; font-weight:600; color:var(--text-soft); line-height:1.6;">即将对 <span id="mk-name" style="font-weight:800; color:var(--text);">—</span> 执行「<span id="mk-act">—</span>」，操作生效后立即不可回滚。</div>
+      <div class="alert alert-err" style="margin-top:12px;">
+        <div class="alert-title">影响面</div>
+        <div>该账号下 <span id="mk-models" class="mono">0</span> 个模型映射将被<span id="mk-model-act">停用</span>；<span id="mk-inflight" class="mono">0</span> 个在途请求会被中断并返回 <span class="mono">503</span>。</div>
+        <div>下游按 <span class="mono">http://127.0.0.1:8300/v1</span> 访问的调用将立即失败，请先确认流量已切到其它产品账号。</div>
+      </div>
+      <div class="form-hint" style="margin-top:12px;">演示提示：正式实现会在断开前先在途请求排空（默认 30s），并按罚出策略把该账号移出调度池。</div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeConfirm()">取消</button>
+      <button class="btn btn-danger" id="m-ok" onclick="closeConfirm(); showToast('操作已提交（演示）');">确认</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast-wrap"></div>
+
+<script>
+/* T-17 · 极少量演示 JS：页签切换（写 URL）+ 状态切换 + 授权三态 + 行菜单/确认弹窗 */
+var TABS = ['accounts', 'auth', 'models', 'health', 'usage'];
+var curTab = 'accounts';
+var curState = 'default';
+
+var STATES = ['default', 'empty-first', 'empty-filter', 'loading', 'error', 'restricted', 'disabled'];
+
+/* 统一显隐：真实面板仅 default/disabled 态显示当前页签，其余态显示对应演示 pane */
+function applyVisibility() {
+  var showReal = (curState === 'default' || curState === 'disabled');
+  TABS.forEach(function (k) {
+    document.getElementById('panel-' + k).classList.toggle('hidden', !(showReal && k === curTab));
+  });
+  ['empty-first', 'empty-filter', 'loading', 'error', 'restricted'].forEach(function (k) {
+    document.getElementById('pane-' + k).classList.toggle('hidden', k !== curState);
+  });
+}
+
+function showToast(text) {
+  var wrap = document.getElementById('toast-wrap');
+  var el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = text;
+  wrap.appendChild(el);
+  setTimeout(function () { el.remove(); }, 2400);
+}
+
+/* ---------- URL 状态（iframe 内嵌安全：只 replaceState，禁止页面级 hash 导航） ---------- */
+function writeUrl(patch) {
+  var u = new URL(location.href);
+  Object.keys(patch).forEach(function (k) { u.searchParams.set(k, patch[k]); });
+  try { history.replaceState(null, '', u.pathname + u.search); } catch (e) { /* iframe 跨域限制时静默降级 */ }
+}
+
+/* ---------- 页签切换：只做面板 hidden 显隐，页签行位置固定不跳动 ---------- */
+function setTab(key, persist) {
+  if (TABS.indexOf(key) < 0) key = 'accounts';
+  curTab = key;
+  document.querySelectorAll('#subtabs .tab').forEach(function (t) {
+    t.classList.toggle('active', t.id === 'tab-' + key);
+  });
+  applyVisibility();
+  if (persist !== false) writeUrl({ tab: key });
+}
+
+/* ---------- 演示状态切换（驱动 data-state） ---------- */
+function setState(s, persist) {
+  if (STATES.indexOf(s) < 0) s = 'default';
+  curState = s;
+  document.documentElement.setAttribute('data-state', s);
+  document.querySelectorAll('[data-state]').forEach(function (t) {
+    if (t.tagName === 'BUTTON') t.classList.toggle('active', t.dataset.state === s);
+  });
+  applyVisibility();
+  /* 停用：内容 .off + 控件 pointer-events:none（出路按钮在 #bar-disabled-exit，不受影响） */
+  var off = (s === 'disabled');
+  document.getElementById('board').classList.toggle('off', off);
+  document.getElementById('board').classList.toggle('locked', off);
+  document.getElementById('bar-disabled-exit').classList.toggle('hidden', !off);
+  if (persist !== false) writeUrl({ state: s });
+}
+
+/* ---------- 授权三态演示 ---------- */
+function setAuth(a) {
+  ['idle', 'pending', 'ok', 'err'].forEach(function (k) {
+    document.getElementById('auth-' + k).classList.toggle('hidden', k !== a);
+    document.getElementById('atab-' + k).classList.toggle('active', k === a);
+  });
+  if (a === 'pending') showToast('已在浏览器打开授权页 · 等待用户确认');
+}
+
+/* ---------- 代码片段切换 ---------- */
+var SNIPPETS = {
+  curl: 'curl -sS http://127.0.0.1:8300/v1/chat/completions \\\n  -H "Authorization: Bearer mg-3f9a****c7e8" \\\n  -H "Content-Type: application/json" \\\n  -d \'{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"ping"}]}\'',
+  py: 'from openai import OpenAI\n\ncli = OpenAI(base_url="http://127.0.0.1:8300/v1",\n            api_key="mg-3f9a****c7e8")\n\nprint(cli.chat.completions.create(\n    model="deepseek-v4-pro",\n    messages=[{"role": "user", "content": "ping"}],\n).choices[0].message.content)'
+};
+function setSnippet(lang) {
+  document.getElementById('snippet').textContent = SNIPPETS[lang];
+  ['curl', 'py'].forEach(function (k) {
+    document.getElementById('ctab-' + k).classList.toggle('active', k === lang);
+  });
+}
+
+/* ---------- 子侧栏账号切换 ---------- */
+function pickAccount(btn, name) {
+  document.querySelectorAll('.subnav .mode-btn').forEach(function (b) { b.classList.remove('active'); });
+  btn.classList.add('active');
+  showToast('已切换当前账号：' + name);
+}
+
+/* ---------- 启停开关 ---------- */
+function toggleSwitch(el) {
+  var on = el.classList.toggle('on');
+  el.setAttribute('aria-checked', on ? 'true' : 'false');
+  showToast(on ? '账号已启用，重新计入调度' : '账号已停用，在途请求排空后移出调度池');
+}
+
+/* ---------- 多选与批量条 ---------- */
+function syncBulk() {
+  var boxes = Array.prototype.slice.call(document.querySelectorAll('.tbl tbody .sel input[type="checkbox"]'));
+  var n = boxes.filter(function (b) { return b.checked; }).length;
+  document.getElementById('bulkbar').classList.toggle('hidden', n === 0);
+  document.getElementById('bulk-count').textContent = String(n);
+}
+function toggleAll(master) {
+  document.querySelectorAll('.tbl tbody .sel input[type="checkbox"]').forEach(function (b) { b.checked = master.checked; });
+  syncBulk();
+}
+function clearSelection() {
+  document.querySelectorAll('.tbl input[type="checkbox"]').forEach(function (b) { b.checked = false; });
+  syncBulk();
+}
+
+/* ---------- 行菜单 ---------- */
+var menu = document.getElementById('row-menu');
+function toggleRowMenu(btn) {
+  if (menu.parentElement === btn.parentElement && !menu.classList.contains('hidden')) {
+    closeRowMenu(); return;
+  }
+  closeRowMenu();
+  btn.parentElement.appendChild(menu);
+  menu.dataset.row = btn.dataset.row;
+  menu.classList.remove('hidden');
+}
+function closeRowMenu() { menu.classList.add('hidden'); }
+document.addEventListener('click', function (e) {
+  if (!e.target.closest('[data-menu-btn]') && !e.target.closest('#row-menu')) closeRowMenu();
+});
+function rowAct(item) {
+  var act = item.dataset.act;
+  var tr = document.querySelector('tr[data-row="' + menu.dataset.row + '"]');
+  closeRowMenu();
+  if (act === 'edit') { showToast('编辑授权：' + tr.dataset.name); return; }
+  if (act === 'probe') { showToast('连通检测已发起：' + tr.dataset.name); return; }
+  openConfirm(act, menu.dataset.row);
+}
+
+/* ---------- 确认弹窗（删除 / 断开） ---------- */
+function openConfirm(kind, rowId) {
+  var tr = document.querySelector('tr[data-row="' + rowId + '"]');
+  var del = (kind === 'delete');
+  document.getElementById('m-title').textContent = del ? '删除产品账号' : '断开账号授权';
+  document.getElementById('mk-name').textContent = tr.dataset.name;
+  document.getElementById('mk-act').textContent = del ? '删除' : '断开授权';
+  document.getElementById('mk-models').textContent = tr.dataset.models;
+  document.getElementById('mk-inflight').textContent = tr.dataset.inflight;
+  document.getElementById('mk-model-act').textContent = del ? '一并删除' : '停用';
+  document.getElementById('m-ok').textContent = del ? '确认删除' : '确认断开';
+  document.getElementById('mask').classList.remove('hidden');
+}
+function closeConfirm() { document.getElementById('mask').classList.add('hidden'); }
+
+/* ---------- 体检全部检测（演示） ---------- */
+function runAllProbe() {
+  var btn = document.getElementById('btn-probe-all');
+  btn.disabled = true;
+  showToast('已对 16 个账号发起连通检测…');
+  setTimeout(function () { btn.disabled = false; showToast('检测完成：全部通过 7 · 部分通过 4 · 失败 5'); }, 1200);
+}
+
+/* ---------- 初始化：读回 URL 状态 ---------- */
+(function init() {
+  var q = new URLSearchParams(location.search);
+  setTab(q.get('tab') || 'accounts', false);
+  setState(q.get('state') || 'default', false);
+  setAuth('idle');
+})();
+</script>
+
+<style>
+@keyframes toast-in { from { transform: translateY(-8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+@keyframes toast-out { to { transform: translateY(-8px); opacity: 0; } }
+</style>
+<script>/* ?theme=dark|light 主题预览（与既有基准模板同一约定；
+   模板预览页按控制台当前主题注入该参数）。 */
+(() => { const t = new URLSearchParams(location.search).get("theme");
+  if (t === "dark" || t === "light") document.documentElement.dataset.theme = t; })();</script>
+</body>
+</html>

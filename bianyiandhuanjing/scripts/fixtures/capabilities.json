@@ -1,0 +1,221 @@
+{
+  "products": [
+    {
+      "id": "buddy",
+      "title": "CodeBuddy",
+      "login": "external_link",
+      "protocol": "openai",
+      "base_url": "https://copilot.tencent.com",
+      "device": {
+        "fields": [],
+        "derive": false
+      },
+      "capabilities": {
+        "balance": true,
+        "checkin": true,
+        "onboarding": false,
+        "permanent_lock": true,
+        "refresh": true
+      },
+      "models_source": "remote",
+      "login_alt": []
+    },
+    {
+      "id": "workbuddy",
+      "title": "WorkBuddy（国际版）",
+      "login": "external_link",
+      "protocol": "openai",
+      "base_url": "https://www.workbuddy.ai",
+      "device": {
+        "fields": [],
+        "derive": false
+      },
+      "capabilities": {
+        "balance": true,
+        "checkin": false,
+        "onboarding": false,
+        "permanent_lock": true,
+        "refresh": true
+      },
+      "models_source": "remote",
+      "login_alt": []
+    },
+    {
+      "id": "lobsterai",
+      "title": "LobsterAI",
+      "login": "local_callback",
+      "protocol": "openai",
+      "base_url": "https://lobsterai-server.youdao.com",
+      "device": {
+        "fields": [
+          "uuid"
+        ],
+        "derive": false
+      },
+      "capabilities": {
+        "balance": true,
+        "checkin": true,
+        "onboarding": false,
+        "permanent_lock": false,
+        "refresh": true
+      },
+      "models_source": "remote",
+      "login_alt": []
+    },
+    {
+      "id": "qoder",
+      "title": "Qoder",
+      "login": "device_code",
+      "protocol": "custom",
+      "base_url": "https://api2.qoder.sh",
+      "device": {
+        "fields": [
+          "machine_id"
+        ],
+        "derive": false
+      },
+      "capabilities": {
+        "balance": true,
+        "checkin": true,
+        "onboarding": false,
+        "permanent_lock": false,
+        "refresh": true
+      },
+      "models_source": "static",
+      "login_alt": []
+    },
+    {
+      "id": "qodercn",
+      "title": "Qoder（中国版）",
+      "login": "device_code",
+      "protocol": "custom",
+      "base_url": "https://gateway.qoder.com.cn",
+      "device": {
+        "fields": [
+          "machine_id"
+        ],
+        "derive": false
+      },
+      "capabilities": {
+        "balance": true,
+        "checkin": true,
+        "onboarding": false,
+        "permanent_lock": false,
+        "refresh": true
+      },
+      "models_source": "static",
+      "login_alt": []
+    },
+    {
+      "id": "trae",
+      "title": "Trae",
+      "login": "local_callback",
+      "protocol": "custom",
+      "base_url": "https://trae-api-cn.mchost.guru",
+      "device": {
+        "fields": [
+          "machine_id",
+          "device_id"
+        ],
+        "derive": true
+      },
+      "capabilities": {
+        "balance": true,
+        "checkin": true,
+        "onboarding": false,
+        "permanent_lock": false,
+        "refresh": true
+      },
+      "models_source": "remote",
+      "login_alt": []
+    },
+    {
+      "id": "cline",
+      "title": "Cline",
+      "login": "device_code",
+      "protocol": "openai",
+      "base_url": "https://api.cline.bot/api/v1",
+      "device": {
+        "fields": [],
+        "derive": false
+      },
+      "capabilities": {
+        "balance": true,
+        "checkin": false,
+        "onboarding": false,
+        "permanent_lock": false,
+        "refresh": true
+      },
+      "models_source": "remote",
+      "login_alt": []
+    },
+    {
+      "id": "loomy",
+      "title": "Loomy",
+      "login": "qr",
+      "protocol": "openai",
+      "base_url": "https://loomyad.xunfei.cn/api/v1",
+      "device": {
+        "fields": [],
+        "derive": false
+      },
+      "capabilities": {
+        "balance": true,
+        "checkin": true,
+        "onboarding": true,
+        "permanent_lock": true,
+        "refresh": false
+      },
+      "models_source": "remote",
+      "login_alt": [
+        "sms_code"
+      ]
+    },
+    {
+      "id": "raccoon",
+      "title": "Raccoon",
+      "login": "qr",
+      "protocol": "openai",
+      "base_url": "https://xiaohuanxiong.com/api/web/llm/v2",
+      "device": {
+        "fields": [
+          "device_id"
+        ],
+        "derive": false
+      },
+      "capabilities": {
+        "balance": true,
+        "checkin": false,
+        "onboarding": true,
+        "permanent_lock": false,
+        "refresh": true
+      },
+      "models_source": "remote",
+      "login_alt": [
+        "sms_code"
+      ]
+    },
+    {
+      "id": "zcode",
+      "title": "ZCode",
+      "login": "device_code",
+      "protocol": "anthropic",
+      "base_url": "https://zcode.z.ai/api/v1/zcode-plan/anthropic",
+      "device": {
+        "fields": [
+          "device_mid"
+        ],
+        "derive": false
+      },
+      "capabilities": {
+        "balance": true,
+        "checkin": true,
+        "onboarding": false,
+        "permanent_lock": false,
+        "refresh": false
+      },
+      "models_source": "static",
+      "login_alt": []
+    }
+  ]
+}

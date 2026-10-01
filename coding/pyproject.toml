@@ -1,0 +1,49 @@
+[project]
+name = "model-gateway"
+version = "0.2.0"
+description = "本地 LLM 网关：聚合多厂商/多账号模型资源，统一 OpenAI 兼容 API，故障自动重试与切换续跑（纯本地、全明文配置）"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+    "httpx>=0.28",
+    "pydantic>=2.9",
+    "pyyaml>=6.0",
+    # v2.0 §12.4/§17：ZCode 凭据 `enc:v1` 为 AES-256-GCM，stdlib 无 AES → 需此依赖
+    "cryptography>=44.0",
+    # M7-C1（2026-10-01）扫码型接入：`qr` 型登录要**服务端出图**（PNG data URI 进
+    # `Challenge.qr_payload`），否则界面只能把内容串印成一行字让用户"扫这行字"（本轮缺陷）。
+    # 选 segno 的理由：纯 Python、**零传递依赖**、MIT、无需 Pillow 即可写 PNG/SVG/data URI，
+    # 支持 byte 模式 + 纠错等级 M + 版本 1–40（本层只用 1–10，见 `accounts/qr.py`）。
+    # 它替代的是 DSH 那份自研零依赖编码器 `src/raccoon-qr.ts:476-562` 的同一段职责。
+    "segno>=1.6",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+]
+# 验证码自动求解（tech-design v2.0 §16.5）：需真实浏览器内核，装完还要
+#   `python -m playwright install chromium`（或直接复用本机 Chrome/Edge）。
+# 刻意不放主依赖：不下内核的机器上它会**明确报错并给出安装命令**，不静默降级。
+captcha = [
+    "playwright>=1.44",
+]
+
+# CLI 入口（tech-design v2.0 §19 M3-0）—— 本项目此前**没有任何命令入口**
+[project.scripts]
+mgw = "model_gateway.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["model_gateway"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

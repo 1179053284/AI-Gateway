@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>T-05 · 多步向导（Stepper） · v1.0</title>
+<link rel="stylesheet" href="/css/base.css">
+</head>
+<body>
+<!-- ============================================================
+  T-05 · 多步向导（Stepper） · D 族 · TB-5 · v1.0
+  用途：接入向导 / 新增资源 / 授权接入
+  组件规范（逐像素值）：docs/specs/frontend-spec.md
+============================================================ -->
+<div class="app">
+  <!-- 侧栏 -->
+  <aside class="sidenav">
+    <div class="brand">
+      <span class="brand-mark">M</span>
+      <span class="brand-text">
+        <span class="brand-name">Model-Gateway</span>
+        <span class="brand-sub">LLM Gateway Console</span>
+      </span>
+    </div>
+    <nav class="nav-list">
+      <div class="nav-group">
+        <div class="nav-group-title">概览</div>
+        <button class="nav-item" title="总览">
+          <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></svg>
+          <span>总览</span>
+        </button>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-title">系统设置</div>
+        <button class="nav-item active" title="API接入">
+          <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2H3v16h5v4l4-4h5l5-5V2zm-2 11l-3 3-3-3h6zm-3-3l-3-3-3 3h6z"/></svg>
+          <span>API 接入</span>
+        </button>
+      </div>
+    </nav>
+    <div  style="margin-top:auto; padding: 12px; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 8px;">
+      <span class="dot on"></span>
+      <span style="font-size:12px; color:var(--text-muted)">运行中</span>
+    </div>
+  </aside>
+
+  <div class="main-col">
+    <!-- 顶栏 -->
+    <header class="topbar">
+      <div class="tb-left">
+        <div class="crumb">
+          <span>Console</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px; height:14px;"><path d="m9 18 6-6-6-6"/></svg>
+          <span>API 接入</span>
+        </div>
+        <h1 class="tb-title">新增下游客户端接入</h1>
+      </div>
+      <div class="tb-right" style="display:flex; align-items:center; gap:12px;">
+      </div>
+    </header>
+
+    <!-- 内容区 -->
+    <div class="content" style="padding:12px; overflow-y:auto; height:calc(100vh - 60px); display:grid; place-items:center;">
+      
+      <!-- 向导容器卡 -->
+      <div class="card" style="width:720px; max-width:100%; border-radius:var(--radius-card); background:var(--surface); padding:24px; box-shadow:var(--shadow-pop); display:flex; flex-direction:column; gap:24px;">
+        
+        <!-- TB-5 向导步骤条 -->
+        <div class="stepper">
+          <div class="step active" id="step-1">
+            <div class="step-dot">1</div>
+            <span class="step-name">选择宿主</span>
+          </div>
+          <div class="step" id="step-2">
+            <div class="step-dot">2</div>
+            <span class="step-name">设置凭据</span>
+          </div>
+          <div class="step" id="step-3">
+            <div class="step-dot">3</div>
+            <span class="step-name">选择模型</span>
+          </div>
+          <div class="step" id="step-4">
+            <div class="step-dot">4</div>
+            <span class="step-name">账号授权</span>
+          </div>
+          <div class="step" id="step-5">
+            <div class="step-dot">5</div>
+            <span class="step-name">完成接入</span>
+          </div>
+        </div>
+
+        <div style="border-bottom:1px solid var(--border); margin: -8px 0 8px 0;"></div>
+
+        <!-- 步骤内容区 -->
+        <div style="min-height:240px; display:flex; flex-direction:column; justify-content:center;">
+          
+          <!-- 步骤一：选择宿主 -->
+          <div id="step-panel-1" data-step-panel style="display:flex; flex-direction:column; gap:12px;">
+            <div style="font-size:13.5px; font-weight:800; color:var(--text); margin-bottom:4px;">第一步: 选择您要对接的本地 AI 宿主/客户端</div>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+              <div class="mode-btn active" style="height:56px; border-radius:var(--radius-md); flex-direction:column; align-items:flex-start; justify-content:center; gap:2px;" onclick="selectHost(1, this)">
+                <span style="font-weight:800; font-size:13px; color:var(--text)">DSH (DeepSeek Harness)</span>
+                <span style="font-size:11px; color:var(--text-faint); font-weight:500;">原生支持自定义 provider (推荐)</span>
+              </div>
+              <div class="mode-btn" style="height:56px; border-radius:var(--radius-md); flex-direction:column; align-items:flex-start; justify-content:center; gap:2px;" onclick="selectHost(2, this)">
+                <span style="font-weight:800; font-size:13px; color:var(--text)">Continue</span>
+                <span style="font-size:11px; color:var(--text-faint); font-weight:500;">通过修改 config.json 接入</span>
+              </div>
+              <div class="mode-btn" style="height:56px; border-radius:var(--radius-md); flex-direction:column; align-items:flex-start; justify-content:center; gap:2px;" onclick="selectHost(3, this)">
+                <span style="font-weight:800; font-size:13px; color:var(--text)">Cline / Roo Code</span>
+                <span style="font-size:11px; color:var(--text-faint); font-weight:500;">支持 OpenAI 兼容及 Tools</span>
+              </div>
+              <div class="mode-btn" style="height:56px; border-radius:var(--radius-md); flex-direction:column; align-items:flex-start; justify-content:center; gap:2px;" onclick="selectHost(4, this)">
+                <span style="font-weight:800; font-size:13px; color:var(--text)">Claude Code</span>
+                <span style="font-size:11px; color:var(--text-faint); font-weight:500;">命令行工具，通过环境变量接入</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 步骤二：设置凭据 -->
+          <div id="step-panel-2" data-step-panel style="display:none; flex-direction:column; gap:16px;">
+            <div style="font-size:13.5px; font-weight:800; color:var(--text); margin-bottom:4px;">第二步: 配置网关地址与对接密钥</div>
+            <div class="form-row" style="display:flex; flex-direction:column; gap:8px;">
+              <span style="font-size:12px; font-weight:700; color:var(--text-tertiary)">接口调用地址 (建议本机自连)</span>
+              <input class="in" type="text" aria-label="接口调用地址（只读）" value="http://127.0.0.1:8300/v1" style="height:44px; border-radius:var(--radius-md);" readonly>
+            </div>
+            <div class="form-row" style="display:flex; flex-direction:column; gap:8px;">
+              <span style="font-size:12px; font-weight:700; color:var(--text-tertiary)">选择或新建网关访问密钥</span>
+              <select class="in" style="height:44px; border-radius:var(--radius-md); width:100%;" onchange="showToast('已选中密钥')">
+                <option>mg-3f9a2c1e7b4d8f60a1c2e3d4b5a6c7e8 (用途标注: Trae)</option>
+                <option>＋ 新建网关访问密钥...</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- 步骤三：选择模型 -->
+          <div id="step-panel-3" data-step-panel style="display:none; flex-direction:column; gap:12px;">
+            <div style="font-size:13.5px; font-weight:800; color:var(--text); margin-bottom:4px;">第三步: 勾选您要在这个宿主中调用的模型清单</div>
+            <div class="card flush" style="border:1px solid var(--border); border-radius:var(--radius-md); overflow:hidden;">
+              <table class="tbl">
+                <thead>
+                  <tr>
+                    <th class="sel"><input type="checkbox" checked onclick="showToast('全选模型')"></th>
+                    <th>系统统一模型ID</th>
+                    <th>服务商</th>
+                    <th>端点类型</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td class="sel"><input type="checkbox" checked></td>
+                    <td class="strong">deepseek-v4-flash</td>
+                    <td>DeepSeek</td>
+                    <td><span class="badge" style="background:var(--cool-bg); color:var(--cool);">chat 对话</span></td>
+                  </tr>
+                  <tr>
+                    <td class="sel"><input type="checkbox" checked></td>
+                    <td class="strong">sensenova-6.8-flash-lite</td>
+                    <td>商汤科技</td>
+                    <td><span class="badge" style="background:var(--cool-bg); color:var(--cool);">chat 对话</span></td>
+                  </tr>
+                  <tr>
+                    <td class="sel"><input type="checkbox"></td>
+                    <td class="strong">sensenova-u1-fast</td>
+                    <td>商汤科技</td>
+                    <td><span class="badge" style="background:var(--ok-bg); color:var(--ok);">images 绘图</span></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- 步骤四：账号授权 (TB-5 两步式登录) -->
+          <div id="step-panel-4" data-step-panel style="display:none; flex-direction:column; gap:16px;">
+            <div style="font-size:13.5px; font-weight:800; color:var(--text); margin-bottom:4px;">第四步: 平台账号两步式安全授权</div>
+            <div class="alert alert-info">
+              <div class="alert-title">授权流程说明</div>
+              本步骤需要获取您在该 AI 宿主下的临时服务授权。这完全是在本地进程内通过标准 OAuth2 PKCE / 设备码换票协议完成，网关不中转、不记录任何云端凭证。
+            </div>
+            
+            <div id="auth-flow-container">
+              <!-- Auth Initial State -->
+              <div id="auth-state-init" style="display:flex; flex-direction:column; gap:12px; align-items:center; padding:16px; border:1px solid var(--border); border-radius:var(--radius-md);">
+                <div style="font-size:13px; font-weight:600; text-align:center;">请点击下方按钮打开官网完成账号登录与回调授权</div>
+                <button class="btn btn-primary" onclick="startOAuthFlow()" style="height:44px; padding:0 24px;">立即开启授权链接</button>
+              </div>
+              
+              <!-- Auth Polling State (Hidden by default) -->
+              <div id="auth-state-polling" style="display:none; flex-direction:column; gap:12px; align-items:center; padding:16px; border:1px solid var(--border); border-radius:var(--radius-md);">
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <span class="dot on" style="animation: pulse 1s infinite;"></span>
+                  <span style="font-weight:700;">等待官网授权确认中...</span>
+                </div>
+                <div class="progress" style="width:200px;"><div class="progress-bar" style="width:40%; transition: none; animation: progress-poll 3s infinite linear;"></div></div>
+                <div style="font-size:11px; color:var(--text-faint)">检测到临时授权端口: 127.0.0.1:8300 (设备码: MGW-CODE)</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 步骤五：完成 -->
+          <div id="step-panel-5" data-step-panel style="display:none; flex-direction:column; gap:16px; text-align:center;">
+            <span class="logo-block" style="width:48px; height:48px; border-radius:var(--radius-lg); background:var(--ok-bg); color:var(--ok); margin:0 auto; font-size:24px; display:grid; place-items:center;">✓</span>
+            <h2 style="font-size:18px; font-weight:800; color:var(--text);">恭喜! 宿主客户端对接配置成功</h2>
+            <p style="font-size:13px; color:var(--text-muted); line-height:1.6; max-width:480px; margin:0 auto;">
+              网关访问密钥 `mg-3f9a****c7e8` 已自动分配并授权访问选中的 2 个系统模型。当前接口连通体检 `200 OK`，您可以直接在 AI 客户端中享用稳定的重试与故障自动切换机制了！
+            </p>
+            <div style="display:flex; gap:8px; justify-content:center; margin-top:8px;">
+              <button class="btn btn-primary" onclick="showToast('已复制配置片段')">复制配置文件片段</button>
+              <button class="btn" onclick="showToast('导航至 API 接入页')">打开 API 接入面板</button>
+            </div>
+          </div>
+
+        </div>
+
+        <div style="border-bottom:1px solid var(--border); margin: 8px 0 -8px 0;"></div>
+
+        <!-- 底部控制按钮 -->
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;">
+          <button class="btn" id="stepper-prev-btn" onclick="stepPrev()" disabled>上一步</button>
+          <button class="btn btn-primary" id="stepper-next-btn" onclick="stepNext()">下一步</button>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Toast UI -->
+<div id="toast-wrap" style="position:fixed; top:16px; left:50%; transform:translateX(-50%); z-index:999; display:flex; flex-direction:column; gap:8px;"></div>
+
+<script>
+let currentStep = 1;
+
+function selectHost(id, el) {
+  document.querySelectorAll('#step-panel-1 .mode-btn').forEach(b => b.classList.remove('active'));
+  el.classList.add('active');
+  showToast('已选择对接宿主: ' + el.querySelector('span').innerText);
+}
+
+function updateStepperUI() {
+  // Update Steps
+  for (let i = 1; i <= 5; i++) {
+    const stepEl = document.getElementById('step-' + i);
+    stepEl.classList.remove('active', 'done');
+    const dot = stepEl.querySelector('.step-dot');
+    
+    if (i < currentStep) {
+      stepEl.classList.add('done');
+      dot.innerText = '✓';
+    } else if (i === currentStep) {
+      stepEl.classList.add('active');
+      dot.innerText = i;
+    } else {
+      dot.innerText = i;
+    }
+  }
+
+  // Update panels
+  document.querySelectorAll('[data-step-panel]').forEach(p => p.style.display = 'none');
+  document.getElementById('step-panel-' + currentStep).style.display = 'flex';
+
+  // Update buttons
+  const prevBtn = document.getElementById('stepper-prev-btn');
+  const nextBtn = document.getElementById('stepper-next-btn');
+  
+  prevBtn.disabled = currentStep === 1;
+  if (currentStep === 5) {
+    nextBtn.style.display = 'none';
+    prevBtn.style.display = 'none';
+  } else {
+    nextBtn.style.display = 'inline-flex';
+    prevBtn.style.display = 'inline-flex';
+    nextBtn.innerText = currentStep === 4 ? '提交验证' : '下一步';
+  }
+}
+
+function stepNext() {
+  if (currentStep < 5) {
+    if (currentStep === 4) {
+      // Must complete auth flow first in step 4
+      showToast('完成授权校验中...');
+    }
+    currentStep++;
+    updateStepperUI();
+  }
+}
+
+function stepPrev() {
+  if (currentStep > 1) {
+    currentStep--;
+    updateStepperUI();
+  }
+}
+
+function startOAuthFlow() {
+  showToast('官网登录授权页面已打开');
+  document.getElementById('auth-state-init').style.display = 'none';
+  document.getElementById('auth-state-polling').style.display = 'flex';
+  
+  // Simulate successful authorization after 3 seconds
+  setTimeout(() => {
+    showToast('设备成功完成验证并成功回调！');
+    document.getElementById('auth-state-polling').innerHTML = `
+      <div style="display:flex; align-items:center; gap:8px; color:var(--ok)">
+        <span class="dot on"></span>
+        <span style="font-weight:700;">授权接入校验通过 ✓</span>
+      </div>
+      <div style="font-size:12px; color:var(--text-muted); text-align:center;">已关联平台主账号: truman@solobrave.ai (有效期: 24小时)</div>
+    `;
+  }, 3000);
+}
+
+
+function showToast(text) {
+  const wrap = document.getElementById('toast-wrap');
+  const toast = document.createElement('div');
+  toast.style.cssText = 'background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-lg); box-shadow:var(--shadow-pop); padding:11px 16px; font-size:13px; font-weight:600; color:var(--text); animation: toast-in .15s ease-out;';
+  toast.innerText = text;
+  wrap.appendChild(toast);
+  setTimeout(() => {
+    toast.style.animation = 'toast-out .15s ease-in';
+    setTimeout(() => toast.remove(), 150);
+  }, 2400);
+}
+</script>
+
+<style>
+@keyframes toast-in { from { transform: translateY(-8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+@keyframes toast-out { to { transform: translateY(-8px); opacity: 0; } }
+@keyframes pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
+@keyframes progress-poll { from { width: 0%; } to { width: 100%; } }
+</style>
+<script>/* ?theme=dark|light 主题预览（与既有基准模板同一约定；
+   模板预览页按控制台当前主题注入该参数）。 */
+(() => { const t = new URLSearchParams(location.search).get("theme");
+  if (t === "dark" || t === "light") document.documentElement.dataset.theme = t; })();</script>
+</body>
+</html>

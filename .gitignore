@@ -1,6 +1,10 @@
 # ===== 私密数据（绝不入库）=====
 # 运行时数据：明文密钥配置、调用流水、运行日志（铁律 1）
 data/
+# 运行时数据：CLI/setup 工具写的产品记忆（setup_tools.py / cli.py）
+.workbuddy-ai/
+# pytest 残留（test_v2_wiring_guard 以 pid 命名的金丝雀包）
+model_gateway/_wiring_canary_pkg_*
 
 # ===== AI 工具管理过程文件（内部工作区，不上传）=====
 # AGENTS.md = AI 导航总文件（项目管理入口）
@@ -17,7 +21,10 @@ CLAUDE.md
 docs/
 
 # ===== 诊断脚本输出（历史调试日志，不上传）=====
-scripts/diag_out*.txt
+bianyiandhuanjing/scripts/diag_out*.txt
+
+# ===== 前端工具（pnpm/node_modules，参考 codex-coding 结构）=====
+node_modules/
 
 # ===== Python =====
 __pycache__/
@@ -29,6 +36,8 @@ dist/
 .venv/
 venv/
 .pytest_cache/
+# 测试临时目录（--basetemp 唯一纪律：只允许落在 /tmp；此规则兜住任何误落仓内的 .pytest-tmp-*）
+.pytest-tmp-*
 .coverage
 htmlcov/
 

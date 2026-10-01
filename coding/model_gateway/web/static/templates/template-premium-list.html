@@ -1,0 +1,777 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>T-16 · 多端授权账号列表（列表视图） · v1.0</title>
+<link rel="stylesheet" href="/css/base.css">
+</head>
+<body>
+<!-- ============================================================
+  T-16 · 多端授权账号列表（列表视图） · B 族 · TB-1 · v1.0
+  用途：侧栏 + 页头 + 内容板块；内容板块为「列表数据」（.list-card > .list-row）
+  筛选：产品分段 tab + 搜索框，均为真实过滤（0 行即出空态，非空白）
+  状态演示：工具行右端「状态」分段 tab 切 data-state（frontend-spec §9 八项）
+  组件规范（逐像素值）：docs/specs/frontend-spec.md
+============================================================ -->
+<div class="app">
+  <!-- 侧栏 -->
+  <aside class="sidenav">
+    <div class="brand">
+      <span class="brand-mark">M</span>
+      <span class="brand-text">
+        <span class="brand-name">Model-Gateway</span>
+        <span class="brand-sub">LLM Gateway Console</span>
+      </span>
+    </div>
+    <nav class="nav-list">
+      <div class="nav-group">
+        <div class="nav-group-title">概览</div>
+        <button class="nav-item" title="总览">
+          <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></svg>
+          <span>总览</span>
+        </button>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-title">模板预览</div>
+        <button class="nav-item active" title="模板主页">
+          <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="7" x="3" y="3" rx="1"/><rect width="9" height="7" x="3" y="14" rx="1"/><rect width="5" height="7" x="16" y="14" rx="1"/></svg>
+          <span>模板主页</span>
+        </button>
+      </div>
+    </nav>
+  </aside>
+
+  <div class="main-col">
+    <!-- 顶栏 -->
+    <header class="topbar">
+      <div class="tb-left">
+        <div class="crumb">
+          <span>Console</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+          <span>模板运行</span>
+        </div>
+        <h1 class="tb-title">多端授权账号列表 · 列表视图</h1>
+      </div>
+      <div class="tb-right">
+        <button class="btn btn-sm btn-primary" onclick="bindNew()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px; height:14px"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+          绑定产品账号
+        </button>
+      </div>
+    </header>
+
+    <!-- 内容区 -->
+    <div class="content">
+      <div id="page-wrap" style="display:flex; flex-direction:column; gap:12px">
+
+        <!-- §6.0 标注条（12px 灰字） -->
+        <div class="form-hint">T-16 · 需求预演（演示数据） · 多端授权账号列表（列表视图） · B 族 · TB-1 · v1.0</div>
+
+        <!-- 工具行：左 = 产品过滤 tab；右端 = 状态演示 tab + 主题 tab -->
+        <div class="page-head">
+          <div class="tabs" id="vendor-tabs">
+            <button class="tab" data-vendor="all">全部</button>
+            <button class="tab" data-vendor="zcode">ZCode</button>
+            <button class="tab" data-vendor="workbuddy">WorkBuddy</button>
+            <button class="tab" data-vendor="trae">TRAE</button>
+            <button class="tab" data-vendor="qoder">Qoder</button>
+          </div>
+          <div class="page-actions" style="gap:12px">
+            <div class="input-group" style="max-width:240px">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" x2="16.65" y1="21" y2="16.65"/></svg>
+              <input id="q" type="text" placeholder="过滤账号 / 系统模型…" oninput="applyFilter()">
+            </div>
+            <div class="tabs" id="state-tabs">
+              <button class="tab" data-state="default">默认</button>
+              <button class="tab" data-state="empty">空态</button>
+              <button class="tab" data-state="noresult">无结果</button>
+              <button class="tab" data-state="loading">加载</button>
+              <button class="tab" data-state="error">错误</button>
+              <button class="tab" data-state="restricted">受限</button>
+              <button class="tab" data-state="off">停用</button>
+              <button class="tab" data-state="narrow">窄屏</button>
+            </div>
+            <div class="tabs" id="theme-tabs">
+              <button class="tab" data-theme="light">浅色</button>
+              <button class="tab" data-theme="dark">深色</button>
+            </div>
+          </div>
+        </div>
+        <div class="form-hint" id="state-desc">当前状态：默认（有数据） · 共 16 个账号</div>
+
+        <!-- 内容板块：列表数据（.list-card > .list-row） -->
+        <div class="list-card" id="list-card">
+
+          <div class="list-row" data-row data-account="admin@zhipu.cn" data-vendor="zcode" data-keys="zcode 智谱 admin@zhipu.cn 平台主账号 glm-5.2 正常 编程 mg-3f9a">
+            <span class="mark-sm dark">Z</span>
+            <div style="flex:1 1 200px; min-width:0">
+              <div class="ellip" style="font-size:13px; font-weight:800; color:var(--text-soft)" title="ZCode 智谱 Coding Plan（国内站 · 按量）">ZCode 智谱 Coding Plan</div>
+              <div style="font-size:12px; font-weight:500; color:var(--text-faint)">平台主账号 · 官方 API</div>
+            </div>
+            <div style="flex:1 1 160px; min-width:0">
+              <span class="mono ellip" style="max-width:180px" title="admin@zhipu.cn">admin@zhipu.cn</span>
+            </div>
+            <div style="flex:none; width:190px"><span class="mono">glm-5.2</span></div>
+            <div style="flex:none"><span class="addr-value">mg-3f9a****c7e8</span></div>
+            <div style="flex:none"><span class="badge b-ok" data-role="status"><span class="dot on"></span>正常</span></div>
+            <div style="flex:none"><span class="badge b-purple">编程</span></div>
+            <div style="flex:none; width:110px; display:flex; align-items:center; gap:8px">
+              <div class="progress" style="width:70px"><div class="progress-bar" style="width:42%"></div></div>
+              <span class="mono" style="font-size:12px; color:var(--text-faint)">42%</span>
+            </div>
+            <div style="flex:none; display:flex; align-items:center; gap:8px">
+              <button class="btn btn-sm" onclick="probeRow('admin@zhipu.cn')">探活</button>
+              <button class="btn btn-sm btn-danger" onclick="askBreak('admin@zhipu.cn', 3)">断开</button>
+            </div>
+          </div>
+<div class="list-row" data-row data-account="ops@zhipu.cn" 运维值班账号"zcode" data-keys="zcode 智谱 ops@zhipu.cn 平台主账号 glm-5.2 正常 编程 mg-77aa">
+            <span class="mark-sm dark">Z</span>
+            <div style="flex:1 1 200px; min-width:0">
+              <div class="ellip" style="font-size:13px; font-weight:800; color:var(--text-soft)" title="ZCode 智谱 Coding Plan（国内站 · 按量）">ZCode 智谱 Coding Plan</div>
+              <div style="font-size:12px; font-weight:500; color:var(--text-faint)">平台主账号 · 官方 API</div>
+            </div>
+            <div style="flex:1 1 160px; min-width:0">
+              <span class="mono ellip" style="max-width:180px" title="ops@zhipu.cn">ops@zhipu.cn</span>
+            </div>
+            <div style="flex:none; width:190px"><span class="mono">glm-5.2</span></div>
+            <div style="flex:none"><span class="addr-value">mg-77aa****12ef</span></div>
+            <div style="flex:none"><span class="badge b-ok" data-role="status"><span class="dot on"></span>正常</span></div>
+            <div style="flex:none"><span class="badge b-purple">编程</span></div>
+            <div style="flex:none; width:110px; display:flex; align-items:center; gap:8px">
+              <div class="progress" style="width:70px"><div class="progress-bar" style="width:61%"></div></div>
+              <span class="mono" style="font-size:12px; color:var(--text-faint)">61%</span>
+            </div>
+            <div style="flex:none; display:flex; align-items:center; gap:8px">
+              <button class="btn btn-sm" onclick="probeRow('ops@zhipu.cn')">探活</button>
+              <button class="btn btn-sm btn-danger" onclick="askBreak('ops@zhipu.cn', 3)">断开</button>
+            </div>
+          </div>
+
+          <div class="list-row" data-row data-account="dev-coding@zhipu.cn" data-vendor="zcode" data-keys="zcode 智谱 dev-coding@zhipu.cn coding plan 余量 deepseek-v4-flash 正常 编程 mg-7b21">
+            <span class="mark-sm dark">Z</span>
+            <div style="flex:1 1 200px; min-width:0">
+              <div class="ellip" style="font-size:13px; font-weight:800; color:var(--text-soft)" title="ZCode 智谱 Coding Plan（国内站 · 按量）">ZCode 智谱 Coding Plan</div>
+              <div style="font-size:12px; font-weight:500; color:var(--text-faint)">Coding Plan 余量 · 官方 API</div>
+            </div>
+            <div style="flex:1 1 160px; min-width:0">
+              <span class="mono ellip" style="max-width:180px" title="dev-coding@zhipu.cn · Coding Plan 余量">dev-coding@zhipu.cn</span>
+            </div>
+            <div style="flex:none; width:190px"><span class="mono">deepseek-v4-flash</span></div>
+            <div style="flex:none"><span class="addr-value">mg-7b21****d084</span></div>
+            <div style="flex:none"><span class="badge b-ok" data-role="status"><span class="dot on"></span>正常</span></div>
+            <div style="flex:none"><span class="badge b-purple">编程</span></div>
+            <div style="flex:none; width:110px; display:flex; align-items:center; gap:8px">
+              <div class="progress" style="width:70px"><div class="progress-bar" style="width:88%"></div></div>
+              <span class="mono" style="font-size:12px; color:var(--text-faint)">88%</span>
+            </div>
+            <div style="flex:none; display:flex; align-items:center; gap:8px">
+              <button class="btn btn-sm" onclick="probeRow('dev-coding@zhipu.cn')">探活</button>
+              <button class="btn btn-sm btn-danger" onclick="askBreak('dev-coding@zhipu.cn', 2)">断开</button>
+            </div>
+          </div>
+
+          <div class="list-row" data-row data-account="ci-bot@zhipu.cn" data-vendor="zcode" data-keys="zcode 智谱 ci-bot@zhipu.cn ci 回归机器人 kimi-k3 冷却中 通用 mg-2a90">
+            <span class="mark-sm dark">Z</span>
+            <div style="flex:1 1 200px; min-width:0">
+              <div class="ellip" style="font-size:13px; font-weight:800; color:var(--text-soft)" title="ZCode 智谱 Coding Plan（国内站 · 按量）">ZCode 智谱 Coding Plan</div>
+              <div style="font-size:12px; font-weight:500; color:var(--text-faint)">CI 回归机器人 · 官方 API</div>
+            </div>
+            <div style="flex:1 1 160px; min-width:0">
+              <span class="mono ellip" style="max-width:180px" title="ci-bot@zhipu.cn · CI 回归机器人">ci-bot@zhipu.cn</span>
+            </div>
+            <div style="flex:none; width:190px"><span class="mono">kimi-k3</span></div>
+            <div style="flex:none"><span class="addr-value">mg-2a90****f31b</span></div>
+            <div style="flex:none; display:flex; align-items:center; gap:4px">
+              <span class="badge b-warn" data-role="status"><span class="dot"></span>冷却中</span>
+              <span class="badge b-cool">214s</span>
+            </div>
+            <div style="flex:none"><span class="badge b-cool">通用</span></div>
+            <div style="flex:none; width:110px; display:flex; align-items:center; gap:8px">
+              <div class="progress" style="width:70px"><div class="progress-bar" style="width:61%"></div></div>
+              <span class="mono" style="font-size:12px; color:var(--text-faint)">61%</span>
+            </div>
+            <div style="flex:none; display:flex; align-items:center; gap:8px">
+              <button class="btn btn-sm" onclick="probeRow('ci-bot@zhipu.cn')">探活</button>
+              <button class="btn btn-sm btn-danger" onclick="askBreak('ci-bot@zhipu.cn', 1)">断开</button>
+            </div>
+          </div>
+<div class="list-row" data-row data-account="partner@zhipu.cn" 合作伙伴试用"zcode" data-keys="zcode 智谱 partner@zhipu.cn ci 回归机器人 kimi-k3 冷却中 通用 mg-88bb">
+            <span class="mark-sm dark">Z</span>
+            <div style="flex:1 1 200px; min-width:0">
+              <div class="ellip" style="font-size:13px; font-weight:800; color:var(--text-soft)" title="ZCode 智谱 Coding Plan（国内站 · 按量）">ZCode 智谱 Coding Plan</div>
+              <div style="font-size:12px; font-weight:500; color:var(--text-faint)">CI 回归机器人 · 官方 API</div>
+            </div>
+            <div style="flex:1 1 160px; min-width:0">
+              <span class="mono ellip" style="max-width:180px" title="partner@zhipu.cn · CI 回归机器人">partner@zhipu.cn</span>
+            </div>
+            <div style="flex:none; width:190px"><span class="mono">kimi-k3</span></div>
+            <div style="flex:none"><span class="addr-value">mg-88bb****23cd</span></div>
+            <div style="flex:none; display:flex; align-items:center; gap:4px">
+              <span class="badge b-warn" data-role="status"><span class="dot"></span>冷却中</span>
+              <span class="badge b-cool">214s</span>
+            </div>
+            <div style="flex:none"><span class="badge b-cool">通用</span></div>
+            <div style="flex:none; width:110px; display:flex; align-items:center; gap:8px">
+              <div class="progress" style="width:70px"><div class="progress-bar" style="width:78%"></div></div>
+              <span class="mono" style="font-size:12px; color:var(--text-faint)">78%</span>
+            </div>
+            <div style="flex:none; display:flex; align-items:center; gap:8px">
+              <button class="btn btn-sm" onclick="probeRow('partner@zhipu.cn')">探活</button>
+              <button class="btn btn-sm btn-danger" onclick="askBreak('partner@zhipu.cn', 1)">断开</button>
+            </div>
+          </div>
+
+          <div class="list-row" data-row data-account="truman@solobrave.ai" data-vendor="workbuddy" data-keys="workbuddy truman@solobrave.ai 国际版主订阅 deepseek-v4-pro 正常 编程 mg-c4e8 anthropic">
+            <span class="mark-sm dark">W</span>
+            <div style="flex:1 1 200px; min-width:0">
+              <div class="ellip" style="font-size:13px; font-weight:800; color:var(--text-soft)" title="WorkBuddy（国际版 · 托管订阅）">WorkBuddy 国际版</div>
+              <div style="font-size:12px; font-weight:500; color:var(--text-faint)">国际版主订阅 · 官方 SDK</div>
+            </div>
+            <div style="flex:1 1 160px; min-width:0">
+              <span class="mono ellip" style="max-width:180px" title="truman@solobrave.ai · 国际版主订阅">truman@solobrave.ai</span>
+            </div>
+            <div style="flex:none; width:190px"><span class="mono">deepseek-v4-pro</span></div>
+            <div style="flex:none"><span class="addr-value">mg-c4e8****0f92</span></div>
+            <div style="flex:none"><span class="badge b-ok" data-role="status"><span class="dot on"></span>正常</span></div>
+            <div style="flex:none"><span class="badge b-purple">编程</span></div>
+            <div style="flex:none; width:110px; display:flex; align-items:center; gap:8px">
+              <div class="progress" style="width:70px"><div class="progress-bar" style="width:12%"></div></div>
+              <span class="mono" style="font-size:12px; color:var(--text-faint)">12%</span>
+            </div>
+            <div style="flex:none; display:flex; align-items:center; gap:8px">
+              <button class="btn btn-sm" onclick="probeRow('truman@solobrave.ai')">探活</button>
+              <button class="btn btn-sm btn-danger" onclick="askBreak('truman@solobrave.ai', 2)">断开</button>
+            </div>
+          </div>
+<div class="list-row" data-row data-account="analyst@solobrave.ai" 数据分析席"workbuddy" data-keys="workbuddy analyst@solobrave.ai 国际版主订阅 deepseek-v4-pro 正常 编程 mg-99cc anthropic">
+            <span class="mark-sm dark">W</span>
+            <div style="flex:1 1 200px; min-width:0">
+              <div class="ellip" style="font-size:13px; font-weight:800; color:var(--text-soft)" title="WorkBuddy（国际版 · 托管订阅）">WorkBuddy 国际版</div>
+              <div style="font-size:12px; font-weight:500; color:var(--text-faint)">国际版主订阅 · 官方 SDK</div>
+            </div>
+            <div style="flex:1 1 160px; min-width:0">
+              <span class="mono ellip" style="max-width:180px" title="analyst@solobrave.ai · 国际版主订阅">analyst@solobrave.ai</span>
+            </div>
+            <div style="flex:none; width:190px"><span class="mono">deepseek-v4-pro</span></div>
+            <div style="flex:none"><span class="addr-value">mg-99cc****34ab</span></div>
+            <div style="flex:none"><span class="badge b-ok" data-role="status"><span class="dot on"></span>正常</span></div>
+            <div style="flex:none"><span class="badge b-purple">编程</span></div>
+            <div style="flex:none; width:110px; display:flex; align-items:center; gap:8px">
+              <div class="progress" style="width:70px"><div class="progress-bar" style="width:23%"></div></div>
+              <span class="mono" style="font-size:12px; color:var(--text-faint)">23%</span>
+            </div>
+            <div style="flex:none; display:flex; align-items:center; gap:8px">
+              <button class="btn btn-sm" onclick="probeRow('analyst@solobrave.ai')">探活</button>
+              <button class="btn btn-sm btn-danger" onclick="askBreak('analyst@solobrave.ai', 2)">断开</button>
+            </div>
+          </div>
+
+          <div class="list-row" data-row data-account="studio-02@solobrave.ai" data-vendor="workbuddy" data-keys="workbuddy studio-02@solobrave.ai 备用工位 sensenova-u1-fast 已停用 免费活动 mg-91d4">
+            <span class="mark-sm dark">W</span>
+            <div style="flex:1 1 200px; min-width:0">
+              <div class="ellip" style="font-size:13px; font-weight:800; color:var(--text-soft)" title="WorkBuddy（国际版 · 托管订阅）">WorkBuddy 国际版</div>
+              <div style="font-size:12px; font-weight:500; color:var(--text-faint)">备用工位 · 官方 SDK</div>
+            </div>
+            <div style="flex:1 1 160px; min-width:0">
+              <span class="mono ellip" style="max-width:180px" title="studio-02@solobrave.ai · 备用工位（已停用）">studio-02@solobrave.ai</span>
+            </div>
+            <div style="flex:none; width:190px"><span class="mono">sensenova-u1-fast</span></div>
+            <div style="flex:none"><span class="addr-value">mg-91d4****3a77</span></div>
+            <div style="flex:none"><span class="badge b-muted" data-role="status"><span class="dot"></span>已停用</span></div>
+            <div style="flex:none"><span class="badge b-gray">免费活动</span></div>
+            <div style="flex:none; width:110px">
+              <span class="mono" style="font-size:12px; color:var(--text-faint)">已释放</span>
+            </div>
+            <div style="flex:none; display:flex; align-items:center; gap:8px">
+              <button class="btn btn-sm" onclick="probeRow('studio-02@solobrave.ai')">探活</button>
+              <button class="btn btn-sm btn-danger" onclick="askBreak('studio-02@solobrave.ai', 1)">断开</button>
+            </div>
+          </div>
+<div class="list-row" data-row data-account="trial-07@solobrave.ai" 体验席位"workbuddy" data-keys="workbuddy trial-07@solobrave.ai 备用工位 sensenova-u1-fast 已停用 免费活动 mg-11dd">
+            <span class="mark-sm dark">W</span>
+            <div style="flex:1 1 200px; min-width:0">
+              <div class="ellip" style="font-size:13px; font-weight:800; color:var(--text-soft)" title="WorkBuddy（国际版 · 托管订阅）">WorkBuddy 国际版</div>
+              <div style="font-size:12px; font-weight:500; color:var(--text-faint)">备用工位 · 官方 SDK</div>
+            </div>
+            <div style="flex:1 1 160px; min-width:0">
+              <span class="mono ellip" style="max-width:180px" title="trial-07@solobrave.ai · 备用工位（已停用）">trial-07@solobrave.ai</span>
+            </div>
+            <div style="flex:none; width:190px"><span class="mono">sensenova-u1-fast</span></div>
+            <div style="flex:none"><span class="addr-value">mg-11dd****45ef</span></div>
+            <div style="flex:none"><span class="badge b-muted" data-role="status"><span class="dot"></span>已停用</span></div>
+            <div style="flex:none"><span class="badge b-gray">免费活动</span></div>
+            <div style="flex:none; width:110px">
+              <span class="mono" style="font-size:12px; color:var(--text-faint)">已释放</span>
+            </div>
+            <div style="flex:none; display:flex; align-items:center; gap:8px">
+              <button class="btn btn-sm" onclick="probeRow('trial-07@solobrave.ai')">探活</button>
+              <button class="btn btn-sm btn-danger" onclick="askBreak('trial-07@solobrave.ai', 1)">断开</button>
+            </div>
+          </div>
+
+          <div class="list-row" data-row data-account="dev-cn@bytedance.com" data-vendor="trae" data-keys="trae 字节 dev-cn@bytedance.com 火山方舟主账号 sensenova-6.8-flash-lite 正常 图像生成 mg-5e0a">
+            <span class="mark-sm dark">T</span>
+            <div style="flex:1 1 200px; min-width:0">
+              <div class="ellip" style="font-size:13px; font-weight:800; color:var(--text-soft)" title="TRAE 字节火山方舟（国内站 · 多设备协同）">TRAE 字节火山方舟</div>
+              <div style="font-size:12px; font-weight:500; color:var(--text-faint)">火山方舟主账号 · 官方 API</div>
+            </div>
+            <div style="flex:1 1 160px; min-width:0">
+              <span class="mono ellip" style="max-width:180px" title="dev-cn@bytedance.com · 火山方舟主账号">dev-cn@bytedance.com</span>
+            </div>
+            <div style="flex:none; width:190px"><span class="mono">sensenova-6.8-flash-lite</span></div>
+            <div style="flex:none"><span class="addr-value">mg-5e0a****b213</span></div>
+            <div style="flex:none"><span class="badge b-ok" data-role="status"><span class="dot on"></span>正常</span></div>
+            <div style="flex:none"><span class="badge b-ok">图像生成</span></div>
+            <div style="flex:none; width:110px; display:flex; align-items:center; gap:8px">
+              <div class="progress" style="width:70px"><div class="progress-bar" style="width:74%"></div></div>
+              <span class="mono" style="font-size:12px; color:var(--text-faint)">74%</span>
+            </div>
+            <div style="flex:none; display:flex; align-items:center; gap:8px">
+              <button class="btn btn-sm" onclick="probeRow('dev-cn@bytedance.com')">探活</button>
+              <button class="btn btn-sm btn-danger" onclick="askBreak('dev-cn@bytedance.com', 2)">断开</button>
+            </div>
+          </div>
+<div class="list-row" data-row data-account="data-cn@bytedance.com" 数据平台账号"trae" data-keys="trae 字节 data-cn@bytedance.com 火山方舟主账号 sensenova-6.8-flash-lite 正常 图像生成 mg-22ee">
+            <span class="mark-sm dark">T</span>
+            <div style="flex:1 1 200px; min-width:0">
+              <div class="ellip" style="font-size:13px; font-weight:800; color:var(--text-soft)" title="TRAE 字节火山方舟（国内站 · 多设备协同）">TRAE 字节火山方舟</div>
+              <div style="font-size:12px; font-weight:500; color:var(--text-faint)">火山方舟主账号 · 官方 API</div>
+            </div>
+            <div style="flex:1 1 160px; min-width:0">
+              <span class="mono ellip" style="max-width:180px" title="data-cn@bytedance.com · 火山方舟主账号">data-cn@bytedance.com</span>
+            </div>
+            <div style="flex:none; width:190px"><span class="mono">sensenova-6.8-flash-lite</span></div>
+            <div style="flex:none"><span class="addr-value">mg-22ee****56ab</span></div>
+            <div style="flex:none"><span class="badge b-ok" data-role="status"><span class="dot on"></span>正常</span></div>
+            <div style="flex:none"><span class="badge b-ok">图像生成</span></div>
+            <div style="flex:none; width:110px; display:flex; align-items:center; gap:8px">
+              <div class="progress" style="width:70px"><div class="progress-bar" style="width:54%"></div></div>
+              <span class="mono" style="font-size:12px; color:var(--text-faint)">54%</span>
+            </div>
+            <div style="flex:none; display:flex; align-items:center; gap:8px">
+              <button class="btn btn-sm" onclick="probeRow('data-cn@bytedance.com')">探活</button>
+              <button class="btn btn-sm btn-danger" onclick="askBreak('data-cn@bytedance.com', 2)">断开</button>
+            </div>
+          </div>
+<div class="list-row" data-row data-account="intern@bytedance.com" 实习生账号"trae" data-keys="trae 字节 intern@bytedance.com 火山方舟主账号 sensenova-6.8-flash-lite 正常 图像生成 mg-33ff">
+            <span class="mark-sm dark">T</span>
+            <div style="flex:1 1 200px; min-width:0">
+              <div class="ellip" style="font-size:13px; font-weight:800; color:var(--text-soft)" title="TRAE 字节火山方舟（国内站 · 多设备协同）">TRAE 字节火山方舟</div>
+              <div style="font-size:12px; font-weight:500; color:var(--text-faint)">火山方舟主账号 · 官方 API</div>
+            </div>
+            <div style="flex:1 1 160px; min-width:0">
+              <span class="mono ellip" style="max-width:180px" title="intern@bytedance.com · 火山方舟主账号">intern@bytedance.com</span>
+            </div>
+            <div style="flex:none; width:190px"><span class="mono">sensenova-6.8-flash-lite</span></div>
+            <div style="flex:none"><span class="addr-value">mg-33ff****67bc</span></div>
+            <div style="flex:none"><span class="badge b-ok" data-role="status"><span class="dot on"></span>正常</span></div>
+            <div style="flex:none"><span class="badge b-ok">图像生成</span></div>
+            <div style="flex:none; width:110px; display:flex; align-items:center; gap:8px">
+              <div class="progress" style="width:70px"><div class="progress-bar" style="width:12%"></div></div>
+              <span class="mono" style="font-size:12px; color:var(--text-faint)">12%</span>
+            </div>
+            <div style="flex:none; display:flex; align-items:center; gap:8px">
+              <button class="btn btn-sm" onclick="probeRow('intern@bytedance.com')">探活</button>
+              <button class="btn btn-sm btn-danger" onclick="askBreak('intern@bytedance.com', 2)">断开</button>
+            </div>
+          </div>
+
+          <div class="list-row" data-row data-account="dev-intl@bytedance.com" data-vendor="trae" data-keys="trae 字节 dev-intl@bytedance.com 国际站 deepseek-v4-flash 无效 401 通用 mg-a377">
+            <span class="mark-sm dark">T</span>
+            <div style="flex:1 1 200px; min-width:0">
+              <div class="ellip" style="font-size:13px; font-weight:800; color:var(--text-soft)" title="TRAE 字节火山方舟（国内站 · 多设备协同）">TRAE 字节火山方舟</div>
+              <div style="font-size:12px; font-weight:500; color:var(--text-faint)">国际站 · 官方 API</div>
+            </div>
+            <div style="flex:1 1 160px; min-width:0">
+              <span class="mono ellip" style="max-width:180px" title="dev-intl@bytedance.com · 国际站（401 鉴权失败）">dev-intl@bytedance.com</span>
+            </div>
+            <div style="flex:none; width:190px"><span class="mono">deepseek-v4-flash</span></div>
+            <div style="flex:none"><span class="addr-value">mg-a377****9c40</span></div>
+            <div style="flex:none"><span class="badge b-err" data-role="status"><span class="dot"></span>无效 401</span></div>
+            <div style="flex:none"><span class="badge b-cool">通用</span></div>
+            <div style="flex:none; width:110px">
+              <span class="mono" style="font-size:12px; color:var(--text-faint)">不可用</span>
+            </div>
+            <div style="flex:none; display:flex; align-items:center; gap:8px">
+              <button class="btn btn-sm" onclick="probeRow('dev-intl@bytedance.com')">探活</button>
+              <button class="btn btn-sm btn-danger" onclick="askBreak('dev-intl@bytedance.com', 1)">断开</button>
+            </div>
+          </div>
+
+          <div class="list-row" data-row data-account="qa-team@bytedance.com" data-vendor="trae" data-keys="trae 字节 qa-team@bytedance.com 回归测试组 sensenova-u1.5-lite 冷却中 免费活动 mg-2f18">
+            <span class="mark-sm dark">T</span>
+            <div style="flex:1 1 200px; min-width:0">
+              <div class="ellip" style="font-size:13px; font-weight:800; color:var(--text-soft)" title="TRAE 字节火山方舟（国内站 · 多设备协同）">TRAE 字节火山方舟</div>
+              <div style="font-size:12px; font-weight:500; color:var(--text-faint)">回归测试组 · 官方 API</div>
+            </div>
+            <div style="flex:1 1 160px; min-width:0">
+              <span class="mono ellip" style="max-width:180px" title="qa-team@bytedance.com · 回归测试组">qa-team@bytedance.com</span>
+            </div>
+            <div style="flex:none; width:190px"><span class="mono">sensenova-u1.5-lite</span></div>
+            <div style="flex:none"><span class="addr-value">mg-2f18****6e59</span></div>
+            <div style="flex:none; display:flex; align-items:center; gap:4px">
+              <span class="badge b-warn" data-role="status"><span class="dot"></span>冷却中</span>
+              <span class="badge b-cool">47s</span>
+            </div>
+            <div style="flex:none"><span class="badge b-gray">免费活动</span></div>
+            <div style="flex:none; width:110px; display:flex; align-items:center; gap:8px">
+              <div class="progress" style="width:70px"><div class="progress-bar" style="width:53%"></div></div>
+              <span class="mono" style="font-size:12px; color:var(--text-faint)">53%</span>
+            </div>
+            <div style="flex:none; display:flex; align-items:center; gap:8px">
+              <button class="btn btn-sm" onclick="probeRow('qa-team@bytedance.com')">探活</button>
+              <button class="btn btn-sm btn-danger" onclick="askBreak('qa-team@bytedance.com', 1)">断开</button>
+            </div>
+          </div>
+
+          <div class="list-row" data-row data-account="device-token-qoder" data-vendor="qoder" data-keys="qoder device-token-qoder 设备码绑定 逆向 受限 合规排除 deepseek-v4-pro 通用 mg-8c62">
+            <span class="mark-sm dark">Q</span>
+            <div style="flex:1 1 200px; min-width:0">
+              <div class="ellip" style="font-size:13px; font-weight:800; color:var(--text-soft)" title="Qoder（设备码绑定 · 逆向形态）">Qoder 设备码绑定</div>
+              <div style="font-size:12px; font-weight:500; color:var(--text-faint)">逆向形态 · 不可进调度池</div>
+            </div>
+            <div style="flex:1 1 160px; min-width:0">
+              <span class="mono ellip" style="max-width:180px" title="device-token-qoder · 设备码绑定（逆向形态）">device-token-qoder</span>
+            </div>
+            <div style="flex:none; width:190px"><span class="mono">deepseek-v4-pro</span></div>
+            <div style="flex:none"><span class="addr-value">mg-8c62****4d95</span></div>
+            <div style="flex:none">
+              <span class="badge b-warn" data-role="status">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:12px; height:12px"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                受限
+              </span>
+            </div>
+            <div style="flex:none"><span class="badge b-cool">通用</span></div>
+            <div style="flex:none; width:110px">
+              <span class="mono" style="font-size:12px; color:var(--text-faint)">已封禁</span>
+            </div>
+            <div style="flex:none; display:flex; align-items:center; gap:8px">
+              <button class="btn btn-sm" disabled>探活</button>
+              <button class="btn btn-sm btn-danger" onclick="askBreak('device-token-qoder', 1)">断开</button>
+            </div>
+          </div>
+<div class="list-row" data-row data-account="device-token-qoder-b" 设备码绑定 B 机"qoder" data-keys="qoder device-token-qoder-b 设备码绑定 逆向 受限 合规排除 deepseek-v4-pro 通用 mg-44aa">
+            <span class="mark-sm dark">Q</span>
+            <div style="flex:1 1 200px; min-width:0">
+              <div class="ellip" style="font-size:13px; font-weight:800; color:var(--text-soft)" title="Qoder（设备码绑定 · 逆向形态）">Qoder 设备码绑定</div>
+              <div style="font-size:12px; font-weight:500; color:var(--text-faint)">逆向形态 · 不可进调度池</div>
+            </div>
+            <div style="flex:1 1 160px; min-width:0">
+              <span class="mono ellip" style="max-width:180px" title="device-token-qoder-b · 设备码绑定（逆向形态）">device-token-qoder-b</span>
+            </div>
+            <div style="flex:none; width:190px"><span class="mono">deepseek-v4-pro</span></div>
+            <div style="flex:none"><span class="addr-value">mg-44aa****78de</span></div>
+            <div style="flex:none">
+              <span class="badge b-warn" data-role="status">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:12px; height:12px"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                受限
+              </span>
+            </div>
+            <div style="flex:none"><span class="badge b-cool">通用</span></div>
+            <div style="flex:none; width:110px">
+              <span class="mono" style="font-size:12px; color:var(--text-faint)">已封禁</span>
+            </div>
+            <div style="flex:none; display:flex; align-items:center; gap:8px">
+              <button class="btn btn-sm" disabled>探活</button>
+              <button class="btn btn-sm btn-danger" onclick="askBreak('device-token-qoder-b', 1)">断开</button>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- §9 状态：空态 · 首次使用（含引导按钮） -->
+        <div class="empty" id="blk-empty" hidden>
+          <div style="font-size:13px; font-weight:800; color:var(--text-soft)">尚未绑定任何产品账号</div>
+          <div style="margin-top:8px; font-size:12px; font-weight:500; color:var(--text-faint); line-height:1.6">绑定后即可把 ZCode / WorkBuddy / TRAE 等产品的账号权益聚合到统一端点调用。</div>
+          <div style="margin-top:12px"><button class="btn btn-primary" onclick="bindNew()">绑定第一个账号</button></div>
+        </div>
+
+        <!-- §9 状态：空态 · 筛选无结果（含「重置筛选」） -->
+        <div class="empty" id="blk-noresult" hidden>
+          <div style="font-size:13px; font-weight:800; color:var(--text-soft)">没有符合条件的账号</div>
+          <div style="margin-top:8px; font-size:12px; font-weight:500; color:var(--text-faint); line-height:1.6">试试重置筛选，或换个关键词（可按产品 / 账号 / 系统模型过滤）。</div>
+          <div style="margin-top:12px"><button class="btn" onclick="resetFilter()">重置筛选</button></div>
+        </div>
+
+        <!-- §9 状态：加载 -->
+        <div class="loading" id="blk-loading" hidden>加载中…（骨架占位，布局不发生跳动）</div>
+
+        <!-- §9 状态：错误（错误码 mono + 重试） -->
+        <div class="alert alert-err" id="blk-error" hidden>
+          <div class="alert-title">账号清单加载失败</div>
+          <div>网关返回 <span class="mono">HTTP 503</span>（<span class="mono">upstream_unavailable</span>）：凭据服务不可达，已加载 0 / 16 条。</div>
+          <div style="margin-top:12px">
+            <button class="btn btn-sm" onclick="retryLoad()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px; height:14px"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+              重试
+            </button>
+          </div>
+        </div>
+
+        <!-- §9 状态：受限（锁图标 + 原因 + 出路） -->
+        <div class="alert alert-warn" id="blk-restricted" hidden>
+          <div class="alert-title">
+            <span style="display:inline-flex; align-items:center; gap:8px">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px; height:14px"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+              该产品形态不可接入
+            </span>
+          </div>
+          <div>Qoder 属逆向形态（<span class="mono">upstream_form=reverse</span>），按合规分层一律不进入调度池；已保留其账号记录但停用调用。</div>
+          <div style="margin-top:12px"><button class="btn btn-sm" onclick="showToast('已打开合规说明（示例出路）')">了解详情</button></div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 破坏性操作确认弹窗（断开连接 · 正文列明影响面） -->
+<div class="modal-mask hidden" id="break-mask" onclick="if(event.target===this) closeBreak()">
+  <div class="modal">
+    <div class="modal-head">
+      <h3>断开账号连接</h3>
+      <button class="modal-close" aria-label="关闭" onclick="closeBreak()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px; height:14px"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="alert alert-warn">
+        <div class="alert-title">影响面</div>
+        <div id="break-impact">—</div>
+      </div>
+      <div class="form-hint">断开后该账号立即退出调度池，其下系统模型不再可调用；账号记录保留，可重新绑定。</div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeBreak()">取消</button>
+      <button class="btn btn-danger" onclick="doBreak()">确认断开</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast UI -->
+<div id="toast-wrap"></div>
+
+<script>/* ?theme=dark|light 主题预览（与既有基准模板同一约定；须先于主脚本执行） */
+(() => { const t = new URLSearchParams(location.search).get("theme");
+  if (t === "dark" || t === "light") document.documentElement.dataset.theme = t; })();</script>
+
+<script>
+/* ---------- 常量 ---------- */
+var VENDORS = ["all", "zcode", "workbuddy", "trae", "qoder"];
+var STATES = ["default", "empty", "noresult", "loading", "error", "restricted", "off", "narrow"];
+var STATE_DESC = {
+  "default":    "当前状态：默认（有数据）",
+  "empty":      "当前状态：空态 · 首次使用（含引导按钮）",
+  "noresult":   "当前状态：空态 · 筛选无结果（含「重置筛选」）",
+  "loading":    "当前状态：加载（.loading 骨架，无布局跳动）",
+  "error":      "当前状态：错误（错误码 mono + 重试）",
+  "restricted": "当前状态：受限（锁图标 + 原因 + 出路）",
+  "off":        "当前状态：停用（.off opacity .5 + pointer-events:none）",
+  "narrow":     "当前状态：窄屏（内容区限宽 768px；侧栏抽屉化需宿主页宽切换器）"
+};
+
+var vendor = "all";
+var state = "default";
+var NO_RESULT_Q = "zzz-无匹配";
+var pendingAccount = "";
+var pendingModels = 0;
+
+function param(k) { return new URLSearchParams(location.search).get(k); }
+function curTheme() { return document.documentElement.dataset.theme || "light"; }
+
+/* ---------- URL 状态（history.replaceState，不触发导航） ---------- */
+function writeUrl() {
+  var u = new URL(location.href);
+  u.searchParams.set("vendor", vendor);
+  u.searchParams.set("state", state);
+  u.searchParams.set("theme", curTheme());
+  history.replaceState(null, "", u.toString());
+}
+
+/* ---------- 渲染 ---------- */
+function render() {
+  var base = (state === "default" || state === "off" || state === "narrow");
+  /* .list-row 自带 display:flex，必须用 .hidden 类（display:none !important）隐藏；
+     故可见行也按 class 判定，不能读 hidden 属性 */
+  var rows = document.querySelectorAll("[data-row]");
+  var vis = 0;
+  rows.forEach(function (r) { if (!r.classList.contains("hidden")) vis++; });
+  var none = (state === "noresult") || (base && rows.length > 0 && vis === 0);
+
+  var card = document.getElementById("list-card");
+  card.hidden = !(base && !none);
+  card.classList.toggle("off", state === "off");
+  card.classList.toggle("locked", state === "off");
+
+  document.getElementById("blk-empty").hidden = !(state === "empty");
+  document.getElementById("blk-noresult").hidden = !none;
+  document.getElementById("blk-loading").hidden = !(state === "loading");
+  document.getElementById("blk-error").hidden = !(state === "error");
+  document.getElementById("blk-restricted").hidden = !(state === "restricted");
+
+  var wrap = document.getElementById("page-wrap");
+  wrap.style.maxWidth = state === "narrow" ? "768px" : "";
+  wrap.style.margin = state === "narrow" ? "0 auto" : "";
+
+  var suffix = base && !none ? " · 可见 " + vis + " / " + rows.length + " 个账号" : "";
+  document.getElementById("state-desc").textContent = STATE_DESC[state] + suffix;
+  writeUrl();
+}
+
+function paintTabs() {
+  document.querySelectorAll("#vendor-tabs .tab").forEach(function (t) {
+    t.classList.toggle("active", t.dataset.vendor === vendor);
+  });
+  document.querySelectorAll("#state-tabs .tab").forEach(function (t) {
+    t.classList.toggle("active", t.dataset.state === state);
+  });
+  document.querySelectorAll("#theme-tabs .tab").forEach(function (t) {
+    t.classList.toggle("active", t.dataset.theme === curTheme());
+  });
+}
+
+/* ---------- 产品过滤 tab（真实过滤） ---------- */
+function switchVendor(v) {
+  if (VENDORS.indexOf(v) < 0) v = "all";
+  vendor = v;
+  applyFilter();
+  paintTabs();
+}
+
+/* ---------- 状态演示切换 ---------- */
+function switchState(s) {
+  if (STATES.indexOf(s) < 0) s = "default";
+  state = s;
+  /* 「无结果」演示态靠一个不可能命中的关键词真实触发过滤（不是假空态）；
+     离开该态时把哨兵词清掉，避免残留过滤污染默认 / 停用 / 窄屏等状态 */
+  var qi = document.getElementById("q");
+  if (s === "noresult") { qi.value = NO_RESULT_Q; }
+  else if (qi.value === NO_RESULT_Q) { qi.value = ""; }
+  applyFilter();
+  paintTabs();
+}
+
+/* ---------- 主题（沿用 ?theme= 约定） ---------- */
+function switchTheme(v) {
+  document.documentElement.dataset.theme = v;
+  render();
+  paintTabs();
+}
+
+/* ---------- 真实过滤：产品 tab × 搜索框 ---------- */
+function applyFilter() {
+  var q = (document.getElementById("q").value || "").trim().toLowerCase();
+  document.querySelectorAll("[data-row]").forEach(function (r) {
+    var byVendor = (vendor === "all" || r.dataset.vendor === vendor);
+    var byText = q === "" || (r.dataset.keys || "").toLowerCase().indexOf(q) >= 0;
+    r.classList.toggle("hidden", !(byVendor && byText));
+  });
+  render();
+}
+
+function resetFilter() {
+  document.getElementById("q").value = "";
+  vendor = "all";
+  state = "default";
+  applyFilter();
+  paintTabs();
+}
+
+/* ---------- 探活（真实改该行结论） ---------- */
+function probeRow(account) {
+  var row = document.querySelector('[data-account="' + account + '"]');
+  var ms = 180 + Math.floor(Math.random() * 320);
+  var badge = row ? row.querySelector('[data-role="status"]') : null;
+  if (badge) { badge.className = "badge b-ok"; badge.innerHTML = '<span class="dot on"></span>通过'; }
+  showToast("探活完成 · " + account + " · " + ms + "ms");
+}
+
+/* ---------- 破坏性操作：确认弹窗 + 影响面 + 真实置为已停用 ---------- */
+function askBreak(account, models) {
+  pendingAccount = account;
+  pendingModels = models;
+  document.getElementById("break-impact").textContent =
+    "账号 " + account + " 将立即退出调度池，其下 " + models + " 个系统模型不可调用；" +
+    "正在途中的请求会被中断并返回 503。";
+  document.getElementById("break-mask").classList.remove("hidden");
+}
+
+function closeBreak() {
+  document.getElementById("break-mask").classList.add("hidden");
+}
+
+function doBreak() {
+  var row = document.querySelector('[data-account="' + pendingAccount + '"]');
+  if (row) {
+    row.classList.add("off");
+    var badge = row.querySelector('[data-role="status"]');
+    if (badge) { badge.className = "badge b-muted"; badge.innerHTML = '<span class="dot"></span>已停用'; }
+    row.querySelectorAll("button").forEach(function (b) { b.disabled = true; });
+  }
+  closeBreak();
+  showToast("已断开 · " + pendingAccount + " 退出调度");
+}
+
+/* ---------- 其他动作 ---------- */
+function bindNew() { showToast("弹出两步式授权向导（loginUrl 需用户点击同步栈内返回）"); }
+function retryLoad() { showToast("已重新发起加载…"); switchState("default"); }
+
+/* ---------- toast ---------- */
+function showToast(text) {
+  var wrap = document.getElementById("toast-wrap");
+  var el = document.createElement("div");
+  el.className = "toast";
+  el.textContent = text;
+  wrap.appendChild(el);
+  setTimeout(function () { el.remove(); }, 2400);
+}
+
+/* ---------- 绑定 ---------- */
+document.querySelectorAll("#vendor-tabs .tab").forEach(function (t) {
+  t.onclick = function () { switchVendor(t.dataset.vendor); };
+});
+document.querySelectorAll("#state-tabs .tab").forEach(function (t) {
+  t.onclick = function () { switchState(t.dataset.state); };
+});
+document.querySelectorAll("#theme-tabs .tab").forEach(function (t) {
+  t.onclick = function () { switchTheme(t.dataset.theme); };
+});
+
+/* ---------- 初始化：从 URL 读回产品过滤 / 状态 ---------- */
+var pv = param("vendor"), ps = param("state");
+vendor = VENDORS.indexOf(pv) >= 0 ? pv : "all";
+state = STATES.indexOf(ps) >= 0 ? ps : "default";
+applyFilter();   /* 走过滤而非直接 render()，确保 URL 读回的产品过滤真的生效 */
+paintTabs();
+</script>
+
+<style>
+@keyframes toast-in { from { transform: translateY(-8px); opacity: 0; } }
+
+/* 列表列几何固定化（v2.12）：
+   原 .list-row 用 flex 自动宽度 —— 前置弹性列宽度随内容变化，把后面的列整体推走，
+   实测第 3~7 列逐行漂移最大 72.6px，列表不成竖列。改 grid 定列宽后所有行共用同一组列轨道，
+   列必落在同一条左边缘上（用户指示「表头/数据一定要左对齐」的列表实现层保障）。
+   作用域限定 #list-card，不波及复用 .list-row 的其他页面。 */
+#list-card .list-row {
+  display: grid;
+  /* 列宽 = 各列内容的自然宽度（前两列弹性吃余量，其余按 1440 实测自然宽封顶）：
+     产品名 200 · 账号 160 · 系统模型 190 · 密钥 148 · 状态 110 · 分组 62 · 额度 110 · 操作 102
+     全部走比例/上限而非 max-content —— max-content 是"每个 grid 容器内部"解析的，
+     每行一个 grid 容器时会随各行内容变化，跨行仍不对齐（v2.12 实测漂移 72.6px）。 */
+  grid-template-columns: 20px minmax(150px, 1fr) minmax(140px, 1fr)
+                         minmax(0, 190px) minmax(0, 148px) minmax(0, 110px)
+                         minmax(0, 62px) minmax(0, 110px) minmax(0, 102px);
+  align-items: center;
+  gap: 12px;
+}
+/* 单元格一律不换行、不撑破列；超长以省略号收尾。
+   注意：.ellip 在 base.css 里只作用于 .tbl 作用域，列表里必须补；
+   且省略号要写在**列的直接子元素**上 —— 子元素里的 span 溢出时截断发生在父层，
+   父层没有 text-overflow 就只会硬切（v2.12 实测：账号列曾被切成 studio-02@solobrave）。 */
+#list-card .list-row > * { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#list-card .ellip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+</style>
+</body>
+</html>

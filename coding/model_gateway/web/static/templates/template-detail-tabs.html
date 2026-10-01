@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>T-01 · 主从详情（子侧栏 + 详情内页签） · v1.0</title>
+<link rel="stylesheet" href="/css/base.css">
+</head>
+<body>
+<!-- ============================================================
+  T-01 · 主从详情（子侧栏 + 详情内页签） · A 族 · TB-3 · v1.0
+  用途：资源详情 / 模型详情 / 账号详情 
+  组件规范（逐像素值）：docs/specs/frontend-spec.md
+============================================================ -->
+<div class="app">
+  <!-- 侧栏 -->
+  <aside class="sidenav">
+    <div class="brand">
+      <span class="brand-mark">M</span>
+      <span class="brand-text">
+        <span class="brand-name">Model-Gateway</span>
+        <span class="brand-sub">LLM Gateway Console</span>
+      </span>
+    </div>
+    <nav class="nav-list">
+      <div class="nav-group">
+        <div class="nav-group-title">概览</div>
+        <button class="nav-item" title="总览">
+          <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></svg>
+          <span>总览</span>
+        </button>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-title">资源配置</div>
+        <button class="nav-item active" title="模型资源">
+          <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          <span>模型资源</span>
+        </button>
+        <button class="nav-item" title="系统模型">
+          <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.912 5.886a1 1 0 0 1-.95.684l-6.19.043a1 1 0 0 0-.57 1.764l4.984 3.73a1 1 0 0 1 .356 1.114L5.808 22a1 1 0 0 0 1.54 1.118l5.05-3.61a1 1 0 0 1 1.204 0l5.05 3.61a1 1 0 0 0 1.54-1.118l-1.912-5.886a1 1 0 0 1 .356-1.114l4.984-3.73a1 1 0 0 0-.57-1.764l-6.19-.043a1 1 0 0 1-.95-.684L12 3Z"/></svg>
+          <span>系统模型</span>
+        </button>
+      </div>
+    </nav>
+    <div  style="margin-top:auto; padding: 12px; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 8px;">
+      <span class="dot on"></span>
+      <span style="font-size:12px; color:var(--text-muted)">运行中</span>
+    </div>
+  </aside>
+
+  <div class="main-col">
+    <!-- 顶栏 -->
+    <header class="topbar">
+      <div class="tb-left">
+        <div class="crumb">
+          <span>Console</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px; height:14px;"><path d="m9 18 6-6-6-6"/></svg>
+          <span>资源配置</span>
+        </div>
+        <h1 class="tb-title">模型资源详情</h1>
+      </div>
+      <div class="tb-right" style="display:flex; align-items:center; gap:12px;">
+        <button class="btn btn-sm" onclick="showToast('配置重新加载成功')">重载配置</button>
+      </div>
+    </header>
+
+    <!-- 主体双面板 -->
+    <div style="display: flex; height: calc(100vh - 60px); overflow: hidden;">
+      <!-- 子侧栏 Subnav 248px -->
+      <aside class="subnav">
+        <div class="subnav-scroll">
+          <div style="font-size:12px; font-weight:700; color:var(--text-faint); margin-bottom:8px; padding-left:4px;">资源供应商</div>
+          
+          <div class="group-card" style="margin-bottom:12px;">
+            <div style="display:flex; align-items:center; gap:8px; padding:4px 8px; margin-bottom:4px;">
+              <span class="logo-block dark" style="width:20px; height:20px; font-size:10px; border-radius:var(--radius-sm);">商</span>
+              <span style="font-size:13px; font-weight:800; color:var(--text)">商汤科技</span>
+            </div>
+            <button class="mode-btn active" onclick="showToast('已切换至商汤按量 Key1')">
+              res-3f9a2c1e
+              <span class="dot on"></span>
+            </button>
+            <button class="mode-btn" onclick="showToast('已切换至商汤 TokenPlan')">
+              res-7b21d084
+              <span class="dot"></span>
+            </button>
+          </div>
+
+          <div class="group-card">
+            <div style="display:flex; align-items:center; gap:8px; padding:4px 8px; margin-bottom:4px;">
+              <span class="logo-block dark" style="width:20px; height:20px; font-size:10px; border-radius:var(--radius-sm); background:var(--g-coding);">D</span>
+              <span style="font-size:13px; font-weight:800; color:var(--text)">DeepSeek</span>
+            </div>
+            <button class="mode-btn" onclick="showToast('已切换至DeepSeek 官方')">
+              res-c4e80f92
+              <span class="dot on"></span>
+            </button>
+          </div>
+        </div>
+        <div class="subnav-foot">
+          <button class="side-add" onclick="showToast('添加资源草稿启动')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" x2="12" y1="5" y2="19"/><line x1="5" x2="19" y1="12" y2="12"/></svg>
+            <span>添加模型资源</span>
+          </button>
+        </div>
+      </aside>
+
+      <!-- 主区撑满 内部滚动 -->
+      <main style="flex:1; overflow-y:auto; padding:12px;">
+        <div style="max-width:980px; margin:0 auto; display:flex; flex-direction:column; gap:12px;">
+          <!-- 1. 头卡 (logo-block + 名称 + 徽章 + 操作) -->
+          <div class="card" style="border-radius:var(--radius-card); background:var(--surface); padding:12px; box-shadow:var(--shadow-card); display:flex; justify-content:space-between; align-items:center;">
+            <div style="display:flex; align-items:center; gap:12px;">
+              <span class="logo-block dark" style="width:40px; height:40px; font-size:18px; border-radius:var(--radius-md);">商</span>
+              <div>
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <span class="edit-name">商汤按量 Key1</span>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px; height:14px; color:var(--text-faint); cursor:pointer;"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+                </div>
+                <div style="font-size:12px; color:var(--text-faint); margin-top:2px;">
+                  商汤科技 (SenseNova) · 3 个模型映射 · 当前正常可用
+                </div>
+              </div>
+            </div>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span class="badge" style="background:var(--ok-bg); color:var(--ok);">API · 按量</span>
+              <span class="badge" style="background:var(--cool-bg); color:var(--cool);">openai</span>
+              <span class="badge" style="background:var(--ok-bg); color:var(--ok); display:flex; align-items:center; gap:4px;"><span class="dot on"></span> 正常</span>
+              <button class="btn btn-primary" onclick="showToast('已保存启停状态')">已启用</button>
+              <button class="icon-btn danger" aria-label="删除" onclick="showToast('弹出删除确认')" style="width:36px; height:36px; border-radius:var(--radius-md); border:1px solid var(--border); display:flex; place-items:center;">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px; height:16px;"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <!-- 2. 页签行 (TB-3 主从内页签) -->
+          <div class="tabs" style="width:100%; display:flex; justify-content:flex-start;">
+            <button class="tab active" id="tab-overview" onclick="switchSubTab('overview')">概览</button>
+            <button class="tab" id="tab-keys" onclick="switchSubTab('keys')">密钥与账号</button>
+            <button class="tab" id="tab-mappings" onclick="switchSubTab('mappings')">模型映射</button>
+            <button class="tab" id="tab-connectivity" onclick="switchSubTab('connectivity')">连通性</button>
+            <button class="tab" id="tab-usage" onclick="switchSubTab('usage')">用量</button>
+          </div>
+
+          <!-- 3. 页签面板区 -->
+          <!-- 面板-概览 -->
+          <div id="panel-overview" data-panel style="display:flex; flex-direction:column; gap:12px;">
+            <div class="card" style="border-radius:var(--radius-card); background:var(--surface); padding:12px; box-shadow:var(--shadow-card);">
+              <div class="sec-head" style="display:flex; justify-content:space-between; margin-bottom:12px;">
+                <span style="font-weight:800; font-size:13px; color:var(--text-soft)">接入信息</span>
+              </div>
+              <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+                <div class="form-row" style="display:flex; flex-direction:column; gap:8px;">
+                  <span style="font-size:12px; font-weight:700; color:var(--text-tertiary)">接入形式</span>
+                  <div style="height:44px; background:var(--surface-muted); border-radius:var(--radius-md); border:1px solid var(--border); display:flex; align-items:center; padding:0 14px; font-size:13px;">API 模式 (普通按量付费)</div>
+                </div>
+                <div class="form-row" style="display:flex; flex-direction:column; gap:8px;">
+                  <span style="font-size:12px; font-weight:700; color:var(--text-tertiary)">Base URL</span>
+                  <div style="height:44px; background:var(--surface-muted); border-radius:var(--radius-md); border:1px solid var(--border); display:flex; align-items:center; padding:0 14px; font-size:13px; font-family:var(--mono);">https://api.sensenova.cn/compatible-mode/v2</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="card" style="border-radius:var(--radius-card); background:var(--surface); padding:12px; box-shadow:var(--shadow-card);">
+              <div class="sec-head" style="display:flex; justify-content:space-between; margin-bottom:12px;">
+                <span style="font-weight:800; font-size:13px; color:var(--text-soft)">资源健康指标</span>
+              </div>
+              <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:12px;">
+                <div style="background:var(--surface-muted); padding:12px; border-radius:var(--radius-md); border:1px solid var(--border);">
+                  <div style="font-size:11px; color:var(--text-tertiary); font-weight:600;">连续失败次数</div>
+                  <div style="font-size:19px; font-weight:700; color:var(--text); margin-top:4px;">0 <span style="font-size:12px; font-weight:500; color:var(--text-faint)">次</span></div>
+                </div>
+                <div style="background:var(--surface-muted); padding:12px; border-radius:var(--radius-md); border:1px solid var(--border);">
+                  <div style="font-size:11px; color:var(--text-tertiary); font-weight:600;">在途请求数</div>
+                  <div style="font-size:19px; font-weight:700; color:var(--text); margin-top:4px;">0 <span style="font-size:12px; font-weight:500; color:var(--text-faint)">个</span></div>
+                </div>
+                <div style="background:var(--surface-muted); padding:12px; border-radius:var(--radius-md); border:1px solid var(--border);">
+                  <div style="font-size:11px; color:var(--text-tertiary); font-weight:600;">冷却倒计时</div>
+                  <div style="font-size:19px; font-weight:700; color:var(--text-muted); margin-top:4px;">未进入冷却</div>
+                </div>
+                <div style="background:var(--surface-muted); padding:12px; border-radius:var(--radius-md); border:1px solid var(--border);">
+                  <div style="font-size:11px; color:var(--text-tertiary); font-weight:600;">最新错误摘要</div>
+                  <div style="font-size:13px; font-weight:600; color:var(--text-muted); margin-top:8px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">无错误记录</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 面板-密钥与账号 -->
+          <div id="panel-keys" data-panel style="display:none;">
+            <div class="card flush" style="border-radius:var(--radius-card); background:var(--surface); box-shadow:var(--shadow-card); overflow:hidden;">
+              <div class="card-head inset" style="display:flex; justify-content:space-between; align-items:center; padding:14px 18px; border-bottom:1px solid var(--border);">
+                <span style="font-weight:800; font-size:13px; color:var(--text-soft)">密钥与关联账号</span>
+                <button class="btn btn-sm btn-primary" onclick="showToast('新增 Key')">＋ 添加 Key</button>
+              </div>
+              <table class="tbl">
+                <thead>
+                  <tr>
+                    <th>Key值 (密文)</th>
+                    <th>账号备注 (选填)</th>
+                    <th>状态</th>
+                    <th class="num">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td class="mono">sk-se****lite</td>
+                    <td>主账号</td>
+                    <td><span class="badge" style="background:var(--ok-bg); color:var(--ok);">正常启用</span></td>
+                    <td class="num">
+                      <button class="btn btn-sm" onclick="showToast('眼睛查看')">👁</button>
+                      <button class="btn btn-sm" onclick="showToast('复制成功')">⧉</button>
+                      <button class="btn btn-sm btn-danger" onclick="showToast('删除密钥')">🗑</button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- 面板-模型映射 -->
+          <div id="panel-mappings" data-panel style="display:none;">
+            <div class="card flush" style="border-radius:var(--radius-card); background:var(--surface); box-shadow:var(--shadow-card); overflow:hidden;">
+              <div class="card-head inset" style="display:flex; justify-content:space-between; align-items:center; padding:14px 18px; border-bottom:1px solid var(--border);">
+                <span style="font-weight:800; font-size:13px; color:var(--text-soft)">模型映射列表</span>
+                <button class="btn btn-sm btn-primary" onclick="showToast('添加模型映射')">＋ 添加模型映射</button>
+              </div>
+              <table class="tbl">
+                <thead>
+                  <tr>
+                    <th>供应商模型ID</th>
+                    <th>系统映射模型ID</th>
+                    <th>分组徽章</th>
+                    <th class="num">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td class="mono">sensenova-6.8-flash-lite</td>
+                    <td class="mono">sensenova-6.8-flash-lite</td>
+                    <td><span class="badge" style="background:var(--cool-bg); color:var(--cool);">通用</span></td>
+                    <td class="num">
+                      <button class="btn btn-sm btn-danger" onclick="showToast('移除映射')">移除</button>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td class="mono">deepseek-v4-pro</td>
+                    <td class="mono">deepseek-v4-pro</td>
+                    <td><span class="badge b-purple">编程</span></td>
+                    <td class="num">
+                      <button class="btn btn-sm btn-danger" onclick="showToast('移除映射')">移除</button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- 面板-连通性 -->
+          <div id="panel-connectivity" data-panel style="display:none;">
+            <div class="card" style="border-radius:var(--radius-card); background:var(--surface); padding:12px; box-shadow:var(--shadow-card);">
+              <div class="sec-head" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                <span style="font-weight:800; font-size:13px; color:var(--text-soft)">多 Key 连通体检</span>
+                <button class="btn btn-primary" onclick="triggerTestAll()">一键检测全部</button>
+              </div>
+              
+              <div id="test-results" style="display:flex; flex-direction:column; gap:8px;">
+                <div style="padding:10px 12px; border-radius:var(--radius-md); border:1px solid var(--border); display:flex; justify-content:space-between; align-items:center;">
+                  <div style="display:flex; align-items:center; gap:10px;">
+                    <span class="dot on"></span>
+                    <span style="font-family:var(--mono);font-weight:600">sk-se****lite</span>
+                    <span style="font-size:12px; color:var(--text-tertiary)">(主账号)</span>
+                  </div>
+                  <div style="display:flex; align-items:center; gap:12px;">
+                    <span style="font-family:var(--mono); font-size:12px; color:var(--ok)">412ms</span>
+                    <span class="badge" style="background:var(--ok-bg); color:var(--ok);">通过</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 面板-用量 -->
+          <div id="panel-usage" data-panel style="display:none;">
+            <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:12px;">
+              <div style="background:var(--surface); padding:16px; border-radius:var(--radius-lg); border:1px solid var(--border); box-shadow:var(--shadow-card);">
+                <div style="font-size:12px; color:var(--text-tertiary); font-weight:600;">总调用次数</div>
+                <div style="font-size:19px; font-weight:700; color:var(--text); margin-top:4px;">1,248 <span style="font-size:12px; font-weight:500; color:var(--text-faint)">次</span></div>
+              </div>
+              <div style="background:var(--surface); padding:16px; border-radius:var(--radius-lg); border:1px solid var(--border); box-shadow:var(--shadow-card);">
+                <div style="font-size:12px; color:var(--text-tertiary); font-weight:600;">总Token流量</div>
+                <div style="font-size:19px; font-weight:700; color:var(--text); margin-top:4px;">2.4 <span style="font-size:12px; font-weight:500; color:var(--text-faint)">M</span></div>
+              </div>
+              <div style="background:var(--surface); padding:16px; border-radius:var(--radius-lg); border:1px solid var(--border); box-shadow:var(--shadow-card);">
+                <div style="font-size:12px; color:var(--text-tertiary); font-weight:600;">调用成功率</div>
+                <div style="font-size:19px; font-weight:700; color:var(--ok); margin-top:4px;">98.4 <span style="font-size:12px; font-weight:500; color:var(--text-faint)">%</span></div>
+              </div>
+            </div>
+            
+            <div class="card" style="border-radius:var(--radius-card); background:var(--surface); padding:12px; box-shadow:var(--shadow-card); height: 200px; display:grid; place-items:center;">
+              <span style="font-size:13px; color:var(--text-tertiary)">[此处渲染 Chart.js 调用量曲线趋势图]</span>
+            </div>
+          </div>
+
+        </div>
+      </main>
+    </div>
+  </div>
+</div>
+
+<!-- Toast UI -->
+<div id="toast-wrap" style="position:fixed; top:16px; left:50%; transform:translateX(-50%); z-index:999; display:flex; flex-direction:column; gap:8px;"></div>
+
+<script>
+// 页签切换 logic
+function switchSubTab(tabKey) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('tab-' + tabKey).classList.add('active');
+  
+  document.querySelectorAll('[data-panel]').forEach(p => p.style.display = 'none');
+  document.getElementById('panel-' + tabKey).style.display = 'flex';
+}
+
+
+function showToast(text) {
+  const wrap = document.getElementById('toast-wrap');
+  const toast = document.createElement('div');
+  toast.style.cssText = 'background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-lg); box-shadow:var(--shadow-pop); padding:11px 16px; font-size:13px; font-weight:600; color:var(--text); animation: toast-in .15s ease-out;';
+  toast.innerText = text;
+  wrap.appendChild(toast);
+  setTimeout(() => {
+    toast.style.animation = 'toast-out .15s ease-in';
+    setTimeout(() => toast.remove(), 150);
+  }, 2400);
+}
+
+function triggerTestAll() {
+  showToast('批量连通性测试中...');
+  const res = document.getElementById('test-results');
+  res.style.opacity = '0.5';
+  setTimeout(() => {
+    res.style.opacity = '1';
+    showToast('批量检测全量通过，200 OK');
+  }, 1000);
+}
+</script>
+
+<style>
+@keyframes toast-in { from { transform: translateY(-8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+@keyframes toast-out { to { transform: translateY(-8px); opacity: 0; } }
+</style>
+<script>/* ?theme=dark|light 主题预览（与既有基准模板同一约定；
+   模板预览页按控制台当前主题注入该参数）。 */
+(() => { const t = new URLSearchParams(location.search).get("theme");
+  if (t === "dark" || t === "light") document.documentElement.dataset.theme = t; })();</script>
+</body>
+</html>

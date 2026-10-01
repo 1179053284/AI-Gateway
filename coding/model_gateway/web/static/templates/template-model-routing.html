@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>T-18 · 模型路由（匹配 · 选路 · 切换 · 恢复） · v1.0</title>
+<link rel="stylesheet" href="/css/base.css">
+</head>
+<body>
+<!-- ============================================================
+  T-18 · 模型路由（匹配 · 选路 · 切换 · 恢复） · A 族 · v1.0
+  用途：把「入站模型名 → 系统模型 → 资源池 → 实际承接资源」的完整路由判定链
+        显式化为可看/可查/就近可调的页面（需求预演，非线上功能）。
+  语义全部来自现行线上机制：
+    匹配 = 规范名精确 + 别名等价 + custom:/custom-local: 前缀剥离（FR-1.4 / Q25-⑦）；
+    选路 = 有序资源池 + 并发溢出生效集 top-x + 在途最少者（平局优先级高）（FR-3.2/3.3，Q13）；
+    切换 = 资源级 y 先于请求级 m（y=2，m=3）（FR-3.4/3.5/3.7，Q14）/ 429 短指数退避；
+    恢复 = 冷却期满按原优先级归位；全部不可用才 503 兜底（FR-3.9/3.10）。
+  不含（避免越界）：「智能语义路由」（PRD §7 非目标）、「虚拟模型名 / 策略路由」（需先翻案）、
+  「厂商前缀透传」（P2 规划）—— 仅在匹配规则卡内以文字标注归属。
+  组件规范（逐像素值）：docs/specs/frontend-spec.md
+============================================================ -->
+<div class="app">
+  <!-- 侧栏（与线上控制台同构；模型路由为预演入口） -->
+  <aside class="sidenav">
+    <div class="brand">
+      <span class="brand-mark">M</span>
+      <span class="brand-text">
+        <span class="brand-name">Model-Gateway</span>
+        <span class="brand-sub">LLM Gateway Console</span>
+      </span>
+    </div>
+    <nav class="nav-list">
+      <div class="nav-group">
+        <div class="nav-group-title">概览</div>
+        <button class="nav-item" title="总览">
+          <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>
+          <span>总览</span>
+        </button>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-title">资源配置</div>
+        <button class="nav-item" title="模型资源">
+          <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5V19A9 3 0 0 0 21 19V5"/><path d="M3 12A9 3 0 0 0 21 12"/></svg>
+          <span>模型资源</span>
+        </button>
+        <button class="nav-item" title="账号接入">
+          <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="5"/><path d="M20 21a8 8 0 0 0-16 0"/></svg>
+          <span>账号接入</span>
+        </button>
+        <button class="nav-item" title="资源池设置">
+          <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"/><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"/><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"/></svg>
+          <span>资源池设置</span>
+        </button>
+        <button class="nav-item active" title="模型路由">
+          <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/></svg>
+          <span>模型路由</span>
+        </button>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-title">运行观测</div>
+        <button class="nav-item" title="数据看板">
+          <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg>
+          <span>数据看板</span>
+        </button>
+        <button class="nav-item" title="请求日志">
+          <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h.01"/><path d="M3 12h.01"/><path d="M3 19h.01"/><path d="M8 5h13"/><path d="M8 12h13"/><path d="M8 19h13"/></svg>
+          <span>请求日志</span>
+        </button>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-title">系统设置</div>
+        <button class="nav-item" title="API 接入">
+          <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4"/><path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/></svg>
+          <span>API 接入</span>
+        </button>
+        <button class="nav-item" title="系统设置">
+          <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M10 8h4"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M17 16h4"/><path d="M19 12V3"/><path d="M19 21v-5"/><path d="M3 14h4"/><path d="M5 10V3"/><path d="M5 21v-7"/></svg>
+          <span>系统设置</span>
+        </button>
+      </div>
+    </nav>
+    <div style="margin-top:auto; padding: 12px; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 8px;">
+      <span class="dot on"></span>
+      <span style="font-size:12px; color:var(--text-muted)">运行中</span>
+    </div>
+  </aside>
+
+  <div class="main-col">
+    <!-- 顶栏（页级动作恰好 1 个：刷新） -->
+    <header class="topbar">
+      <div class="tb-left">
+        <div class="crumb">
+          <span>Console</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px; height:14px;"><path d="m9 18 6-6-6-6"/></svg>
+          <span>资源配置</span>
+        </div>
+        <h1 class="tb-title">模型路由</h1>
+      </div>
+      <div class="tb-right" style="display:flex; align-items:center; gap:12px;">
+        <button class="btn btn-sm" onclick="showToast('路由状态已刷新（演示）')">刷新</button>
+      </div>
+    </header>
+
+    <!-- 主体双面板 -->
+    <div style="display: flex; height: calc(100vh - 60px); overflow: hidden;">
+      <!-- 子侧栏：对外模型清单 -->
+      <aside class="subnav">
+        <div class="subnav-scroll">
+          <div class="group-card">
+            <div style="display:flex; align-items:center; gap:8px; padding:4px 8px; margin-bottom:4px;">
+              <span class="mark-sm" style="background:var(--brand-weak); color:var(--text-muted);">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;"><circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/></svg>
+              </span>
+              <span style="font-size:13px; font-weight:800; color:var(--text);">对外模型</span>
+              <span class="badge b-gray" style="margin-left:auto;">4</span>
+            </div>
+            <button class="mode-btn active" data-m="deepseek-v4-pro" onclick="pickModel(this, 'deepseek-v4-pro')">deepseek-v4-pro<span class="dot on"></span></button>
+            <button class="mode-btn" data-m="glm-5.2" onclick="pickModel(this, 'glm-5.2')">glm-5.2<span class="dot on"></span></button>
+            <button class="mode-btn" data-m="sensenova-6.8-flash-lite" onclick="pickModel(this, 'sensenova-6.8-flash-lite')">sensenova-6.8-flash-lite<span class="dot on"></span></button>
+            <button class="mode-btn" data-m="kimi-k3" onclick="pickModel(this, 'kimi-k3')" title="未配置资源映射（空池演示）">kimi-k3<span class="dot"></span></button>
+          </div>
+        </div>
+        <div class="subnav-foot">
+          <button class="side-add" onclick="showToast('（演示）资源映射在「接入模型资源」页配置，路由页只读登记')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><line x1="12" x2="12" y1="5" y2="19"/><line x1="5" x2="19" y1="12" y2="12"/></svg>
+            <span>添加模型映射</span>
+          </button>
+          <div class="form-hint" style="margin-top:8px;">演示数据：4 个系统模型 · 4 条资源映射（3 条资源）· kimi-k3 未配置</div>
+        </div>
+      </aside>
+
+      <!-- 右主区：路由判定链 -->
+      <main style="flex:1 1 320px; min-width:0; overflow-y:auto; padding:12px; background:var(--content);">
+        <div id="board" style="max-width:1180px; margin:0 auto; display:flex; flex-direction:column; gap:12px;">
+
+          <!-- 标注条 -->
+          <div style="font-size:12px; font-weight:600; color:var(--text-faint);">T-18 · 需求预演（演示数据） · 模型路由（匹配 · 选路 · 切换 · 恢复） · A · v1.0</div>
+
+          <!-- 形态预演声明 -->
+          <div class="alert alert-info">
+            <div class="alert-title">需求形态预演 · 非线上功能</div>
+            <div>本页演示数据：<span class="mono">4 个系统模型 / 3 条资源 / 4 条资源映射</span>。页面表达的语义全部来自现行线上机制——匹配（规范名 + 别名 + 前缀剥离）· 选路（并发溢出生效集 · 在途最少者）· 切换（y 先判定 · 重试后换资源续跑）· 恢复（冷却归位 · 全挂才 503）；不含智能语义路由 / 策略路由 / 未匹配透传等未定项。</div>
+          </div>
+
+          <!-- 演示状态切换器（驱动链路 / 顺位 / 事件联动） -->
+          <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+            <span style="font-size:12px; font-weight:700; color:var(--text-faint);">演示状态</span>
+            <div class="tabs" id="state-tabs" style="overflow-x:auto;">
+              <button class="tab active" data-state="default" onclick="setState('default')">默认</button>
+              <button class="tab" data-state="failover" onclick="setState('failover')">故障切换</button>
+              <button class="tab" data-state="cooldown" onclick="setState('cooldown')">冷却恢复</button>
+              <button class="tab" data-state="down" onclick="setState('down')">全部不可用</button>
+              <button class="tab" data-state="loading" onclick="setState('loading')">加载</button>
+            </div>
+            <span class="form-hint" style="margin-left:auto;">空态：选择 kimi-k3（未配置资源）</span>
+          </div>
+
+          <!-- 动态区（头卡 / 链路 / 顺位 / 事件 / 匹配规则） -->
+          <div id="render-root" style="display:flex; flex-direction:column; gap:12px;"></div>
+        </div>
+      </main>
+    </div>
+  </div>
+</div>
+
+<div id="toast-wrap"></div>
+
+<script>
+/* ============================================================
+   T-18 · 演示 JS（零依赖 · 全部判空 · iframe 内嵌安全：
+   URL 只 replaceState，不做页面级导航）
+   ============================================================ */
+
+/* ---------- 全局调度参数（config.example.yaml 默认值口径，全局唯一一套） ---------- */
+var GLOBAL = { x: 2, y: 2, m: 3, cooldownApi: 60, cooldownPlan: 18000 };
+
+/* ---------- 资源（实体口径） ---------- */
+var RES = {
+  "res-7b21d084": { name: "DeepSeek 官方 / 活动账号", vendor: "DeepSeek" },
+  "res-3f9a2c1e": { name: "商汤按量 Key1 / 主账号", vendor: "商汤 SenseNova" },
+  "res-c4e80f92": { name: "GLM 开放平台 / 主账号", vendor: "智谱 GLM" }
+};
+
+/* ---------- 系统模型（实体口径；统计为今日数据） ---------- */
+var MODELS = {
+  "deepseek-v4-pro": {
+    endpoint: "chat", group: "编程", alias: [],
+    pool: ["res-7b21d084", "res-3f9a2c1e"],
+    stats: { req: 1287, sw: 2, ok: "99.8%", ttft: "0.9s" },
+    events: [
+      { t: "09:41:07", kind: "切换", text: "res-7b21d084 → res-3f9a2c1e", why: "HTTP 500 · internal_server_error（连续失败 2/2 → 冷却 60s）", r: "续跑成功 · 1.8s" },
+      { t: "08:15:22", kind: "切换", text: "res-7b21d084 → res-3f9a2c1e", why: "连接超时（连续失败 2/2 → 冷却 60s）", r: "续跑成功 · 2.3s" }
+    ]
+  },
+  "glm-5.2": {
+    endpoint: "chat", group: "通用", alias: [],
+    pool: ["res-c4e80f92"],
+    stats: { req: 342, sw: 0, ok: "100%", ttft: "1.1s" },
+    events: []
+  },
+  "sensenova-6.8-flash-lite": {
+    endpoint: "chat", group: "通用", alias: ["sensenova-6.7-flash-lite"],
+    pool: ["res-3f9a2c1e"],
+    stats: { req: 2201, sw: 0, ok: "99.9%", ttft: "0.6s" },
+    events: []
+  },
+  "kimi-k3": {
+    endpoint: "chat", group: "编程", alias: [],
+    pool: [],
+    stats: { req: 0, sw: 0, ok: "—", ttft: "—" },
+    events: []
+  }
+};
+
+var STATES = ["default", "failover", "cooldown", "down", "loading"];
+var curModel = "deepseek-v4-pro";
+var curState = "default";
+
+/* ---------- 基础件 ---------- */
+function showToast(text) {
+  var wrap = document.getElementById("toast-wrap");
+  if (!wrap) return;
+  var el = document.createElement("div");
+  el.className = "toast";
+  el.textContent = text;
+  wrap.appendChild(el);
+  setTimeout(function () { el.remove(); }, 2400);
+}
+
+function writeUrl(patch) {
+  var u = new URL(location.href);
+  Object.keys(patch).forEach(function (k) { u.searchParams.set(k, patch[k]); });
+  try { history.replaceState(null, "", u.pathname + u.search); } catch (e) { /* iframe 限制时静默降级 */ }
+}
+
+var SCHEV = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex:none;color:var(--text-faint);"><path d="m9 18 6-6-6-6"/></svg>';
+
+/* ---------- 顺位行状态（随演示状态推导） ---------- */
+function slotOf(model, idx, state) {
+  var last = idx === (model.pool.length - 1);
+  var base = { inflight: 0, C: "0", cool: null, err: "—", sw: idx === 0 ? model.stats.sw : 0 };
+  if (model.pool.length === 0) return base;
+  if (state === "default") {
+    return idx === 0 ? base : { inflight: 0, C: "0", cool: null, err: "—", sw: 0 };
+  }
+  if (state === "failover") {
+    if (idx === 0) return { inflight: 0, C: "2/2", cool: 42, err: "HTTP 500 · internal_server_error", sw: model.stats.sw };
+    return { inflight: 4, C: "0", cool: null, err: "—", sw: 0 };
+  }
+  if (state === "cooldown") {
+    if (idx === 0) return { inflight: 0, C: "2/2", cool: 8, err: "HTTP 500 · internal_server_error", sw: model.stats.sw };
+    return { inflight: 3, C: "0", cool: null, err: "—", sw: 0 };
+  }
+  /* down：全部资源不可用 */
+  if (idx === 0) return { inflight: 0, C: "2/2", cool: 42, err: "HTTP 500 · internal_server_error", sw: model.stats.sw };
+  return { inflight: 0, C: "2/2", cool: 60, err: "HTTP 429 · quota_exceeded_error", sw: 0 };
+}
+
+function statusBadge(s) {
+  if (s.cool !== null) return '<span class="badge b-warn">冷却中</span>';
+  return '<span class="badge b-ok">可用</span>';
+}
+
+/* ---------- 渲染：头卡 ---------- */
+function headerCard(m) {
+  var r = MODELS[m];
+  var badges = '<span class="badge b-cool">' + r.endpoint + '</span>'
+    + '<span class="badge b-gray">' + r.group + '</span>'
+    + '<span class="badge b-ok"><span class="dot on"></span>启用中</span>';
+  var sub = (r.pool.length ? '资源池 ' + r.pool.length + ' 条（顺序 = 优先级）' : '未配置资源映射')
+    + ' · 今日 ' + r.stats.req + ' 调用 · 切换 ' + r.stats.sw + ' 次 · 成功率 ' + r.stats.ok + ' · 平均 TTFT ' + r.stats.ttft;
+  return '<div class="card" style="display:flex; align-items:center; gap:12px; justify-content:space-between; flex-wrap:wrap;">'
+    + '<div style="display:flex; align-items:center; gap:12px; min-width:0;">'
+    + '<span class="logo-block dark">' + m.charAt(0).toUpperCase() + '</span>'
+    + '<div style="display:flex; flex-direction:column; gap:4px; min-width:0;">'
+    + '<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">'
+    + '<span class="edit-name">' + m + '</span>' + badges
+    + '</div>'
+    + '<div style="font-size:12px; font-weight:600; color:var(--text-faint);">' + sub + '</div>'
+    + '</div></div>'
+    + '<div style="display:flex; align-items:center; gap:8px; flex:none;">'
+    + '<button class="btn" onclick="showToast(\'（演示）禁用后该模型及其别名请求将返回 404 model_disabled，不触达上游\')">禁用</button>'
+    + '</div></div>';
+}
+
+/* ---------- 渲染：路由链路卡（hero） ---------- */
+function chainBlock(step, title, value, sub) {
+  return '<div style="flex:1 1 190px; min-width:0; background:var(--surface-muted); border:1px solid var(--border); border-radius:var(--radius-md); padding:10px 12px;">'
+    + '<div style="font-size:12px; font-weight:700; color:var(--text-faint);">' + step + ' · ' + title + '</div>'
+    + '<div style="margin-top:6px; font-size:13px; font-weight:600; color:var(--text); line-height:18px;">' + value + '</div>'
+    + (sub ? '<div style="margin-top:4px; font-size:12px; font-weight:600; color:var(--text-faint); line-height:16px;">' + sub + '</div>' : '')
+    + '</div>';
+}
+
+function chainCard(m, state) {
+  var r = MODELS[m];
+  if (r.pool.length === 0) return '';
+  var first = r.pool[0], second = r.pool[1] || null;
+  var alias = r.alias.length ? ('别名 ' + r.alias.length + ' 条：' + r.alias.map(function (a) { return '<span class="mono">' + a + '</span>'; }).join('')) : '无别名';
+
+  var selVal, selSub, hitVal, hitSub;
+  if (state === "default") {
+    selVal = 'top-' + Math.min(GLOBAL.x, r.pool.length) + ' 可用 · 生效集 {' + r.pool.join(', ') + '}';
+    selSub = 'x=' + GLOBAL.x + '（全局）· 取在途最少者，平局取优先级高';
+    hitVal = '<span class="mono">' + first + '</span>' + (second ? '（平局 → 优先级高）' : '（单资源池 · 全量集中）');
+    hitSub = second ? '当前无并发：顺序集中打第一顺位；并发溢出按在途最少' : '池内仅 1 条资源：无溢出与待命';
+  } else if (state === "failover") {
+    if (second) {
+      selVal = '#1 已移出生效集 · 生效集 {' + second + '}';
+      selSub = 'y=' + GLOBAL.y + ' 已判定（连续失败 2/2）· 触发待命补位';
+      hitVal = '<span class="mono">' + second + '</span> · 在途 4（续跑中）';
+      hitSub = '原请求已在新资源上重新发起，工具端无感';
+    } else {
+      selVal = '无待命资源可补位 → 503 兜底';
+      selSub = '单资源池：唯一资源冷却期间无可用';
+      hitVal = '—';
+      hitSub = '当次请求重试耗尽后直接返回 503';
+    }
+  } else if (state === "cooldown") {
+    selVal = '等待 #1 冷却归位（剩余 8s）' + (second ? '· 生效集仍 {' + second + '}' : '');
+    selSub = '冷却期满按原优先级归位（不改变顺位）';
+    hitVal = second ? '<span class="mono">' + second + '</span> · 在途 3（接管中）' : '—';
+    hitSub = second ? '归位前流量全部集中第二顺位' : '归位前无可用资源';
+  } else if (state === "down") {
+    selVal = '无可用资源 → 503 兜底';
+    selSub = '全挂才拒绝；响应含「无可用资源」与原因摘要';
+    hitVal = '—';
+    hitSub = '资源全部冷却中，无待命可补位';
+  }
+
+  var chain = chainBlock('① 入站', '命中变量', '<span class="mono">model: "' + m + '"</span>', 'custom: / custom-local: 前缀由网关剥离')
+    + SCHEV
+    + chainBlock('② 匹配', '系统模型', '<span class="mono">' + m + '</span>', alias)
+    + SCHEV
+    + chainBlock('③ 选路', '生效集', selVal, selSub)
+    + SCHEV
+    + chainBlock('④ 承接', '此刻落点', hitVal, hitSub);
+
+  return '<div class="card">'
+    + '<div class="card-head"><span class="card-title">路由链路 · 实时</span>'
+    + '<span class="value">' + 'x=' + GLOBAL.x + ' · y=' + GLOBAL.y + ' · m=' + GLOBAL.m
+    + ' · 冷却 ' + GLOBAL.cooldownApi + 's（api）/5h（plan）' + '</span></div>'
+    + '<div style="display:flex; align-items:stretch; gap:8px; flex-wrap:wrap;">' + chain + '</div>'
+    + '<div class="form-hint" style="margin-top:12px;">判定规则：资源级 y 先于请求级 m（默认每资源每请求尝试 2 次即冷却并当次切换）· 429 短指数退避后仍失败即移出 · 客户端取消（aborted）不计失败 · 全部不可用才返回 503（含原因摘要）。</div>'
+    + '</div>';
+}
+
+/* ---------- 渲染：资源顺位卡 ---------- */
+function poolCard(m, state) {
+  var r = MODELS[m];
+  if (r.pool.length === 0) return '';
+  var rows = r.pool.map(function (rk, i) {
+    var res = RES[rk] || { name: rk, vendor: "—" };
+    var s = slotOf(r, i, state);
+    return '<tr>'
+      + '<td class="num">#' + (i + 1) + '</td>'
+      + '<td style="white-space:nowrap;"><span class="mono strong">' + rk + '</span> <span style="color:var(--text-faint);font-size:12px;">' + res.name + '</span></td>'
+      + '<td><span class="badge b-gray">' + res.vendor + '</span></td>'
+      + '<td>' + statusBadge(s) + '</td>'
+      + '<td class="num">' + s.inflight + '</td>'
+      + '<td class="num">' + s.C + '</td>'
+      + '<td class="num">' + (s.cool !== null ? s.cool + "s" : "—") + '</td>'
+      + '<td><span class="ellip" style="display:inline-block; max-width:220px;">' + s.err + '</span></td>'
+      + '<td class="num">' + s.sw + '</td>'
+      + '</tr>';
+  }).join("");
+
+  return '<div class="card flush">'
+    + '<div class="card-head inset"><span class="card-title">资源顺位（顺序 = 优先级）</span>'
+    + '<span class="value">生效集 top-' + Math.min(GLOBAL.x, r.pool.length) + ' · y=' + GLOBAL.y + ' 判定 · 失败切换按序补位</span></div>'
+    + '<div class="table-wrap"><table class="tbl"><thead><tr>'
+    + '<th class="num">顺位</th><th>资源</th><th>厂商</th><th>状态</th><th class="num">在途</th>'
+    + '<th class="num">连续失败</th><th class="num">冷却剩余</th><th>最近错误</th><th class="num">今日切换</th>'
+    + '</tr></thead><tbody>' + rows + '</tbody></table></div>'
+    + '<div style="display:flex; align-items:center; gap:12px; padding:12px 16px; border-top:1px solid var(--border);">'
+    + '<span class="form-hint" style="flex:1; min-width:0;">顺序即优先级：生效集内取在途最少者承接（平局取优先级高）；失败即移出并冷却，待命按序补位。</span>'
+    + '<button class="btn btn-sm" style="flex:none;" onclick="showToast(\'（演示）顺位调整入口：「网关模型管理」页资源池卡 ↑↓\')">调整顺位（演示）</button>'
+    + '</div>'
+    + '</div>';
+}
+
+/* ---------- 渲染：切换事件卡 ---------- */
+function eventsOf(m, state) {
+  var r = MODELS[m];
+  var base = r.events.slice();
+  var first = r.pool[0] || "—", second = r.pool[1] || null;
+  if (state === "failover") {
+    base.unshift(second
+      ? { t: "14:31:52", kind: "切换", text: first + " → " + second, why: "连接超时（连续失败 2/2 → 冷却 60s）", r: "续跑中 · 已在 " + second + " 重新发起" }
+      : { t: "14:31:52", kind: "兜底", text: "—", why: first + " 连续失败 2/2 → 冷却 60s（单资源池无待命）", r: "返回 503（含原因摘要）" });
+  } else if (state === "cooldown") {
+    base.unshift({ t: "14:32:00", kind: "归位", text: first + " → 生效集", why: "冷却期满 60s，按原优先级归位（预计 8s 后）", r: "等待归位" });
+  } else if (state === "down") {
+    base.unshift({ t: "14:31:52", kind: "兜底", text: "—", why: "资源全部不可用：" + first + " 冷却中" + (second ? " · " + second + " 连续失败 2/2" : "（单资源池）"), r: "返回 503（含原因摘要）" });
+  }
+  return base;
+}
+
+function kindBadge(k) {
+  if (k === "切换") return '<span class="badge b-warn">切换</span>';
+  if (k === "归位") return '<span class="badge b-ok">归位</span>';
+  return '<span class="badge b-err">兜底</span>';
+}
+
+function eventsCard(m, state) {
+  var list = eventsOf(m, state);
+  var body;
+  if (list.length === 0) {
+    body = '<div class="list-empty">今日无切换事件 · 该模型全时段由单一资源承接</div>';
+  } else {
+    body = '<div class="table-wrap"><table class="tbl"><thead><tr>'
+      + '<th>时间</th><th>事件</th><th>详情</th><th>原因</th><th>结果</th>'
+      + '</tr></thead><tbody>'
+      + list.map(function (e) {
+        return '<tr>'
+          + '<td class="mono">' + e.t + '</td>'
+          + '<td>' + kindBadge(e.kind) + '</td>'
+          + '<td class="mono strong">' + e.text + '</td>'
+          + '<td><span class="ellip" style="display:inline-block; max-width:300px;">' + e.why + '</span></td>'
+          + '<td>' + e.r + '</td>'
+          + '</tr>';
+      }).join("")
+      + '</tbody></table></div>';
+  }
+  return '<div class="card flush">'
+    + '<div class="card-head inset"><span class="card-title">今日切换事件 · 该模型</span>'
+    + '<span class="value">共 ' + list.length + ' 条 · 明细可在「请求日志」页的切换事件中按日查阅</span></div>'
+    + body + '</div>';
+}
+
+/* ---------- 渲染：匹配规则卡 ---------- */
+function rulesCard(m) {
+  var r = MODELS[m];
+  var rows = [
+    ['规范名', '<span class="mono">' + m + '</span>（入站 model 字段经前缀剥离后精确匹配）'],
+    ['别名', r.alias.length ? r.alias.map(function (a) { return '<span class="mono">' + a + '</span>'; }).join(" · ") + '（等价命中同一系统模型）' : '无（可登记兼容别名，命中后同路由）'],
+    ['前缀剥离', '<span class="mono">custom:</span> / <span class="mono">custom-local:</span> 由网关剥除后再匹配（兼容下游工具的自定义命名）'],
+    ['禁用模型', '返回 404 <span class="mono">model_disabled</span>：不触达上游、不计资源失败（含别名命中）'],
+    ['未命中', '直接 404（标准 error 格式）——厂商前缀透传路由为 P2 规划，本预演未含']
+  ].map(function (x, i) {
+    return '<div style="display:flex; gap:12px; padding:10px 0;'
+      + (i > 0 ? ' border-top:1px solid var(--border);' : '') + '">'
+      + '<span style="flex:none; width:96px; font-size:13px; font-weight:700; color:var(--text-tertiary);">' + x[0] + '</span>'
+      + '<span style="flex:1; min-width:0; font-size:13px; font-weight:600; color:var(--text-soft);">' + x[1] + '</span>'
+      + '</div>';
+  }).join("");
+  return '<div class="card"><div class="card-head"><span class="card-title">入站匹配规则</span>'
+    + '<span class="value">匹配与路由解耦：规则只决定「进哪个模型」，选路由资源池承担</span></div>'
+    + rows + '</div>';
+}
+
+/* ---------- 渲染：空池（kimi-k3） ---------- */
+function emptyBoard(m) {
+  return '<div class="alert alert-warn">'
+    + '<div class="alert-title">该模型未配置任何资源映射</div>'
+    + '<div>已从 <span class="mono">/v1/models</span> 与 <span class="mono">mgw setup</span> 隐藏，调用将返回 <span class="mono">503</span>（配置告警机制，线上现行）。</div>'
+    + '</div>'
+    + '<div class="empty" style="font-weight:600;">到「接入模型资源」页选中要承接的资源，在「模型列表」里添加映射指向该系统模型<br>'
+    + '<button class="btn btn-sm" style="margin-top:12px;" onclick="showToast(\'（演示）已跳转「接入模型资源」页的映射配置入口\')">前往配置映射（演示）</button></div>';
+}
+
+/* ---------- 总渲染 ---------- */
+function render() {
+  var root = document.getElementById("render-root");
+  if (!root) return;
+  var m = curModel, state = curState, r = MODELS[m];
+
+  if (state === "loading") {
+    root.innerHTML = '<div class="card"><div class="loading">路由状态加载中…（演示态：链路 / 顺位 / 事件将在数据就绪后渲染）</div></div>';
+    return;
+  }
+  if (r.pool.length === 0) {
+    root.innerHTML = headerCard(m) + emptyBoard(m) + rulesCard(m);
+    return;
+  }
+  var down = (state === "down");
+  root.innerHTML = headerCard(m)
+    + chainCard(m, state)
+    + (down ? '<div class="alert alert-err"><div class="alert-title">全部资源不可用</div><div>资源池内所有资源均冷却 / 失败：网关才返回统一错误（含「无可用资源」与原因摘要），不无限挂起。可到「接入模型资源」页检测 Key 或更换映射。</div></div>' : '')
+    + poolCard(m, state)
+    + eventsCard(m, state)
+    + rulesCard(m);
+}
+
+/* ---------- 交互 ---------- */
+function syncStateTabs() {
+  var tabs = document.getElementById("state-tabs");
+  if (!tabs) return;
+  tabs.querySelectorAll(".tab").forEach(function (t) {
+    t.classList.toggle("active", t.dataset.state === curState);
+  });
+}
+
+function setState(s) {
+  if (STATES.indexOf(s) < 0) s = "default";
+  curState = s;
+  syncStateTabs();
+  render();
+  writeUrl({ state: s });
+}
+
+function pickModel(btn, key) {
+  if (!MODELS[key]) return;
+  curModel = key;
+  curState = "default";
+  document.querySelectorAll(".subnav .mode-btn").forEach(function (b) {
+    b.classList.toggle("active", b.dataset.m === key);
+  });
+  syncStateTabs();
+  render();
+  writeUrl({ m: key, state: "default" });
+  showToast("已切换：路由全景 - " + key);
+}
+
+/* ---------- 初始化：读回 URL 状态 ---------- */
+(function init() {
+  var q = new URLSearchParams(location.search);
+  var m = q.get("m");
+  if (m && MODELS[m]) curModel = m;
+  document.querySelectorAll(".subnav .mode-btn").forEach(function (b) {
+    b.classList.toggle("active", b.dataset.m === curModel);
+  });
+  var s = q.get("state");
+  if (s && STATES.indexOf(s) >= 0) curState = s;
+  syncStateTabs();
+  render();
+})();
+</script>
+
+<style>
+@keyframes toast-in { from { transform: translateY(-8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+@keyframes toast-out { to { transform: translateY(-8px); opacity: 0; } }
+</style>
+<script>/* ?theme=dark|light 主题预览（与既有基准模板同一约定；
+   模板预览页按控制台当前主题注入该参数）。 */
+(() => { const t = new URLSearchParams(location.search).get("theme");
+  if (t === "dark" || t === "light") document.documentElement.dataset.theme = t; })();</script>
+</body>
+</html>
