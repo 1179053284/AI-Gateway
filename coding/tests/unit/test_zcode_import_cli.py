@@ -288,6 +288,37 @@ def test_from_switch_bulk_reports_broken_file(accounts_root, tmp_path, capsys):
     assert "✗ bad：" in out and "credentials" in out
 
 
+def test_bulk_default_root_panel(accounts_root, tmp_path, monkeypatch, capsys):
+    """🔴 回归（2026-10-01 用户实测抓到）：**不带 dir** 的批量导入曾整条坏掉。
+
+    病灶：默认根写成 `str(root)`，而 `root` 缺省是 `None` → 扫描 `"None"` 目录恒空，
+    永远报「没有可导入的账号」——默认用法（多数用户的用法）整个是坏的，
+    只有显式 dir 的既有用例碰巧全绿。此用例钉住"默认根解析正确时必须能扫到并导入"。
+    """
+    from model_gateway.upstream.zcode import imports as zim
+
+    panel = tmp_path / "panel-default"
+    _panel_account(panel, "p1", mid=MID)
+    monkeypatch.setattr(zim, "default_panel_root", lambda: panel)
+
+    assert main(["zcode", "import", "--from-panel"]) == 0
+    out = capsys.readouterr().out
+    assert "✓ p1：已导入" in out
+    assert (accounts_root / "p1" / "meta.json").exists()
+
+
+def test_bulk_default_root_switch(accounts_root, tmp_path, monkeypatch, capsys):
+    """同族回归：switch 默认根同样不许被 `str(None)` 顶掉。"""
+    from model_gateway.upstream.zcode import imports as zim
+
+    switch = tmp_path / "switch-default"
+    _switch_file(switch, "1eff0f2f-225c-4d87-8c9c-936ddf3190da", name="sw1", mid=MID)
+    monkeypatch.setattr(zim, "default_switch_root", lambda: switch)
+
+    assert main(["zcode", "import", "--from-switch"]) == 0
+    assert (accounts_root / "sw1" / "meta.json").exists()
+
+
 # ============ 用法错误（退出码 2）============
 
 def test_usage_errors(accounts_root, tmp_path, capsys):

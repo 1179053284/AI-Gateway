@@ -428,8 +428,11 @@ def _import_bulk(args: argparse.Namespace, *, source: str, explicit: str | None)
     if not effective.is_dir():
         print(f"✗ 未发现{label}（解析到的目录不存在）：{effective}", file=sys.stderr)
         return 2
-    entries = (zim.scan_panel_dir(str(root)) if source == "panel"
-               else zim.scan_switch_dir(str(root)))
+    # 🔴 传 `effective`：`root` 缺省是 None，早期写成 `str(root)` → 扫描 `"None"` 目录
+    #    恒空 → 不带 dir 的批量导入永远报「没有可导入的账号」（默认用法整个是坏的，
+    #    只有显式 dir 的路径碰巧对）。回归：test_zcode_import_cli 的默认根用例。
+    entries = (zim.scan_panel_dir(str(effective)) if source == "panel"
+               else zim.scan_switch_dir(str(effective)))
     if not entries:
         print(f"✗ {label}中没有可导入的账号：{effective}", file=sys.stderr)
         return 2
