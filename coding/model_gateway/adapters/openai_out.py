@@ -105,6 +105,14 @@ class OpenAIOutAdapter:
             await self._convert_images_to_base64(out)
         return out
 
+    def _shape_response(self, data: dict) -> dict:
+        """非流式响应体的产品缝（默认**恒等**；产品响应信封的解包在此覆写，§22.3）。
+
+        置于 `normalize_stream_chunk` **之前**：信封不退壳时归一化会对着缺失
+        `choices` 的外层空转（静默失配，2026-10-01 cline 实测教训）。
+        """
+        return data
+
     # —— chat 非流式 ——
     async def chat_nonstream(self, key: str, vendor_model: str, body: dict,
                              timeout: float) -> dict:
@@ -122,7 +130,7 @@ class OpenAIOutAdapter:
             raise UpstreamError(f"network: {type(e).__name__}: {e}") from e
         if resp.status_code != 200:
             raise self._http_error(resp)
-        data = resp.json()
+        data = self._shape_response(resp.json())
         # 思考字段归一化（非流式：补充 reasoning_content，原字段保留）
         normalize_stream_chunk(data)
         return data

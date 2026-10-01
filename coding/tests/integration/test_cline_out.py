@@ -158,6 +158,55 @@ async def test_cline_nonstream_end_to_end(make_gateway, client):
     assert ev["input_tokens"] == 5 and ev["output_tokens"] == 2
 
 
+# ============ 非流式 · `{success, data}` 信封解包（2026-10-01 实网实测形）============
+
+
+async def test_cline_nonstream_unwraps_success_data_envelope(make_gateway, client):
+    """真实 cline 非流式响应 = `{success, data:{choices…}, model}` 信封 —— 必须解包。
+
+    2026-10-01 :8300 实网取证：顶层键 `["data","success","model"]`，`choices/usage`
+    全在 `data` 内；假上游此前只喂**标准体** → 全绿但真实通道对工具端破坏
+    （修复前实测：客户端拿到的响应顶层无 `choices`，OpenAI SDK 直接解析失败）。
+    """
+    store.commit_login("cline", ACCOUNT, {"access_token": TOKEN_BARE,
+                                          "account_id": "usr-01M3"}, {})
+    gw = await make_gateway(_cfg())
+
+    def envelope_handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content or b"{}")
+        inner = {"id": "gen-1790844839-KsMRJO1", "object": "chat.completion",
+                 "model": "anthropic/claude-sonnet-5.5", "provider": "Anthropic",
+                 "choices": [{"index": 0, "finish_reason": "stop",
+                              "message": {"role": "assistant", "content": "成功"}}],
+                 "usage": {"prompt_tokens": 8, "completion_tokens": 4}}
+        return httpx.Response(200, json={"success": True, "data": inner,
+                                         "model": body.get("model")}, request=request)
+
+    await _install(gw, "res-cl", envelope_handler)
+    resp = await _chat(client, gw, _body())
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["choices"][0]["message"]["content"] == "成功"   # 退壳后工具端可解析
+    assert data["model"] == SYSTEM_MODEL                        # 统一名替换仍生效
+    assert "success" not in data and "data" not in data         # 信封不残留
+
+    await gw.drain_events()
+    ev = gw.read_events()[-1]
+    assert ev["input_tokens"] == 8 and ev["output_tokens"] == 4  # usage 随退壳一并可见
+
+
+def test_shape_response_is_identity_outside_the_envelope():
+    """只有"顶层无 choices 且内层 data 含 choices"才退壳；其余形状原样返回（不吞不造）。"""
+    adapter = ClineOut(ProductAccount(product="cline", name="acc-cl", base_url=BASE))
+
+    standard = {"choices": [{"index": 0}], "id": "x"}
+    assert adapter._shape_response(standard) is standard                 # 已是标准体
+    business_error = {"success": False, "error": "x"}
+    assert adapter._shape_response(business_error) is business_error     # 业务错误体
+    not_choices = {"data": {"not_choices": 1}}
+    assert adapter._shape_response(not_choices) is not_choices           # data 非 choices 体
+
+
 # ============ 流式 ============
 
 

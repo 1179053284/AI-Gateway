@@ -10,6 +10,7 @@
 | 客户端标识头 | `HTTP-Referer` / `X-Title` / `X-IS-MULTIROOT` / `X-CLIENT-TYPE` | `cline-product.ts:269-274`（`DEFAULT_CLINE_REQUEST_HEADERS`） | 同上（`protocol.CLIENT_HEADERS`） |
 | `Accept` | `text/event-stream` | `cline-adapter.ts:571-577` | `protocol.auth_headers` 的 `extra` 覆写 |
 | 请求体 | 标准 OpenAI（**唯一一家推理体无自有塑形**） | `cline-product.ts:13` 的协议表 | 不写 `prepare_body`（基类默认只落厂商模型名） |
+| **非流式响应** | **`{success, data:{choices…}, model}` 信封** | **2026-10-01 :8300 实网实测**（顶层键 = `["data","success","model"]`，`choices/usage` 全在 `data` 内） | `_shape_response` 解包（仅"顶层无 `choices` 且内层 `data` 含 `choices`"时；流式帧实测无信封，不受影响） |
 
 🔴 **`workos:` 前缀**（`cline.ts:159-182`，实测坑位）：前缀只在**解码 JWT** 时被剥，
 凡是把存储令牌放进 `Authorization` 的请求（出站推理 / `users/me` / `balance`）**必须保留**——
@@ -29,9 +30,9 @@
   「API 密钥无效」，**真实原因被完全掩盖**。本网关的分类器天然把 403 归 `BAD_REQUEST`
   （不 disable、不重试、原样透传）→ 无需在适配器里加特判（`core/errors.py:120-131`）。
 
-⚠️ 非流式：DSH 侧 `stream: true` 是它**只做流式**的契约（`cline-adapter.ts:444`），
-上游是否接受 `stream:false` **未取证** → 本层原样透传网关 IR 的 `stream` 值，
-不擅自改写（登记 M6-5b 待实测项，§22.11）。
+⚠️ 非流式已知口径（2026-10-01 更新）：`stream:false` 上游**接受**（:8300 实网 200），
+但响应套 `{success, data}` 信封 → 由 `_shape_response` 解包；流式帧为**标准 chunk**
+（实测无信封），照走基类 SSE 解析。
 
 ⚠️ 本模块**无网络副作用**：只构造适配器；请求由 `core/scheduler` 驱动（§22.8-1）。
 """
@@ -65,6 +66,20 @@ class ClineOut(FamilyOpenAIOut):
             raise UpstreamError(
                 f"Cline 账号 {self.account_ref} 的凭据缺少 access_token（请重新登录该账号）")
         return protocol.auth_headers(token, {"Accept": "text/event-stream"})
+
+    # —— 响应整形钩子 ——
+
+    def _shape_response(self, data: dict) -> dict:
+        """解开 `{success, data}` 信封（非流式实测形，2026-10-01；§22.3 `_shape_response` 缝）。
+
+        只在"顶层无 `choices` 且内层 `data` 是含 `choices` 的 dict"时退壳 ——
+        其余形状（已是标准体 / 业务错误体 / 异常体）**原样返回**，不吞不造。
+        """
+        if isinstance(data, dict) and "choices" not in data:
+            inner = data.get("data")
+            if isinstance(inner, dict) and "choices" in inner:
+                return inner
+        return data
 
 
 #: 头钩子的**显式登记**（供接线护栏核验，与 buddy 的 `_HEADER_HOOK` 同一性质）：
