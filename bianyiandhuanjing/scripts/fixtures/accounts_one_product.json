@@ -37,12 +37,19 @@
               "state": "available",
               "source": "upstream balance",
               "detail": "剩余 300 次请求",
+              "plan": "",
+              "items": [],
+              "remaining": null,
+              "reason": "",
+              "data_at": "",
+              "plan_key": "",
               "checked_at": "2026-09-30T09:12:03"
             },
             "watermark": "wm-1"
           },
           "runtime_ok": true,
           "runtime_error": "",
+          "credential_expires_at": "",
           "quota": {
             "state": "unknown",
             "remaining": null,
@@ -63,11 +70,18 @@
               "state": "exhausted",
               "source": "upstream balance",
               "detail": "当日额度已耗尽",
+              "plan": "",
+              "items": [],
+              "remaining": null,
+              "reason": "",
+              "data_at": "",
+              "plan_key": "",
               "checked_at": "2026-09-30T09:12:03"
             }
           },
           "runtime_ok": true,
           "runtime_error": "",
+          "credential_expires_at": "",
           "quota": {
             "state": "exhausted",
             "remaining": 0,
@@ -98,6 +112,7 @@
           "runtime": {},
           "runtime_ok": true,
           "runtime_error": "",
+          "credential_expires_at": "",
           "quota": {
             "state": "unknown",
             "remaining": null,
@@ -118,11 +133,18 @@
               "state": "unknown",
               "source": "unknown",
               "detail": "未能取到额度（未知不当零）",
+              "plan": "",
+              "items": [],
+              "remaining": null,
+              "reason": "",
+              "data_at": "",
+              "plan_key": "",
               "checked_at": "2026-09-30T09:12:03"
             }
           },
           "runtime_ok": true,
           "runtime_error": "",
+          "credential_expires_at": "",
           "quota": {
             "state": "unknown",
             "remaining": null,
@@ -145,11 +167,18 @@
               "state": "available",
               "source": "upstream balance",
               "detail": "剩余 1200 次",
+              "plan": "",
+              "items": [],
+              "remaining": null,
+              "reason": "",
+              "data_at": "",
+              "plan_key": "",
               "checked_at": "2026-09-30T09:12:03"
             }
           },
           "runtime_ok": true,
           "runtime_error": "",
+          "credential_expires_at": "",
           "quota": {
             "state": "available",
             "remaining": 1200,
@@ -180,9 +209,44 @@
           "runtime": {},
           "runtime_ok": false,
           "runtime_error": "RuntimeUnreadable: runtime.json 不是合法 JSON（第 3 行）",
+          "credential_expires_at": "",
           "quota": {
             "state": "unknown",
             "remaining": null,
+            "reserved": 0,
+            "resources": [],
+            "per_resource": {}
+          },
+          "resource": []
+        },
+        {
+          "name": "buddy-noplan",
+          "enabled": true,
+          "status": "active",
+          "device": {},
+          "display": {
+            "nickname": "无套餐样本"
+          },
+          "runtime": {
+            "quota": {
+              "state": "unknown",
+              "source": "buddy-billing",
+              "detail": "200 且 code=0：无有效套餐包（确实无套餐 vs 身份无 entitlement，两可未判定）",
+              "plan": "",
+              "items": [],
+              "remaining": null,
+              "reason": "no_plan",
+              "data_at": "2026-10-02T09:12:05",
+              "plan_key": "",
+              "checked_at": "2026-10-02T09:40:11"
+            }
+          },
+          "runtime_ok": true,
+          "runtime_error": "",
+          "credential_expires_at": "",
+          "quota": {
+            "state": "unknown",
+            "remaining": 0,
             "reserved": 0,
             "resources": [],
             "per_resource": {}
@@ -409,8 +473,8 @@
   ],
   "counts": {
     "products": 10,
-    "accounts": 6,
-    "enabled": 5,
+    "accounts": 7,
+    "enabled": 6,
     "disabled": 1
   }
 }

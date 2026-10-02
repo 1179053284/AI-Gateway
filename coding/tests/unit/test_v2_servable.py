@@ -337,3 +337,61 @@ def test_both_expiry_paths_agree_on_the_recovered_row():
         outcomes.append((st.status, st.last_error))
 
     assert outcomes[0] == outcomes[1] == ("active", "上游 429 限流"), outcomes
+
+
+# ---------- 映射级开关（2026-10-02 用户指令：产品内模型逐行「进池」开关） ----------
+# 与资源级 `Resource.enabled` 是两把位：这里关的是**这一条映射**（账号侧一行 = 该组全部
+# 账号条目），条目留在配置里保运行态，但既不进池也不对外声明。
+
+def test_disabled_mapping_is_not_servable():
+    cfg = make_config(resources=RES, models=[
+        {"name": "m1", "endpoint": "chat", "resources": [ref("res-a", "vm-a", enabled=False)]}])
+    assert servable_models(cfg) == set()
+
+
+def test_disabled_mapping_out_of_pool_enabled_sibling_kept():
+    """一关一开：池里只剩开着的那条，且**顺序不变**（关掉的不占位也不被删）。"""
+    from model_gateway.core.resources import ResourceManager
+    cfg = make_config(resources=RES, models=[
+        {"name": "m1", "endpoint": "chat", "resources": [
+            ref("res-a", "vm-a"),                       # 0：开着
+            ref("res-b", "vm-b", enabled=False),        # 1：关掉
+            ref("res-b", "vm-c"),                       # 2：同一资源的另一条映射仍开着
+        ]}])
+    mgr = ResourceManager()
+    mgr.rebuild(cfg)
+    assert [f"{s.rid}/{s.vendor_model}" for s in mgr.pools["m1"]] == ["res-a/vm-a", "res-b/vm-c"]
+
+    # 关掉的条目仍「被引用」：先开着建出状态，再关掉 ⇒ 状态不回收（冷却/判死历史不丢），
+    # 拨回即恢复原态，不必重新积累。
+    cfg_on = make_config(resources=RES, models=[
+        {"name": "m1", "endpoint": "chat", "resources": [
+            ref("res-a", "vm-a"), ref("res-b", "vm-b"), ref("res-b", "vm-c")]}])
+    mgr2 = ResourceManager()
+    mgr2.rebuild(cfg_on)
+    st = mgr2.registry[("res-b", "vm-b")]
+    st.status = "cooldown"
+    st.C = 1
+    mgr2.rebuild(cfg)                                  # 现在把这条映射关掉
+    assert ("res-b", "vm-b") not in [(x.rid, x.vendor_model) for x in mgr2.pools["m1"]]
+    kept = mgr2.registry.get(("res-b", "vm-b"))
+    assert kept is not None and kept.status == "cooldown" and kept.C == 1
+
+
+def test_all_mappings_disabled_leaves_model_unservable_though_resource_enabled():
+    """资源都开着、映射全关 ⇒ 模型不对外（这正是开关要表达的"这一路不走"）。"""
+    cfg = make_config(resources=RES, models=[
+        {"name": "m1", "endpoint": "chat", "resources": [
+            ref("res-a", "vm-a", enabled=False), ref("res-b", "vm-b", enabled=False)]}])
+    assert servable_models(cfg) == set()
+
+
+def test_mapping_enabled_defaults_true_and_rejects_non_bool():
+    cfg = make_config(resources=RES, models=[
+        {"name": "m1", "endpoint": "chat", "resources": [ref("res-a", "vm-a")]}])
+    assert cfg.models[0].resources[0].enabled is True          # 旧配置零迁移
+    import pytest
+    with pytest.raises(ValidationError):                        # strict：不接受 "yes"/1 被转换
+        make_config(resources=RES, models=[
+            {"name": "m1", "endpoint": "chat",
+             "resources": [ref("res-a", "vm-a", enabled="yes")]}])

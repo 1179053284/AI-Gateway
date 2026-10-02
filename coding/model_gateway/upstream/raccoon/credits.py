@@ -73,6 +73,7 @@ async def quota(cred: dict | None) -> QuotaSnapshot:
         return QuotaSnapshot(state="unknown", source=QUOTA_SOURCE,
                              detail="响应缺少 available_points（形状变更？）")
     pools: list[str] = []
+    items: list[dict] = []
     for key, label in (("reward_points", "奖励积分"), ("daily_points", "每日积分"),
                        ("monthly_points", "会员积分"), ("topup_points", "充值积分")):
         value = p.read_number(envelope.data, key)
@@ -82,10 +83,13 @@ async def quota(cred: dict | None) -> QuotaSnapshot:
         if key == "monthly_points" and value <= 0:
             continue
         pools.append(f"{label} {_num(value)}")
+        items.append({"name": label, "unit": "积分", "remaining": value,
+                      "total": None, "used": None, "active": True, "expires_at": ""})
     detail = f"可用 {_num(available)} 积分"
     detail += f"（构成：{' / '.join(pools)}）" if pools else "（服务端未给分项）"
+    # 无套餐概念，分池即套餐表达（raccoon-credits.ts:148-155）；daily 池 = 每日刷新分桶。
     return QuotaSnapshot(state="available" if available > 0 else "exhausted",
-                         source=QUOTA_SOURCE, detail=detail)
+                         source=QUOTA_SOURCE, detail=detail, items=tuple(items))
 
 
 async def onboarding_status(cred: dict | None) -> OnboardingStatus | None:

@@ -7,11 +7,15 @@
  * 新增：点「添加模型资源」→ 右侧内联草稿编辑器（无弹窗），右上「确认添加」落库；未保存不出现在子侧栏。
  * 数据仍为扁平 resources[]（资源 = 供应商 + 账号 + Key，一组 Key = 一条资源）；供应商分组仅是视图，
  * 供应商级编辑（名称/映射/禁用/删除）改写该供应商全部资源。
+ * 🔴 **本页只出「模型供应商资源」**：`product` 非空的资源由产品账号体系供给（§22.5-2 互斥契约：
+ * 有 `product` 就**没有** `api_key`，凭据在本地账号目录），属「接入账号资源」那一类，
+ * 一律不进本页任何列表/计数（2026-10-02 用户裁决：两类接入是并行资源，界面不得互串；
+ * 聚合发生在网关调度层，不在视图层混）。
  * 操作即保存（D3）；已存 Key 脱敏还原（值不变 = 不修改）；删除有确认弹窗。
  * 交互规范：`.anchor-item` 须 align-items:center（参考提炼遗漏致点/文字错位的教训见 pitfalls）。 */
 
-import { GET, PUT, POST, esc } from "../api.js";
-import { confirmDialog, toast, switchEl, copyText } from "../components.js";
+import { GET, PUT, POST, esc, isProviderResource } from "../api.js";
+import { confirmDialog, toast, switchEl, copyText, initSplitResize } from "../components.js";
 
 let cfg = null;
 let presets = [];
@@ -55,14 +59,15 @@ async function persist(root, okMsg = "已保存并生效") {
 const vkeyOf = (r) => r.vendor ? "v:" + r.vendor : r.preset ? "p:" + r.preset : "r:" + r.id;
 
 function vendorGroups() {
+  const own = (cfg.resources || []).filter(isProviderResource);
   const out = [];
   const seen = new Set();
-  for (const r of cfg.resources || []) {
+  for (const r of own) {
     const k = vkeyOf(r);
     if (!seen.has(k)) { seen.add(k); out.push({ key: k, first: r }); }
   }
   return out.map(({ key, first }) => {
-    const list = (cfg.resources || []).filter((r) => vkeyOf(r) === key);
+    const list = own.filter((r) => vkeyOf(r) === key);
     return {
       key, list,
       label: key.startsWith("v:") ? key.slice(2)
@@ -148,20 +153,14 @@ const copyIcon = (getText, title = "点击复制", cls = "rv-copy") => {
   return b;
 };
 
-/* ---------- 页面骨架：左子侧栏 + 右撑满配置区（内部滚动，无底部空白） ---------- */
+/* ---------- 页面骨架：左子侧栏 + 右撑满配置区（骨架类 .panel-split，v2.19 改类；内部滚动，无底部空白） ---------- */
 function draw(root) {
   const groups = vendorGroups();
   if (selected !== "__draft__" && !groups.some((g) => g.key === selected))
     selected = groups[0]?.key || null;
   root.innerHTML = `
-    <style>
-      /* 本页接管内容区左右/底部留白（顶部 12px 规范留白保留），配置区内部滚动无底部空白 */
-      #rv-wrap { margin: -12px -12px -48px; height: calc(100vh - 60px); }
-      @media (max-width: 1280px) { #rv-wrap { margin-bottom: -40px; } }
-      @media (max-width: 768px) { #rv-wrap { margin: -12px -10px -36px; } }
-    </style>
-    <div id="rv-wrap" style="display:flex;align-items:stretch;min-height:0">
-      <aside class="subnav" style="height:100%">
+    <div class="panel-split">
+      <aside class="subnav">
         <div class="subnav-scroll">
           ${groups.map((g) => `
           <button class="anchor-item" data-vk="${esc(g.key)}" style="display:flex;width:100%;
@@ -178,7 +177,7 @@ function draw(root) {
           </button>
         </div>
       </aside>
-      <main style="flex:1;min-width:0;overflow-y:auto;padding:12px">
+      <main>
         <div id="rv-detail"></div>
       </main>
     </div>`;
@@ -196,6 +195,7 @@ function draw(root) {
     keyDrafts = []; mapDrafts = [];
     draw(root);
   };
+  initSplitResize(root, "resources");
   drawDetail(root);
 }
 

@@ -21,6 +21,18 @@ gateway:
       enabled: true
     # quotas:                     # P1 预留（M1 读入保留、不校验上限）
     #   daily_tokens: 0           # 0 = 不限制
+  zcode:                           # ZCode 上游（tech-design §17/§22.4；账号在「接入账号资源」页导入）
+    claim_interval_seconds: 60     # 一键签到/领取的自动节奏（秒；0 = 关闭自动调度）
+    claim_cron: ""                 # 5 段 cron（分 时 日 月 周）；非空则优先于上面的间隔
+    proxy: ""                      # 住宅代理（验证码求解必需；留空回退环境变量 MGW_ZCODE_PROXY）
+    fingerprint: false             # TLS 指纹伪装（前置 ESA WAF 按 ClientHello 识别机器程序）
+    quota_net: false               # 🔴 额度「自动」联网腿总开关。默认 false 是有意的：
+                                   # false = 只有你亲手点「刷新额度」（账号级行内 / 产品级卡头）
+                                   #          才向上游发那一次只读 GET；cron 腿不发起、不改盘，
+                                   #          界面沿用上一轮数值。
+                                   # true  = 授权网关在你不在场时按 cron 节奏对全部 zcode 身份
+                                   #          持续发起只读额度查询（单身份 ≈1 次/5 分钟）。
+                                   # 出现任一次上游风控即建议回落 false（见 tech-design §17）。
 
 scheduling:                       # 调度参数全局唯一（Q18-③：一套机制管控所有模型，无模型级覆盖）
   max_active_per_model: 2         # x：并发溢出生效集（Q13；x=1 即纯顺序集中）

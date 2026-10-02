@@ -36,6 +36,7 @@ from model_gateway.accounts.types import (
     LoginOutcome,
     NotRefreshable,
     ProbeResult,
+    QuotaSnapshot,
 )
 from model_gateway.upstream.buddy import product as buddy
 from model_gateway.upstream.loomy import product as loomy
@@ -1020,3 +1021,243 @@ class TestWriteOriginGuard:
         r = await client.put(f"{gw.base_url}/admin/api/config", json={"models": "bad"},
                              headers={"Origin": gw.base_url})
         assert r.status_code == 400, r.text
+
+
+# ============ 批量续期（2026-10-01 用户裁决：产品维度 5h 窗口 + 登录态倒计时）============
+
+class TestRefreshDue:
+    async def test_refresh_due_window_and_view_field(self, vendor, make_gateway, client,
+                                                     monkeypatch):
+        """窗口判据 = `credexp` 解析的登录态失效时刻：5h 内到期才续，远期不列，未知不续；
+        视图字段 `credential_expires_at` 与凭据里的毫秒值同刻（**响应零凭据**）。"""
+        import time as _t
+
+        from model_gateway.accounts import credexp
+
+        gw = await make_gateway(_cfg(vendor.port))
+        due_ms = int((_t.time() + 3600) * 1000)          # 1h 后失效 → 在 5h 窗口内
+        far_ms = int((_t.time() + 10 * 86400) * 1000)    # 10d 后失效 → 不在窗口
+        _seed("buddy", "acc-due", {"token": "OLD", "expires_at": str(due_ms)}, {})
+        _seed("buddy", "acc-far", {"token": "OLD", "expires_at": str(far_ms)}, {})
+        _seed("buddy", "acc-unknown", {"token": "OLD"}, {})
+
+        # 视图字段：到期时刻出 ISO、未知出空串（不判定、不猜）
+        view = await _view(client, gw)
+        entries = {a["name"]: a for p in view["products"] if p["id"] == "buddy"
+                   for a in p["accounts"]}
+        assert credexp.credential_expires_at_iso({"expires_at": str(due_ms)}) \
+            == entries["acc-due"]["credential_expires_at"]
+        assert entries["acc-far"]["credential_expires_at"] != ""
+        assert entries["acc-unknown"]["credential_expires_at"] == ""
+
+        async def fake_refresh(cred, meta):
+            return {"token": SECRET, "expires_at": str(int((_t.time() + 86400) * 1000))}
+        monkeypatch.setitem(buddy._HOOKS, "refresh", fake_refresh)
+        r = await _post(client, gw, "/admin/api/accounts/buddy/refresh-due", {})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["renewed"] == 1 and body["failed"] == 0
+        assert body["skipped"]["no-expiry"] == 1
+        assert body["skipped"]["cooldown"] == 0 and body["skipped"]["terminal"] == 0
+        listed = {x["account"] for x in body["results"]}
+        assert listed == {"acc-due", "acc-unknown"}, "远期账号不得进回执；未知失效时刻要如实列出"
+        assert store.load_credentials("buddy", "acc-due")["token"] == SECRET
+        assert store.load_credentials("buddy", "acc-far")["token"] == "OLD", "窗口外被误续"
+        assert store.load_credentials("buddy", "acc-unknown")["token"] == "OLD", "未知被当成到期"
+        assert SECRET not in r.text
+
+    async def test_refresh_due_capability_gate_and_param_range(self, vendor, make_gateway,
+                                                               client):
+        """能力位 `refresh=False` → 400 前置拒绝（界面本就不渲染钮）；`within_hours` 只收数。"""
+        gw = await make_gateway(_cfg(vendor.port))
+        _seed("loomy", "acc-nr", {"token": "OLD"}, {})
+        r = await _post(client, gw, "/admin/api/accounts/loomy/refresh-due", {})
+        assert r.status_code == 400 and "不可续期" in r.json()["error"]["message"]
+        r = await _post(client, gw, "/admin/api/accounts/buddy/refresh-due",
+                        {"within_hours": "abc"})
+        assert r.status_code == 400 and "不是数" in r.json()["error"]["message"]
+        r = await _post(client, gw, "/admin/api/accounts/buddy/refresh-due",
+                        {"within_hours": 0})
+        assert r.status_code == 400 and "范围" in r.json()["error"]["message"]
+
+
+# ============ 「刷新额度」两条腿（2026-10-02 指令 2：账号维度 + 产品维度）============
+
+class TestQuotaEndpoints:
+    """`POST /admin/api/accounts/{p}/{name}/quota` 与 `POST .../quota-all` 的契约。
+
+    真机门（`bianyiandhuanjing/scripts/verify_accounts_ui_live.py` 的 QL/QC 段）已经在浏览器里
+    把这两颗钮各点通过一次并核过 Δtrace，那证的是**行为**；本段钉的是**回执算术**，
+    尤其"三段计数必须穷举"那一条：9 个非 zcode 产品的失败腿 `reason=""`，
+    按方案 §5-3 的字面枚举会同时掉出 N 和 J ⇒ "点了产品级刷新、回执三个 0"
+    （本轮实现期抓到并修掉的偏差，见 `admin_accounts.py::_quota_receipt` 的 ⚠️ 段）。
+    """
+
+    def _stub_quota(self, monkeypatch, box: dict, seen: list | None = None):
+        """把 buddy 的 `quota` 钩子换成可编程的假实现（无网络、形状仍是公共 `QuotaSnapshot`）。"""
+        import dataclasses
+
+        async def fake_quota(cred, meta):
+            if seen is not None:
+                seen.append(meta.get("account"))
+            return dataclasses.replace(box["snap"])
+
+        monkeypatch.setitem(buddy._HOOKS, "quota", fake_quota)
+        return box
+
+    async def test_account_quota_returns_reason_and_writes_cache(self, vendor, make_gateway,
+                                                                client, monkeypatch):
+        """账号级：类别 + 机器可读 `reason` 一起回，且快照落 `runtime.json`（界面下一轮读它）。"""
+        gw = await make_gateway(_cfg(vendor.port))
+        _seed("buddy", "acc-q1", {"token": SECRET}, {})
+        seen: list = []
+        box = {"snap": QuotaSnapshot(state="available", source="buddy-credits",
+                                     detail="剩余 100", remaining=100, plan="Pro")}
+        self._stub_quota(monkeypatch, box, seen)
+
+        r = await _post(client, gw, "/admin/api/accounts/buddy/acc-q1/quota")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["category"] == "success" and body["reason"] == ""
+        assert body["written"] is True and SECRET not in r.text
+        assert seen == ["acc-q1"]                      # meta 通道经 `store.hook_meta` 组装
+        cache = store.read_runtime("buddy", "acc-q1")["quota"]
+        assert cache["state"] == "available" and cache["remaining"] == 100
+        assert cache["reason"] == "" and "checked_at" in cache
+
+        # 同一颗钮换成"熔断中"这一格：类别 inactive、`reason` 如实带出、**合并写不洗旧数值**
+        box["snap"] = QuotaSnapshot(state="unknown", source="buddy-credits",
+                                    detail="全局风控熔断中", reason="circuit")
+        r = await _post(client, gw, "/admin/api/accounts/buddy/acc-q1/quota")
+        body = r.json()
+        assert body["category"] == "inactive" and body["reason"] == "circuit"
+        after = store.read_runtime("buddy", "acc-q1")["quota"]
+        assert after["remaining"] == 100 and after["state"] == "unknown"
+
+    async def test_quota_all_receipt_counts_blank_reason_as_not_fired(self, vendor,
+                                                                     make_gateway, client,
+                                                                     monkeypatch):
+        """🔴 反证那条偏差：9 个非 zcode 产品的失败腿（`inactive + reason=""`）**必须进 J**。
+
+        撤证 = 把 `not_fired` 改回"只数表内四档" ⇒ 本条三个数变成 0/0/0 而当场红。
+        """
+        gw = await make_gateway(_cfg(vendor.port))
+        for name in ("acc-b1", "acc-b2", "acc-b3"):
+            _seed("buddy", name, {"token": SECRET}, {})
+        box = {"snap": QuotaSnapshot(state="unknown", source="buddy-credits",
+                                     detail="积分余额查询失败（HTTP 401）")}
+        self._stub_quota(monkeypatch, box)
+
+        r = await _post(client, gw, "/admin/api/accounts/buddy/quota-all")
+        assert r.status_code == 200, r.text
+        rc = r.json()["receipt"]
+        assert rc == {"refreshed": 0, "failed": 0, "not_fired": 3,
+                      "not_participating": 0,
+                      "by_reason": {"acc-b1": "", "acc-b2": "", "acc-b3": ""}}
+        # 三段穷举（参与者一个都不许从回执里消失）
+        assert rc["refreshed"] + rc["failed"] + rc["not_fired"] == 3
+
+    async def test_quota_all_receipt_mixes_all_four_buckets(self, vendor, make_gateway,
+                                                           client, monkeypatch):
+        """四段一次配齐：N=取到事实（含 `no_plan`）· K=失败 · J=未发起 · **停用的号照样刷**。
+
+        🔴 与领取腿的参与口径**不同**且是有意的：`run_once` 只有在调用方传 `enabled_of` 时才
+        跳过停用账号（`runner.py:408/423`，§22.6「运营执行跳过停用」），而额度是**只读视图**——
+        停用的号也要看得见还剩多少，否则"为什么停用它"失去依据。两个端点都不传 `enabled_of`
+        （`admin_accounts.py:1003-1005/1042-1043`），本条把它钉成判据而不是注释。
+        """
+        gw = await make_gateway(_cfg(vendor.port))
+        _seed("buddy", "acc-ok", {"token": SECRET}, {})
+        _seed("buddy", "acc-noplan", {"token": SECRET}, {})
+        _seed("buddy", "acc-circ", {"token": SECRET}, {})
+        _seed("buddy", "acc-boom", {"token": SECRET}, {})
+        _seed("buddy", "acc-off", {"token": SECRET}, {"enabled": False})
+
+        want = {"acc-ok": QuotaSnapshot(state="available", source="buddy-credits",
+                                        detail="剩余 9", remaining=9),
+                "acc-noplan": QuotaSnapshot(state="unknown", source="buddy-credits",
+                                            detail="上游返回空套餐列表", reason="no_plan"),
+                "acc-circ": QuotaSnapshot(state="unknown", source="buddy-credits",
+                                          detail="熔断中", reason="circuit"),
+                "acc-off": QuotaSnapshot(state="available", source="buddy-credits",
+                                         detail="停用号也有数", remaining=3),
+                "acc-boom": QuotaSnapshot(state="unknown", source="buddy-credits",
+                                          detail="不该被用到")}
+
+        async def fake_quota(cred, meta):
+            import dataclasses
+
+            name = meta.get("account")
+            if name == "acc-boom":
+                raise RuntimeError("钩子炸了")
+            return dataclasses.replace(want[name])
+
+        monkeypatch.setitem(buddy._HOOKS, "quota", fake_quota)
+        r = await _post(client, gw, "/admin/api/accounts/buddy/quota-all")
+        assert r.status_code == 200, r.text
+        rc = r.json()["receipt"]
+        assert rc["refreshed"] == 3          # success(2，含停用的 acc-off) + no_plan(1)
+        assert rc["failed"] == 1             # 钩子异常
+        assert rc["not_fired"] == 1          # circuit
+        assert rc["not_participating"] == 0  # 🔴 停用的号**不算**未参与（只读视图）
+        assert rc["by_reason"]["acc-boom"] == ""
+        assert rc["refreshed"] + rc["failed"] + rc["not_fired"] == 5   # 穷举
+        assert store.read_runtime("buddy", "acc-off")["quota"]["remaining"] == 3
+
+    async def test_quota_endpoints_bind_user_via_and_product(self, vendor, make_gateway,
+                                                            client, monkeypatch):
+        """两条腿都必须 `via="user"`（开关 `quota_net=false` 只管 cron）且 product 取自路径。"""
+        gw = await make_gateway(_cfg(vendor.port))
+        _seed("buddy", "acc-v1", {"token": SECRET}, {})
+        _seed("buddy", "acc-v2", {"token": SECRET}, {})
+        calls: list = []
+
+        from model_gateway.ops.builtin import query_balance as qb
+
+        async def spy(product, account, *, manual=False, runtime=None,
+                      via="cron", reasons_out=None):
+            calls.append({"product": product, "account": account, "via": via,
+                          "manual": manual})
+            if reasons_out is not None:
+                reasons_out[account] = ""
+            from model_gateway.ops.result import OpResult
+
+            return OpResult(account, "inactive", "哨兵：本用例只查闭包绑的参数")
+
+        monkeypatch.setattr(qb, "run_for", spy)
+        r = await _post(client, gw, "/admin/api/accounts/buddy/acc-v1/quota")
+        assert r.status_code == 200, r.text
+        assert calls[0] == {"product": "buddy", "account": "acc-v1",
+                            "via": "user", "manual": False}
+        r = await _post(client, gw, "/admin/api/accounts/buddy/quota-all")
+        assert r.status_code == 200, r.text
+        assert {c["product"] for c in calls} == {"buddy"}
+        assert {c["account"] for c in calls} == {"acc-v1", "acc-v2"}
+        assert all(c["via"] == "user" for c in calls)
+
+    async def test_quota_capability_false_is_preflight_400(self, vendor, make_gateway,
+                                                          client, monkeypatch):
+        """`balance=False` → 400 前置拒绝，**一次钩子都不发**（§22.6「能力矩阵是判据不是标签」）。
+
+        ⚠️ 诚实标注：10 个产品今天 `balance` 全 True ⇒ 真机构造不出这一档，
+        本条只做 monkeypatch 覆盖（真机门同理只能断"钮在位与能力位同相"）。
+        """
+        import dataclasses
+
+        gw = await make_gateway(_cfg(vendor.port))
+        _seed("buddy", "acc-cap", {"token": SECRET}, {})
+        meta = account_registry.get("buddy")
+        no_balance = dataclasses.replace(
+            meta, capabilities=dataclasses.replace(meta.capabilities, balance=False))
+        monkeypatch.setitem(account_registry.PRODUCTS, "buddy", no_balance)
+
+        seen: list = []
+        box = {"snap": QuotaSnapshot(state="available", source="buddy-credits", detail="x")}
+        self._stub_quota(monkeypatch, box, seen)
+
+        r = await _post(client, gw, "/admin/api/accounts/buddy/acc-cap/quota")
+        assert r.status_code == 400 and "balance" in r.json()["error"]["message"]
+        r = await _post(client, gw, "/admin/api/accounts/buddy/quota-all")
+        assert r.status_code == 400 and "未发起" in r.json()["error"]["message"]
+        assert seen == []                                   # 一条钩子都没发
+        assert "quota" not in store.read_runtime("buddy", "acc-cap")

@@ -109,10 +109,12 @@ a { text-decoration: none; }
 ::selection { background: rgba(23,27,34,.14); }
 [data-theme="dark"] ::selection { background: rgba(232,234,238,.22); }
 
-/* 细滚动条（参考 scrollbar-thin 4px / thumb #d1d5db radius-2） */
+/* 细滚动条（4px，thumb --radius-xs；2026-10-01 用户定案「太深」：浅色 thumb 由参考值
+   #d1d5db 调浅为 #e3e6ea（hover #cbd0d6）；深色 #343943/#454c58 在深底上对比适度，维持。
+   定案值以 frontend-spec §7.5 为准） */
 ::-webkit-scrollbar { width: 4px; height: 4px; }
-::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: var(--radius-xs); }
-::-webkit-scrollbar-thumb:hover { background: #b8bec6; }
+::-webkit-scrollbar-thumb { background: #e3e6ea; border-radius: var(--radius-xs); }
+::-webkit-scrollbar-thumb:hover { background: #cbd0d6; }
 ::-webkit-scrollbar-track { background: transparent; }
 [data-theme="dark"] ::-webkit-scrollbar-thumb { background: #343943; }
 [data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background: #454c58; }
@@ -465,6 +467,11 @@ select.in option { background: var(--surface); color: var(--text); }
 .anchor-item:hover { color: var(--text); background: var(--side-hover); }
 .anchor-item.active { color: var(--text); background: var(--content);
   box-shadow: inset 0 0 0 1px var(--border); }
+/* 接入账号页 rail 的选中态（2026-10-01 用户「选中效果不对，没有按照规范」）：
+   纤行默认选中（inset --border）在白底卡上几乎不可见；按 §3.1 分组卡 `.mode-btn.active`
+   的规范选中态（白底 + inset 1px --text），与网关模型管理页同一观感。作用域限 #ac-rail。 */
+#ac-rail .anchor-item.active { background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--text); }
 .settings-half { display: grid; grid-template-rows: 1fr 1fr; gap: 12px; align-items: stretch; }
 .settings-half .card { overflow-y: auto; }
 
@@ -601,27 +608,45 @@ select.in option { background: var(--surface); color: var(--text); }
 .edit-name:hover { color: #000; }
 [data-theme="dark"] .edit-name:hover { color: #fff; }
 
-/* 双面板骨架（frontend-spec §2.3 / §3 · v2.16 收口）：页面根接管内容区留白
+/* 双面板骨架（frontend-spec §2.3 / §3 · v2.16 收口 / v2.19 拖拽调宽）：页面根接管内容区留白
    （margin 逐值抵消 .content 的 12/12/48 内衬）+ 视口定高 + 右主区内部滚动。
-   **.panel-split 取代三处复制粘贴的内联 gutter**：accounts.js #ac-wrap（:180-182）/
-   resources.js #rv-wrap（:159-161）/ models.js #md-wrap（:93-95）——数值与之完全同值，
-   采用本类的页面须一并删除页内 <style> 的 margin/height 声明与 main 的内联滚动样式；
-   三处内联副本由后续波次逐页改类时删除，本类此后为唯一权威定义。
-   滚动子元素固定为直接子 <main>（.panel-split > main），不另设别名选择器。 */
+   **.panel-split 是三页骨架的唯一权威定义**（accounts.js / resources.js / models.js 已全部改类，
+   原三处内联副本与页内 <style> 的 margin/height 声明已删，v2.19 落地）。
+   滚动子元素固定为直接子 <main>（.panel-split > main），不另设别名选择器。
+   子侧栏宽度 = `--rail-w` 变量（components.js initSplitResize 拖拽写入，按页持久化）；
+   变量只挂在 wrap 上，≤768 媒体规则以同选择器 `width:100%` 覆盖（源码顺序在后），窄屏条带不受拖拽值影响。 */
 .panel-split { display: flex; align-items: stretch; min-height: 0;
   margin: -12px -12px -48px; height: calc(100vh - 60px); }
 .panel-split > main { flex: 1; min-width: 0; overflow-y: auto; padding: 12px; }
 /* 窄栏变体：产品选择器那条 rail 只需容纳「图标 20 + gap 8 + 名字」，248px 有富余。
    2026-09-30 用户要求「产品列表宽度缩短 30%」→ 248 × 0.7 = 174px（**只给账号接入页**，
    不动模型资源 / 资源池设置两页——它们的 rail 装的是更长的分组名）。 */
-.panel-split-narrow > .subnav { width: 174px; }
+.panel-split-narrow > .subnav { width: var(--rail-w, 174px); }
 
 /* 子侧栏（参考 ProviderList：248px 白底 border-r #f6f7f8；
-   滚动区 px-3 py-4；底区 border-t p-3） */
-.subnav { width: 248px; flex: none; display: flex; flex-direction: column; min-width: 0;
+   滚动区 px-3 py-4；底区 border-t p-3）。
+   宽度取 --rail-w（拖拽调宽，默认 248px；账户页窄栏变体默认 174px，见上）。 */
+.subnav { width: var(--rail-w, 248px); flex: none; display: flex; flex-direction: column; min-width: 0;
   background: var(--surface); border-right: 1px solid var(--side-border); }
+/* 窗口变窄的布局级兜底（v2.19）：栏宽最多吃到「wrap − 360px」（主区最低保留，与 JS 拖拽钳制同口径）。
+   纯布局实现 → 任何缩放即时生效、不存在「resize 事件读到旧视口」的时序问题（实测踩过）；
+   拖拽值（--rail-w）保留——窗口回宽后栏宽回弹，不需重拖。≤768 条带模式另行放开。 */
+.panel-split > .subnav { max-width: calc(100% - 360px); }
 .subnav-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; }
 .subnav-foot { border-top: 1px solid var(--side-border); padding: 12px; }
+
+/* 拖拽调宽 handle（v2.19，frontend-spec §3.1）：aside 的兄弟节点，5px 宽 +
+   margin-right:-5px 吃掉主区左内衬——零布局位移、不覆盖 aside 右缘 4px 滚动条。
+   默认全透明（分隔线仍由 aside border-right 承担），hover / 拖动时现 2px 指示条。 */
+.split-handle { flex: none; width: 5px; margin-right: -5px; position: relative; z-index: 5;
+  cursor: col-resize; touch-action: none; }
+.split-handle::after { content: ""; position: absolute; top: 0; bottom: 0; left: 50%;
+  width: 2px; margin-left: -1px; border-radius: var(--radius-full);
+  background: transparent; transition: background .12s; }
+.split-handle:hover::after { background: var(--placeholder); }
+body.rail-resizing { cursor: col-resize; user-select: none; }
+body.rail-resizing * { cursor: col-resize !important; }
+body.rail-resizing .split-handle::after { background: var(--text-tertiary); }
 
 /* 分组卡片（参考 package 供应商卡：rounded-12 bg#fbfcfc p-2 + inset 1px #eef1f3） */
 .group-card { border-radius: var(--radius-lg); background: var(--content); padding: 8px;
@@ -912,6 +937,36 @@ select.in option { background: var(--surface); color: var(--text); }
   color: var(--text);
   margin-bottom: 2px;
 }
+/* 🔴 实例身份横幅（2026-10-02 用户实拍立项）：贴在顶栏下方、内容区之上，**每页都在**——
+ * 验收门 / 临时副本与默认实例界面逐像素一致，只有常驻一条自证横幅才不会再被误读成真实数据。
+ * 不用左侧彩色竖条（§6 禁令），语义走底色；`is-fake` = 假上游在环，比"非默认数据根"更该醒目。 */
+.instance-banner {
+  position: sticky; top: 0; z-index: 6;
+  padding: 8px 20px;
+  font-size: 12px; line-height: 1.6; font-weight: 600;
+  color: var(--text-soft);
+  background: var(--warn-bg);
+  border-bottom: 1px solid var(--border);
+}
+.instance-banner[hidden] { display: none; }
+.instance-banner.is-fake { background: var(--err-bg); color: var(--err); }
+
+/* 模型检测三态（账号维度，2026-10-02 用户指令）：
+   检测中 = 灰/橘**交替闪烁**（steps 让两色分明，不做渐隐——用户点名的形态就是"闪"）；
+   可用 = 蓝（`--cool`，与语义色令牌一致，不新造色值）；不可用 = 红 + 原因原文。
+   图标本身不承担唯一语义：同一行右侧恒有文字结果（V5「圆点/图标不当唯一载荷」同一条律）。 */
+.mc-row .mc-ico { display: inline-flex; width: 16px; height: 16px; flex: none; color: var(--text-faint); }
+.mc-row .mc-result { font-size: 12px; font-weight: 700; color: var(--text-faint);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mc-row.mc-run .mc-ico { animation: mgw-mc-blink 1s steps(1, end) infinite; }
+.mc-row.mc-run .mc-result { color: var(--warn); }
+.mc-row.mc-ok .mc-ico, .mc-row.mc-ok .mc-result { color: var(--cool); }
+.mc-row.mc-fail .mc-ico, .mc-row.mc-fail .mc-result { color: var(--err); }
+@keyframes mgw-mc-blink { 0%, 49% { color: var(--text-faint); } 50%, 100% { color: var(--warn); } }
+@media (prefers-reduced-motion: reduce) {
+  .mc-row.mc-run .mc-ico { animation: none; color: var(--warn); }
+}
+
 .alert-warn {
   background: var(--warn-bg);
 }
@@ -1135,8 +1190,10 @@ select.in option { background: var(--surface); color: var(--text); }
      `height:100%`）的旧页把栏改全宽会把主区挤到 0 宽，故不做全局覆写，
      待各页改用本类后自然获得本修正。 */
   .panel-split { flex-direction: column; margin: -12px -10px -36px; }
-  .panel-split > .subnav { width: 100%; height: auto; flex: none;
+  .panel-split > .subnav { width: 100%; height: auto; flex: none; max-width: none;
     border-right: 0; border-bottom: 1px solid var(--side-border); }
+  /* 窄屏条带下不提供拖拽（v2.19）：handle 不在布局里，宽度由上面的 100% 接管 */
+  .panel-split > .split-handle { display: none; }
   .panel-split > .subnav .subnav-scroll { display: flex; flex-direction: row;
     align-items: center; gap: 4px; overflow-x: auto; overflow-y: hidden; padding: 12px; }
   /* 🔴 `width: auto` 必须写：`.anchor-item` 基础类有 `width:100%`（行列表用），
@@ -1174,3 +1231,19 @@ select.in option { background: var(--surface); color: var(--text); }
   background: var(--err);
   flex: none;
 }
+
+/* 批量动作的**就地回执槽**（单层弹窗红线的构造化落点，frontend-spec §7.11 / 规矩 16）。
+   住在卡体末尾 ⇒ 与 card-head 同框、看得见"刷新 N · 失败 K · 未发起 J"；
+   文本存模块级由 paintPanel() 回填，所以**整块重绘不会吃掉它**（PM r5 B-R4-5）。 */
+.bulk-receipt {
+  margin: 0 16px 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--text);
+  border-radius: 6px;
+  background: var(--surface-2, var(--surface));
+  font-size: 13px;
+  color: var(--text);
+}
+.bulk-receipt[hidden] { display: none; }
+.bulk-receipt .list-row + .list-row { border-top: 1px solid var(--border); }

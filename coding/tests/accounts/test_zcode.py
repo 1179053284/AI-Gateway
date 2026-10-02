@@ -408,39 +408,76 @@ def _write_log(account_dir: Path, *records: str) -> None:
         "\n".join("billing/balance 请求完成 " + r for r in records) + "\n", encoding="utf-8")
 
 
-async def test_quota_reads_identity_from_meta_channel(accounts_root, tmp_path):
-    """🔴 正式通道 = `meta`：`meta["account"]`/`meta["dir"]` 指向的账号被读（不是 cred 的）。"""
+def test_offline_snapshot_reads_identity_from_account_dir(accounts_root):
+    """**离线面**：`read_account_snapshot(root, account)` 读的是**该账号自己**的日志目录。
+
+    🔴 2026-10-02 迁移（方案 §7-5「消费方迁移必须列账」）：本用例原先打的是
+    `zcode.quota()` 钩子 —— 钩子已改走**联网腿**（`billing.fetch_balance`），
+    再看日志就没意义了。同一个断言换钉离线面函数（它仍是 `/admin/api/zcode/quota`
+    与启动种的实现），**fixture 形状一字未动**（红线保护形状，见 §8.1-1）。
+    """
     good = _write_account(accounts_root, "acct-a", mid="MID-A")
     _write_account(accounts_root, "acct-b", mid="MID-B")
     _write_log(good, _log_record(used=1_500_000, available=1_500_000))
 
-    snap = await zcode.quota({"account": "acct-b"},          # cred 指向**没有日志**的账号
-                             {"account": "acct-a", "dir": str(good)})
+    snap = zq.read_account_snapshot(accounts_root, "acct-a")
 
-    assert snap.state == "available" and snap.source == zcode.QUOTA_SOURCE
-    assert "余量 1500000" in snap.detail
-    assert "Start Plan" in snap.detail
+    assert snap.ok is True and snap.plan == "Start Plan"
+    assert snap.buckets[0].available == 1_500_000
 
 
-async def test_quota_falls_back_to_cred_account(accounts_root, tmp_path):
-    """向后兼容：`meta` 没给身份时，回退 `cred["account"]`（M6-1 骨架期的临时通道）。"""
+def test_offline_snapshot_tolerates_records_without_payload_wrapper(accounts_root):
+    """🔴 旧形状日志（顶层 `data`、无 `payload` 包）必须**原样可读**。
+
+    `_unwrap_log_record` 的容错分支就是为这条存在的：实盘记录带 `payload`（见
+    【探针台账】§4「两条通道被混成一条」那行），而**全部既有夹具**与本用例都是老形状 —— 剥层器若写死
+    `payload.data`，这里会静默得零桶（"修了 B2 反而把好的通道改坏"，方案 §3-2 点名的坑）。
+    """
     good = _write_account(accounts_root, "acct-old", mid="MID-OLD")
     _write_log(good, _log_record(used=3_000_000, available=0))
 
-    snap = await zcode.quota({"account": "acct-old"}, {})
+    snap = zq.read_account_snapshot(accounts_root, "acct-old")
 
-    assert snap.state == "exhausted"
+    assert snap.ok is True
+    assert snap.buckets[0].available == 0          # 上游给了 0 = 确实是 0，不是"没给"
 
 
-async def test_quota_without_identity_or_logs_is_unknown(accounts_root, tmp_path):
-    """缺身份 / 无日志 → `unknown`（**未知不当零**，`23 B2`）——两条都必须能区分。"""
-    no_identity = await zcode.quota({}, {})
-    assert no_identity.state == "unknown" and "账号名" in no_identity.detail
+async def test_quota_hook_fails_closed_without_identity_or_credentials(accounts_root):
+    """联网腿的两条**不发起**早退（接 `test_registry.py` 钉的「既不编造也不打上游」）。
 
+    两条都用 `httpx` 计数 = 0 断言"真的没发请求"，而不是只看返回值 ——
+    只看 `state` 的话，"发了请求但失败"与"根本没发"在断言上长得一样（方案 §6 第 6/9 格）。
+    """
+    calls = []
+
+    async def _boom(*a, **kw):
+        calls.append((a, kw))
+        raise AssertionError("不该发起网络请求")
+
+    from model_gateway.upstream.zcode import billing
+
+    orig = billing._http_get_balance
+    billing._http_get_balance = _boom
+    try:
+        no_identity = await zcode.quota({}, {})
+        assert no_identity.state == "unknown" and "账号名" in no_identity.detail
+        assert no_identity.reason == "no_identity"       # 🔴 机器可读档（合并写白名单里就有它）
+
+        _write_account(accounts_root, "acct-quiet", mid="")   # 有账号名、无设备码
+        no_creds = await zcode.quota({"account": "acct-quiet"},
+                                     {"account": "acct-quiet",
+                                      "dir": str(accounts_root / "acct-quiet")})
+        assert no_creds.state == "unknown" and no_creds.reason == "no_credentials"
+    finally:
+        billing._http_get_balance = orig
+    assert calls == []                                   # 两条都**未发起**
+
+
+def test_offline_snapshot_without_logs_is_not_ok(accounts_root):
+    """离线面无日志 → `ok=False`（它**不**产 `reason`：兜底腿的数据不配有确定性结论）。"""
     _write_account(accounts_root, "acct-quiet", mid="MID-Q")
-    no_logs = await zcode.quota({}, {"account": "acct-quiet",
-                                     "dir": str(accounts_root / "acct-quiet")})
-    assert no_logs.state == "unknown" and "无可用日志记录" in no_logs.detail
+    snap = zq.read_account_snapshot(accounts_root, "acct-quiet")
+    assert snap.ok is False and "无可用日志记录" in snap.note
 
 
 async def test_claim_delegates_with_meta_identity(monkeypatch, accounts_root):

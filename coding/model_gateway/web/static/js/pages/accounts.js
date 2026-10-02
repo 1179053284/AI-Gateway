@@ -4,8 +4,11 @@
  *   左子侧栏 = 10 行 `.anchor-item` 产品选择器（**无 .group-card / 无 .mode-btn / 无「族」轴**
  *   ——族层是前端臆造的，见设计书 §0-1）＋ 右侧撑满配置区 = 账号表（唯一列表单位）。
  *   接入入口全页唯一：`.subnav-foot .side-add`（§2-注，resources.js:175-178 定版范式）。
- *   实现词汇（协议 / 出站基址 / 设备身份字段 / 目录来源 / 能力位 / 网关资源 / 池额度）
- *   一律降级到展开详情行 `.req-detail`（§3「移出常驻面」，logs.js:149-151 先例）。
+ *   实现词汇（协议 / 出站基址 / 设备身份字段 / 能力位 / 网关资源 / 池额度）2026-10-01 起
+ *   **不再常驻**（用户指示去展开详情行）：续期在**账号行操作列**（2026-10-01 用户裁决，
+ *   连同登录态失效倒计时一起回列表；弹窗内不放账号级动作）；
+ *   模型目录**二级弹窗 2026-10-01 废除**（用户定版：弹窗套弹窗 = 忌讳——目录字段直接
+ *   融合进映射行，见 `mapBodyHTML`/`modelFactsHTML`），其余实现词汇只在后端视图里可查。
  *
  * 数据面（**打开页面只有 1 个 GET**，§4-1）：
  *   GET  /admin/api/accounts                全产品账号视图，能力位已内嵌
@@ -13,7 +16,8 @@
  *        → 本页**不再**调 `/admin/api/accounts/capabilities`（§4-1 判据：两个 GET 变一个）。
  *          该端点仍在册（`api/admin_accounts.py::capabilities_matrix`，消费方只剩
  *          `tests/integration/test_admin_accounts.py` 与 `test_m6_a1_wiring.py`，前端已无第二个调用页）。
- *   GET  /admin/api/accounts/{product}/{name}/models   模型目录（B-1 生产出口）
+ *   GET  /admin/api/accounts/{product}/{name}/models   单账号模型目录（B-1 生产出口；
+ *        界面 2026-10-01 起**不再调用**——目录字段已由 /catalog 全字段带出，二级弹窗废除）
  *   GET  /admin/api/accounts/{product}/catalog         产品内部模型目录（模型映射弹窗）
  *   POST /admin/api/accounts/mappings                  批量初始化映射 {product, items}
  *   POST /admin/api/accounts/claim-all                 批量签到 / 领取 {product|null}
@@ -52,9 +56,10 @@
  *   · **BD2 `login/cancel`**：幂等 `{cancelled: bool}`、永不 404 → 向导的关闭路径统一请求作废会话。
  *   · **BD3a `resource`**：账号视图带 `resource` = `[{id, enabled}]`；`null` = 配置读不动（**未知**，
  *     不是 0），`[]` = 确实没有（`api/admin_accounts.py::_resource_projection`）。
- *   · **额度数据源 = `a.runtime.quota`**（落盘快照 `{state, source, detail, checked_at}`），
- *     `a.quota` 是网关额度池（`remaining-reserved`，**量纲不同不得混列**，只进展开行）。
- *     四值口径：有余量 / 已耗尽 / 未知 / **尚未刷新**（§3：「网关还没查过」≠「查了但拿不到」）。
+ *   · **额度数据源 = `a.runtime.quota`**（落盘快照 `{state, source, detail, plan, items,
+ *     checked_at}`；`plan` = 套餐名、`items` = 逐包结构，2026-10-01 加字段——钩子取不到时
+ *     为 ""/()，老快照无这两键走四值口径），`a.quota` 是网关额度池
+ *     （`remaining-reserved`，**量纲不同不得混列**）。
  *   · **BD1 `cron_enabled_of`**：停用位现在对**手动腿与定时腿同时**生效（BUG-3 已修）→ 开关的
  *     title 可以如实写「两条腿都跳过」。
  *
@@ -75,24 +80,19 @@
  */
 
 import { GET, POST, esc } from "../api.js";
-import { modal, confirmDialog, toast, copyText } from "../components.js";
+import { modal, confirmDialog, toast, copyText, initSplitResize } from "../components.js";
 
 /* ---------- 图标（Lucide 0.555.0，14×14 sw2；全站同契约） ---------- */
 const PLUS = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>`;
-const TRASH = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>`;
 const COPY = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>`;
-const HEART = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9.5a5.5 5.5 0 0 1 9.591-3.676.56.56 0 0 0 .818 0A5.49 5.49 0 0 1 22 9.5c0 2.29-1.5 4-3 5.5l-5.492 5.313a2 2 0 0 1-3 .019L5 15c-1.5-1.5-3-3.2-3-5.5"/><path d="M3.22 13H9.5l.5-1 2 4.5 2-7 1.5 3.5h5.27"/></svg>`;
 const REFRESH = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>`;
 const CHECKIN = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/><path d="m9 16 2 2 4-4"/></svg>`;
-const AWARD = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15.477 12.89 1.515 8.526a.5.5 0 0 1-.81.47l-3.58-2.687a1 1 0 0 0-1.197 0l-3.586 2.686a.5.5 0 0 1-.81-.469l1.514-8.526"/><circle cx="12" cy="8" r="6"/></svg>`;
 const LINK = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>`;
 const PHONE = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="20" x="5" y="2" rx="2" ry="2"/><path d="M12 18h.01"/></svg>`;
-const CATALOG = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 5h13"/><path d="M13 12h8"/><path d="M13 19h8"/><path d="M3 10a2 2 0 0 0 2 2h3"/><path d="M3 5v12a2 2 0 0 0 2 2h3"/></svg>`;
 const MAP = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 3 4 4-4 4"/><path d="M20 7H4"/><path d="m8 21-4-4 4-4"/><path d="M4 17h16"/></svg>`;
+const SCAN = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/></svg>`;
 const IMPORT = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>`;
 const SHOP = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>`;
-const CHEV_R = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>`;
-const CHEV_D = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>`;
 
 /* ---------- 常量（判据表；不要在渲染里散落字面量） ---------- */
 
@@ -101,15 +101,6 @@ const KIND_TEXT = {
   device_code: "设备码授权", external_link: "外链授权",
   local_callback: "本机回跳", qr: "扫码", sms_code: "短信验证码",
 };
-
-/** 上游协议文案（`ProductMeta.protocol`）——**只进展开行**（设计书 §3 / 门 L-A10）。 */
-const PROTOCOL_TEXT = {
-  openai: "OpenAI 兼容", anthropic: "Anthropic 兼容", custom: "产品专属出站塑形",
-};
-
-/** 模型目录来源文案（`ProductMeta.models_source` 三形态）——同样只进展开行。 */
-const SOURCE_TEXT = { remote: "远端目录", cache: "磁盘缓存", static: "本地静态表" };
-const sourceText = (v) => `${SOURCE_TEXT[v] || "未知来源"}（${v || "?"}）`;
 
 /** 🔴 local_callback 与短信型**不得轮询**（R-5 / §22.3）：其 `login_poll` 恒 pending，
  *  结果只从「接收端自动回跳 / 地址栏粘贴」或「提交验证码」通道来。本表是唯一落点。 */
@@ -155,7 +146,6 @@ let railEl = null;             // 产品 rail（role=tablist 容器）
 let filterEl = null;           // 「只看有账号」开关所在容器（条件渲染）
 let panelEl = null;            // 右侧配置区容器
 let wizard = null;             // 登录向导会话 —— **只有 stopWizard() 置空**（§4-2）
-let expanded = new Set();      // 展开行：`${product}/${name}`
 let onlyWith = false;          // §1.3 派生筛选（默认不隐藏产品）
 let deepMiss = "";             // 深链 `?p=` 未命中的 id（§4-4 要在 `.value` 注明）
 let loadError = "";            // §5 读失败：保留上次数据 + 重试
@@ -168,11 +158,11 @@ const capsOf = (pid) => {
 
 const productOf = (pid) => (view && view.products || []).find((p) => p.id === pid) || null;
 const selectedProduct = () => productOf(selected);
-const rowKey = (pid, name) => `${pid}/${name}`;
 
 /* ---------- 入口：1 个 GET + 深链 + 一次性 shell ---------- */
 export async function renderAccounts(root) {
   rootEl = root;
+  const prevSelected = selected;          // 换产品要清回执，同产品重绘必须留着（下面比对用）
   onlyWith = readStore(FILTER_STORE) === "1";
   await fetchView();
   /* §4-4 深链优先，其次上次记忆，最后 registry 原序首项（= view.products[0]）。
@@ -187,6 +177,11 @@ export async function renderAccounts(root) {
   const visible = railScope().ids;
   if (visible.length && !visible.includes(selected)) selected = visible[0];
   if (!productOf(selected)) selected = first;
+  /* 🔴 产品变了就清回执 —— 判据落在**这里**（渲染入口）而不是只落在 `selectProduct()`：
+     深链 `#/accounts?p=y` 与派生开关回落都不经过那颗 rail 点击函数，
+     实盘实测到"从 qoder（1 个号）深链切到 zcode，槽里还挂着『刷新 1 个』"。
+     同一产品的重绘**不清**（PM B-R4-5 要的就是迟到回执在重绘后仍可见）。 */
+  if (prevSelected && prevSelected !== selected) clearBulkReceipt();
   drawShell();
 }
 
@@ -224,12 +219,11 @@ function drawShell() {
   root.innerHTML = `
     <div class="panel-split panel-split-narrow">
       <aside class="subnav">
-        <div class="nav-group-title" style="padding:12px 12px 0">接入产品</div>
         <button class="btn btn-sm" id="ac-claim-all" style="margin:0 12px 8px;width:calc(100% - 24px)"
           title="对所有支持签到的产品（能力位 checkin=True）的全部已启用账号执行签到 / 领取">${CHECKIN}一键签到</button>
         <div id="ac-filter"></div>
         <div class="subnav-scroll" role="tablist" aria-orientation="vertical"
-          aria-label="接入产品" id="ac-rail"></div>
+          aria-label="产品列表" id="ac-rail"></div>
       </aside>
       <main>
         <div id="ac-panel"></div>
@@ -238,6 +232,7 @@ function drawShell() {
   railEl = root.querySelector("#ac-rail");
   filterEl = root.querySelector("#ac-filter");
   panelEl = root.querySelector("#ac-panel");
+  initSplitResize(root, "accounts");
   /* 全产品批量入口：能力位门控在服务端（payload 只带 product:null，不发产品清单）——
      哪些产品参与由后端按 capacity 判，前端不替它筛（筛了就是第二份真相）。 */
   const claimAllBtn = root.querySelector("#ac-claim-all");
@@ -351,6 +346,8 @@ function selectProduct(pid) {
   selected = pid;
   deepMiss = "";                 // 回落注记只对入站深链/记忆有意义：用户已自己选定产品
   writeStore(PRODUCT_STORE, pid);
+  clearBulkReceipt();            // 🔴 切产品即清空批量回执：上一批的结论不属于这个产品
+                                 //    （槽是产品级 DOM，`paintPanel()` 会把模块级文本回填进**新**面板）
   /* 深链是**入站**判据：写 hash 会触发 main.js 的 hashchange → 整页重洗，与 §4-5 相悖，
      故只更新 localStorage 记忆，不改 `location.hash`。 */
   const cur = railEl.querySelector(`.anchor-item[data-pid="${cssAttr(pid)}"]`);
@@ -387,6 +384,7 @@ function paintPanel() {
   const p = selectedProduct();
   panelEl.innerHTML = panelHTML(p);       // p=null 时 panelHTML 自己出「读失败 alert + 空态」
   bindPanel(p);                           // bindPanel 对 null 仍绑「重试」
+  renderBulkReceipt();                     // 🔴 重绘之后回填：回执文本住模块级，不住 DOM
 }
 
 function panelHTML(p) {
@@ -405,8 +403,8 @@ function panelHTML(p) {
         ${extraValueHTML()}
         ${headOpsHTML(p)}
       </div>
-      ${metaLineHTML(p)}
       ${p.accounts.length ? tableHTML(p) : emptyHTML(p)}
+      ${bulkReceiptHTML()}
     </div>`;
 }
 
@@ -429,6 +427,10 @@ function headOpsHTML(p) {
             title="查看该产品内部模型（含消耗规则/免费）并初始化到网关模型的映射">${MAP}模型映射</button>
           ${c.checkin ? `<button class="btn btn-sm" id="ac-claim"
             title="对该产品全部已启用账号执行签到 / 领取（结果按四类出口呈现）">${CHECKIN}一键领取</button>` : ""}
+          ${c.balance ? `<button class="btn btn-sm" id="ac-quota"
+            title="刷新额度：对该产品全部账号只读查一次上游额度（含停用账号；结果就地回执）">${REFRESH}刷新额度</button>` : ""}
+          ${c.refresh ? `<button class="btn btn-sm" id="ac-renew"
+            title="批量续期：对该产品下登录态 5 小时内将失效的账号刷新凭据并落盘（停用账号也可续；失效时间取不到的不猜、不续）">${REFRESH}批量续期</button>` : ""}
           ${p.id === Z_PRODUCT ? `
           <button class="btn btn-sm" id="ac-zimport"
             title="从本机 ZCode 工具导入账号，或粘贴 JSON 导入">${IMPORT}导入账号</button>
@@ -436,22 +438,6 @@ function headOpsHTML(p) {
             title="购买账号（YouYu Shop：一元买一个可用账号）；买完复制账号 JSON 走「导入账号」或直接一键导入">${SHOP}购买账号</button>` : ""}
           <button class="btn btn-sm btn-primary" id="ac-add" style="margin-left:auto">${PLUS}接入账号</button>
         </span>`;
-}
-
-/** 「本产品」一行元信息（数据驱动的差异面：登录形态 / 能力位 / 转发是否接线）。
- *  🔴 只放**产品之间确实不同**的事实，不放协议 base_url 这类实现细节（那些进展开行）。
- *  这一行就是为了回答"所有产品接入都是一样的么"——不一样，且差别在这里看得见。 */
-function metaLineHTML(p) {
-  const c = p.capabilities || {};
-  const bits = [`${esc(loginText(p))}`];
-  if (c.checkin) bits.push("可签到 / 领取");
-  bits.push(c.refresh ? "可续期" : "不可续期");
-  if (c.onboarding) bits.push("有新手任务");
-  bits.push(p.models_wired ? "模型转发已接线" : "模型转发未接线");
-  return `
-      <div style="padding:0 16px 12px;color:var(--text-muted);font-size:12px;font-weight:600">
-        ${bits.join(" · ")}
-      </div>`;
 }
 
 /** 卡头的如实注记（§4-4 深链回落 / §5 读失败）：另起 `.value`，不改动计数那一行。 */
@@ -482,11 +468,6 @@ function emptyHTML(p) {
       </div>`;
 }
 
-function loginText(p) {
-  const alts = (p.login_alt || []).map((k) => KIND_TEXT[k] || k);
-  return (KIND_TEXT[p.login] || p.login) + (alts.length ? ` / ${alts.join(" / ")}` : "");
-}
-
 /** 每种登录形态**会发生什么**（放进向导第一步，替换掉"所有产品看起来一样"的观感）。
  *  🔴 文案与实现同源：`local_callback` 那句的依据是 `accounts/callback_server.py` 真起了本机接收端
  *  （trae/lobsterai 的 `_CALLBACK` 表），不是"上游会回跳"的想象；「弹窗」是本轮的真实布局
@@ -502,133 +483,275 @@ function kindHint(kind) {
   }
 }
 
-/* ---------- 账号表：4 列固定列集（§3；表头逐字，门 V6） ---------- */
+/* ---------- 账号表：4 列固定列集（2026-10-01 改版：去展开列，表头逐字） ---------- */
+/** 本轮额度没查成的账号有几个、各是什么成因（`reason` ∈ SILENT 名单 = 上游这一轮没说话）。
+ *  与后端 `ops/builtin/query_balance.SILENT` 同一份名单，前端不另立判据。 */
+function quotaStaleBits(p) {
+  const bits = {};
+  for (const acc of p.accounts || []) {
+    const q = (acc.runtime || {}).quota;          // 刻意不写 `const rq = a.runtime && …`：
+    if (q && QUOTA_SILENT.includes(q.reason)) bits[q.reason] = (bits[q.reason] || 0) + 1;  // 那行是 V4 变异的唯一锚点
+  }
+  return bits;
+}
+
+/** 🔴 跨行说明只说一次（2026-10-02 用户指令：失败原因不得刷进每一行）。
+ *  行内保留的是**定位用的**注记「（读取失败）」+ 上一轮数值与时刻；
+ *  上游原话（`detail`）留在行内悬停里，不占常驻面。 */
+function quotaStaleAlertHTML(p) {
+  const bits = quotaStaleBits(p);
+  const n = Object.values(bits).reduce((x, y) => x + y, 0);
+  if (!n) return "";
+  const why = Object.entries(bits).map(([k, v]) => `${QUOTA_REASON_TEXT[k] || k} ${v} 个`).join("、");
+  return `
+    <div class="alert alert-warn" style="margin:0 12px 12px">
+      <div class="alert-title">${n} 个账号本轮额度没有取到新数据（${esc(why)}）</div>
+      <div>下面这些行显示的是**上一轮**的数值与时刻（每行「查于」即那一轮的时间）；
+        上游原话悬停在额度格上可见。要立刻重试：行内「刷新额度」只查这一个账号，
+        卡头那颗查本产品全部账号。</div>
+    </div>`;
+}
+
+const QUOTA_REASON_TEXT = {
+  circuit: "冷却中", "circuit-untrusted": "熔断状态不可读", unreachable: "读取失败",
+  no_credentials: "未发起（缺凭据）", no_identity: "未发起（缺登录身份）",
+};
+
 function tableHTML(p) {
   return `
+      ${quotaStaleAlertHTML(p)}
       <div class="table-wrap"><table class="tbl" id="ac-table"><thead><tr>
-        <th class="exp"></th><th>账号</th><th>状态</th>
+        <th>账号</th><th>状态</th>
         <th class="num">额度</th><th class="num">操作</th>
       </tr></thead><tbody>
-        ${p.accounts.map((a) => rowHTML(p, a) + detailHTML(p, a)).join("")}
+        ${p.accounts.map((a) => rowHTML(p, a)).join("")}
       </tbody></table></div>`;
 }
 
-/** 账号行（§3 四列）。停用行只加 `.off`、**有意不加 `.locked`**：停用账号仍需可探活/删除
- *  （`.off + .locked` 成对律 frontend-spec:479 只适用于"必须阻断交互"的场合——设计书 §3
- *  已把这条区别写明，免得下一轮被当漏洞"顺手补上"）。副行只列白名单三项（昵称/套餐/到期，
- *  `admin_accounts.py::_META_DISPLAY_KEYS`），`via`/`phone`/`email` 是实现词汇不上常驻面。 */
+/** 账号行。停用行只加 `.off`、**有意不加 `.locked`**：停用账号仍需可探活/删除/续期
+ *  （`.off + .locked` 成对律 frontend-spec:479 只适用于"必须阻断交互"的场合）。
+ *  副行 = 白名单三项（昵称/套餐/到期，`admin_accounts.py::_META_DISPLAY_KEYS`）
+ *  + **登录态失效位**（2026-10-01 用户裁决：有续期就要看得见还有多久失效）。 */
 function rowHTML(p, a) {
   const disp = a.display || {};
-  const sub = [disp.nickname, disp.plan ? `套餐 ${disp.plan}` : "",
-    disp.expires_at ? `到期 ${shortTime(disp.expires_at)}` : ""].filter(Boolean).join(" · ");
-  const unknown = a.status === "unknown";
-  const stateText = !a.enabled ? "已停用" : unknown ? "状态未知" : "已启用";
-  /* §5：单账号读不动 → 「状态未知」+ 中性色（`admin_accounts.py` 的 fail closed 语义
-     不含任何凭据有效性判断，所以既不说「启用」也不着红色，原文进展开行）。 */
+  const metaBits = [disp.nickname, disp.plan ? `套餐 ${disp.plan}` : "",
+    disp.expires_at ? `到期 ${shortTime(disp.expires_at)}` : ""].filter(Boolean);
+  const exp = loginStateBit(p, a);
+  const subLine = [...(metaBits.length ? [esc(metaBits.join(" · "))] : []), exp].filter(Boolean).join(" · ");
   return `
     <tr data-acc="${esc(a.name)}" class="${a.enabled ? "" : "off"}">
-      <td class="exp" data-exp="${esc(a.name)}" title="展开详情">${expanded.has(rowKey(p.id, a.name)) ? CHEV_D : CHEV_R}</td>
       <td class="strong">
         <div class="mono">${esc(a.name)}</div>
-        ${sub ? `<div style="margin-top:4px;font-size:12px;font-weight:600;color:var(--text-faint)">${esc(sub)}</div>` : ""}
+        ${subLine ? `<div style="margin-top:4px;font-size:12px;font-weight:600;color:var(--text-faint)">${subLine}</div>` : ""}
       </td>
-      <td>
-        <span data-sw="${esc(a.name)}" style="display:inline-flex;align-items:center;gap:8px"></span>
-        <span style="font-size:12px;font-weight:600;color:var(--text-muted)"
-          title="${esc(unknown ? "状态未知：运行态文件读不动（fail closed），原文见展开行；这不是「凭据无效」的结论"
-            : a.enabled ? "启用位只决定运营是否纳入本账号（手动与定时两条腿同判据）；不含凭据有效性事实"
-              : "已停用：手动与定时运营都跳过本账号；探活与删除仍可用，续期与启用位无关")}">${esc(stateText)}</span>
-      </td>
+      <td><span data-sw="${esc(a.name)}" style="display:inline-flex;align-items:center"></span></td>
       <td class="num">${quotaCell(a)}</td>
       <td class="ops">${opsHTML(p, a)}</td>
     </tr>`;
 }
 
-/** 额度格四值口径（§3；优先运行态快照 → 退池摘要 → 无快照写「尚未刷新」）。
- *  🔴 BUG-1 的本体修复：旧实现只读 `a.quota`（网关池摘要），从不读 `a.runtime.quota`。 */
-function quotaCell(a) {
-  const rq = a.runtime && a.runtime.quota;
-  if (!rq) return `<span style="color:var(--text-faint)" title="运行态里没有额度快照：网关还没查过（BUG-2 的可见态）">尚未刷新</span>`;
-  if (rq.state === "available") return `<span>有余量</span><span style="display:block;margin-top:4px;font-size:12px;font-weight:600;color:var(--text-faint)">查于 ${esc(shortTime(rq.checked_at))}</span>`;
-  if (rq.state === "exhausted") return `<span style="color:var(--warn)">已耗尽</span>`;
-  return `<span style="color:var(--text-faint)" title="${esc(rq.detail || "上游未给出额度")}">未知</span>`;
+/** 登录态失效位（数据源 = `a.credential_expires_at`，后端 `accounts/credexp` 提炼；
+ *  "" = 未知——**可续期的产品才如实说"未知"**，不可续期产品不制造无意义的焦虑）。
+ *  🔴 已过期（实测 raccoon 两号）：直说"需重新登录"——自动续期腿对 refresh_token 已死的
+ *  账号记终态、不再重试，界面不能继续假装"将自动续期"。
+ *  ≤2h → 警示色并注明"将自动续期"（cron 续期腿阈值 = `auto_renew.AUTO_RENEW_WITHIN_S`）。 */
+function loginStateBit(p, a) {
+  const iso = a.credential_expires_at;
+  if (iso) {
+    const ms = Date.parse(iso);
+    const left = isFinite(ms) ? ms - Date.now() : Number.NaN;
+    if (isFinite(left) && left <= 0) {
+      return `<span style="color:var(--err);font-weight:700">登录态已过期（${esc(shortTime(iso))}），需重新登录</span>`;
+    }
+    const soon = isFinite(left) && left <= 2 * 3600 * 1000;
+    return `<span${soon ? ' style="color:var(--warn);font-weight:700"' : ""}>登录态 ${esc(shortTime(iso))} 失效${soon ? "（≤2h，将自动续期）" : ""}</span>`;
+  }
+  return capsOf(p.id).refresh ? `<span style="color:var(--text-faint)">登录态失效时间未知</span>` : "";
 }
 
-/** 行内动作 ≤3 颗（§3）：签到（能力门控）· 探活 · 删除。续期/目录/新手任务在展开行。 */
+/* ---------- 额度格（2026-10-01 重做：套餐识别 + 逐包余粮） ----------
+ * 数据源 = `a.runtime.quota`（`query_balance` 动作落盘的快照；cron 周期刷新）。
+ * 展示公式照抄 DSH Jet Hub（jet-hub.js:401-491 / credit-expiry.js）+ zcode-switch 账号行：
+ *   套餐徽章（`plan`，取不到不编造）→ 粗体总额 + 量纲标签 → 附属分桶行（三选一：
+ *   长期/每日、长期/临时、N 个资源包有效）→「另有 N 已失效」→ 查于时间 → 逐包明细进 tooltip。
+ * 🔴「查不到」（unknown/无快照）与「余额 0」（exhausted）严格分型；负值在钩子已 clamp。
+ * 🔴 老快照没有 `items` 键 → 退回四值口径（有余量 / 已耗尽 / 未知 / 尚未刷新），不装死。 */
+
+/** 「临时」分桶窗口（DSH `PERMANENT_LOCK_EXPIRING_WINDOW_DAYS`，credits-capabilities.js:180-209）。 */
+const EXPIRING_WINDOW_DAYS = 15;
+
+/** 数值格式化：token 用 K/M 两位小数（zcode-switch fmtTokens 同款），其余两位小数封顶。 */
+function fmtQuotaNumber(v, unit) {
+  if (unit === "token" && Math.abs(v) >= 1000) {
+    return v >= 1e6 ? (v / 1e6).toFixed(2) + "M" : (v / 1e3).toFixed(2) + "K";
+  }
+  return String(Math.round(v * 100) / 100);
+}
+
+/** ISO 形状谓词：上游 epoch 未归一时**不渲染时间**（页面兜底，不把脏值印给用户）。 */
+const ISO_RE = /^\d{4}-\d{2}-\d{2}/;
+
+/** 距到期不足窗口天（`expires_at` 取不到/非法 = 不算临时，保守归长期）。 */
+function expiresSoon(iso) {
+  if (!iso) return false;
+  const t = Date.parse(iso);
+  if (!isFinite(t)) return false;
+  const days = (t - Date.now()) / 86400000;
+  return days >= 0 && days <= EXPIRING_WINDOW_DAYS;
+}
+
+/** 附属标注（**不是第六档**，方案 §4-7）：`reason` → 注记文案。
+ *  🔴 六档里的「冷却中/读取失败/未发起」是**附属注记**，额度档仍只有五档 ——
+ *      V7/D6 的 exactly-one 判据靠这个区分成立（多一档状态就会当场打红）。 */
+const QUOTA_NOTE = {
+  circuit: "（冷却中）",
+  "circuit-untrusted": "（熔断状态不可读）",
+  unreachable: "（读取失败）",
+  no_credentials: "（未发起）",
+  no_identity: "（未发起）",
+};
+/* 「上游这一轮没说话」的档 —— 与后端 `ops/builtin/query_balance.SILENT` 同一份名单。
+   这些档**保住上一轮的真实数值**（合并写），只在后面挂注记，绝不把数字洗成「未知」。 */
+const QUOTA_SILENT = ["circuit", "circuit-untrusted", "unreachable", "no_credentials", "no_identity"];
+
+/** 额度格（2026-10-02 五档定版）。数据面 = `runtime.json.quota`，**没有快照**才叫「尚未刷新」。 */
+function quotaCell(a) {
+  const rq = a.runtime && a.runtime.quota;
+  if (!rq) {
+    return `<span style="color:var(--text-faint)" title="运行态里没有额度快照：网关还没查过这个账号（BUG-2 的可见态）">尚未刷新</span>`;
+  }
+  const note = QUOTA_NOTE[rq.reason] || "";
+  // 🔴 「无套餐」= 三态 `unknown` + `reason==="no_plan"`（**没有第四态枚举**，§22.3 冻结不动）。
+  //    它排在「未知」之前、也排在结构化分支之前：无论有没有 items 都必须出这一档
+  //    （V14 的反向变异打的就是这条分支）。
+  if (rq.reason === "no_plan") {
+    return `<span style="color:var(--text-faint)" title="${esc(rq.detail || "上游返回空套餐列表")}">无套餐${esc(note)}</span>`;
+  }
+  const items = (Array.isArray(rq.items) ? rq.items : []).filter((it) => it && it.name);
+  if (!items.length) {
+    if (rq.state === "exhausted") return `<span style="color:var(--warn)">已耗尽${esc(note)}</span>`;
+    if (rq.state !== "available") {
+      return `<span style="color:var(--text-faint)" title="${esc(rq.detail || "上游未给出额度")}">未知${esc(note)}</span>`;
+    }
+    // 附属标注同样要挂上：熔断/读取失败轮里 `state` 仍是上一轮的 `available`，
+    // 不挂注记就等于把"这一轮没查成"说成"刚刚查过且有余量"（门探针实测到的漏注记分支）。
+    return `<span>有余量</span>${chkHTML(rq, note)}`;
+  }
+  const active = items.filter((it) => it.active !== false);
+  const expiredN = items.length - active.length;
+  const unit = items[0].unit || "";
+  const unitLabel = unit.toLowerCase() === "token" ? " Token" : " 积分";
+  // 🔴 `remaining` 可能是 `null`（上游没给出可用数）：**不得**当 0 累加、更**不得**因此判「已耗尽」
+  //    —— "没给数字" 与 "数字是 0" 是两件事，把前者渲染成后者是本轮点名的谎（工程 r3 B-R3-3）。
+  const nums = active.filter((it) => typeof it.remaining === "number");
+  const sum = (arr) => arr.reduce((acc, it) => acc + (typeof it.remaining === "number" ? it.remaining : 0), 0);
+  const fmt = (v) => fmtQuotaNumber(v, unit);
+  const daily = active.filter((it) => String(it.name).includes("每日"));
+  const rest = active.filter((it) => !String(it.name).includes("每日"));
+  const total = sum(active);
+  const out = [];
+  if (rq.plan) out.push(`<span class="badge b-gray" style="margin-bottom:4px" title="${esc("套餐：" + rq.plan)}">${esc(rq.plan)}</span>`);
+  if (!nums.length) {
+    out.push(`<span style="color:var(--text-faint)" title="${esc(rq.detail || "上游未给出可用数")}">未知</span>`);
+  } else if (rq.state === "exhausted" || !active.length || total <= 0) {
+    // 🔴 档位词「已耗尽」**不挂量纲** —— 写成「已耗尽 Token」是把单位接在一个不是数字的词后面，
+    //    实盘实测到（15:35 那一轮 `axxshx…` 等 4 号）。数值照旧出（`0 Token`，与 Σactive 一致，
+    //    V10' 的总额一致性才成立），档位紧跟其后，着色仍取 `--warn`（门 D1b 钉的是颜色不是拼接）。
+    const zero = nums.length ? `<b>${esc(fmt(total) + (unit ? unitLabel : ""))}</b> ` : "";
+    out.push(`${zero}<span style="color:var(--warn)">已耗尽${esc(note)}</span>`);
+  } else {
+    out.push(`<b>${esc(fmt(total) + (unit ? unitLabel : ""))}</b>`);
+  }
+  const buckets = [];
+  if (daily.length && rest.length) buckets.push(`长期 ${esc(fmt(sum(rest)))} · 每日 ${esc(fmt(sum(daily)))}`);
+  else if (active.length > 1) buckets.push(`${active.length} 个资源包有效`);
+  if (expiredN) buckets.push(`另有 ${expiredN} 已失效`);
+  // 🔴 「重置于 X」= **active 包里最早**的 `expires_at`（方案 §4-5 定义，不是"临期"的另一种说法）。
+  //    仅当该值是 ISO 形状时才渲染 —— 上游给的是**秒级 epoch 整数**，归一化是钩子的责任；
+  //    万一某条通道漏归一，这里**整段不出**，而不是把 `1790956800` 切成 `956800` 印给用户（V17）。
+  const isoExp = active.map((it) => it.expires_at).filter((v) => ISO_RE.test(String(v || "")))
+    .sort()[0];
+  if (isoExp) buckets.push(`重置于 ${esc(shortTime(isoExp).slice(5))}`);
+  if (buckets.length) {
+    out.push(`<span style="display:block;margin-top:4px;font-size:12px;font-weight:600;color:var(--text-faint)">${buckets.join(" · ")}</span>`);
+  }
+  out.push(chkHTML(rq, note));
+  // 🔴 逐包明细走**就地展开**（frontend-spec §7.11 三正解之一），不再只住 tooltip：
+  //    31 个包时悬停既不可选中也不能复制，且被截断到 12 行 —— 用户以为只有 12 个包。
+  //    常驻面仍只有「档位 + 总额 + 分桶 + 查于」，展开行才是逐包全量（一行都不藏）。
+  out.push(`<button class="btn btn-sm" data-qpacks="${esc(a.name)}" aria-expanded="false"
+    title="${esc("展开后在本格逐包列出（可选中复制）；收起不影响任何数据")}"
+    style="margin-top:4px">展开 ${items.length} 个包</button>`);
+  out.push(packsDetailHTML(a, rq, items));
+  return `<span style="display:inline-block;text-align:right"
+    title="${esc(rq.plan ? "套餐：" + rq.plan : "")}">${out.join("")}</span>`;
+}
+
+/** 本格内的逐包明细（默认 hidden，点「展开 N 个包」显形）：全量列出，一行都不截断。
+ *  🔴 时刻仍受 ISO 形状护栏约束（V17 的同一把尺）：上游给秒级 epoch 时**不渲染时刻**，
+ *     而不是把 `1790956800` 切成 6 位残串印在用户面前。 */
+function packsDetailHTML(a, rq, items) {
+  const unit = items[0].unit || "";
+  const fmt = (v) => fmtQuotaNumber(v, unit);
+  const unitLabel = unit ? (unit.toLowerCase() === "token" ? " Token" : " 积分") : "";
+  const sumAll = items.reduce((acc, it) =>
+    acc + (typeof it.remaining === "number" ? it.remaining : 0), 0);
+  const activeN = items.filter((it) => it.active !== false).length;
+  const lines = items.map((it) => {
+    const rem = typeof it.remaining === "number" ? `${fmt(it.remaining)}${unitLabel}` : "上游未给可用数";
+    const tot = typeof it.total === "number" ? ` / 总额 ${fmt(it.total)}` : "";
+    const exp = ISO_RE.test(String(it.expires_at || "")) ? ` · 失效于 ${shortTime(it.expires_at)}` : "";
+    const st = it.active === false ? "（已失效）" : "";
+    return `<div class="qpack-line">· ${esc(it.name)}${st}：${esc(rem + tot + exp)}</div>`;
+  }).join("");
+  return `
+    <div class="qpacks-detail" data-qpacks-for="${esc(a.name)}" hidden
+      style="text-align:left;margin-top:6px;font-size:12px;line-height:1.7;color:var(--text-soft)">
+      <div style="color:var(--text-faint);font-weight:700">共 ${items.length} 个包（有效 ${activeN} 个）
+        · 合计剩余 ${esc(fmt(sumAll))}${esc(unitLabel)} · 数据时刻 ${esc(shortTime(rq.data_at || rq.checked_at))}</div>
+      ${lines}
+    </div>`;
+}
+
+/** 「查于 X」= **上游数据时刻优先**（`data_at`），没有才退回网关写盘时刻（`checked_at`）。
+ *  两个量必须分开：熔断/失败轮里上游什么都没给，此时"查于"若前进到本轮，
+ *  就等于把十几分钟前的数值说成刚刚查过的（QA r3 X-R3-6 判的"伪装刷新"）。 */
+function chkHTML(rq, note = "") {
+  const when = rq.data_at || rq.checked_at;
+  return `<span class="qchk" style="display:block;margin-top:2px;font-size:12px;font-weight:600;color:var(--text-faint)">查于 ${esc(shortTime(when))}${esc(note || "")}</span>`;
+}
+
+/** 行内动作 = **中文文字按钮**（2026-10-01 用户指示）：签到（能力门控）·
+ *  **续期（能力门控，账号维度——同日用户裁决：从映射弹窗挪回行内）** · 探活 · 删除。 */
 function opsHTML(p, a) {
   const c = capsOf(p.id);
   const out = [];
   if (c.checkin) {
-    out.push(iconOp("claim", `签到 / 领取 ${a.name}`, "签到 / 领取：结果按运营四类出口呈现（只有失败着色）", CHECKIN));
+    out.push(textOp("claim", `签到 / 领取 ${a.name}`, "签到 / 领取：结果按运营四类出口呈现（只有失败着色）", "签到"));
   }
-  out.push(iconOp("probe", `探活 ${a.name}`, "探活：连通与凭据两个维度分开给结论", HEART));
-  out.push(iconOp("delete", `删除 ${a.name}`, "删除账号（需二次确认；其关联资源置为停用并保留）", TRASH, "danger"));
+  if (c.refresh) {
+    out.push(textOp("refresh", `续期 ${a.name}`, "续期：刷新凭据并落盘（与启用位正交，停用账号也可续期；与额度无关）", "续期"));
+  }
+  // 🔴 「刷新额度」= 账号维度手动刷一次**只读**额度（2026-10-02 用户指令：每个产品都要有
+  //    账号维度 + 产品维度刷新额度）。能力位 balance 门控 = 与卡头那颗、与后端端点同一判据。
+  if (c.balance) {
+    out.push(textOp("quota", `刷新额度 ${a.name}`,
+      "刷新额度：只读上游额度，不改凭据、不消耗签到配额（zcode 走联网腿；其余产品同款钩子）", "刷新额度"));
+  }
+  out.push(textOp("probe", `探活 ${a.name}`, "探活：连通与凭据两个维度分开给结论", "探活"));
+  // 🔴 「模型检测」= 账号维度逐模型真发一次最小请求（2026-10-02 用户指令：把「接入模型资源」
+  //    的检测能力搬到账号侧）。范围只覆盖「模型映射」里**已开启**的那些模型
+  //    （映射级开关关掉的不参与调度，检测它们没有意义）；会消耗该账号额度 ⇒ 按钮 title 说清。
+  out.push(textOp("check", `模型检测 ${a.name}`,
+    "模型检测：对该账号已开启的模型映射逐个发一次最小对话请求（真实出站，会消耗该账号额度），"
+    + "逐个回结果：可用 / 不可用（附原因）/ 检测中", "模型检测"));
+  out.push(textOp("delete", `删除 ${a.name}`, "删除账号（需二次确认；其关联资源置为停用并保留）", "删除", "danger"));
   return out.join("");
 }
 
-function iconOp(op, label, title, svg, extra = "") {
-  return `<button class="icon-btn sm ${extra}" data-op="${op}" aria-label="${esc(label)}"
-    title="${esc(title)}">${svg}</button>`;
-}
-
-/* ---------- 展开详情行：实现词汇全部降级到这里（§3「移出常驻面」，信息只换层级不删） ---------- */
-function detailHTML(p, a) {
-  if (!expanded.has(rowKey(p.id, a.name))) return "";
-  const cap = capsOf(p.id);
-  const dev = (p.device && p.device.fields) || [];
-  const devVals = dev.map((f) => `${f}=${(a.device && a.device[f]) ? "已登记" : "缺"}`).join(" + ");
-  const bits = [];
-  if (p.base_url) bits.push(`出站基址：${esc(p.base_url)}`);
-  bits.push(`协议：${esc(PROTOCOL_TEXT[p.protocol] || p.protocol)}`);
-  bits.push(`登录方式：${esc(loginText(p))}`);
-  bits.push(`模型目录来源：${esc(sourceText(p.models_source))} · 目录出口${p.models_wired ? "已接线" : "未接线"}`);
-  if (dev.length) {
-    bits.push(`设备身份字段：${esc(dev.join(" + "))}${p.device.derive ? "（可由账号标识派生）" : ""} · 本账号：${esc(devVals)}`);
-  }
-  const yn = (v) => (v ? "支持" : "不支持");
-  bits.push(`能力位：签到 ${esc(yn(cap.checkin))} · 续期 ${esc(yn(cap.refresh))} · 余额 ${esc(yn(cap.balance))} · 永久积分锁 ${esc(yn(cap.permanent_lock))} · 新手任务 ${esc(yn(cap.onboarding))}`);
-  bits.push(esc(resourceLine(a)));
-  bits.push(esc(poolLine(a)));
-  if (a.runtime_error) bits.push(`运行态读取：${esc(a.runtime_error)}`);      // 中性色，见 §5
-  return `
-    <tr data-rexp="${esc(a.name)}"><td colspan="5">
-      <div class="req-detail">
-        ${bits.map((b) => `<span>${b}</span>`).join("")}
-        <span class="sep">${detailOpsHTML(p, a, cap)}</span>
-      </div></td></tr>`;
-}
-
-/** BD3a：`resource` 三态必须分开（null=未知，[]=确实没有，非空=已物化 N 个 · 启用 M）。 */
-function resourceLine(a) {
-  const rs = a.resource;
-  if (!Array.isArray(rs)) return "网关资源：未知（配置读不动，不推断成 0）";
-  if (!rs.length) return "网关资源：无（该账号没有已物化的资源，或已从配置移除）";
-  const on = rs.filter((r) => r && r.enabled).length;
-  const ids = rs.map((r) => `${r.id}${r.enabled ? "" : "（停用）"}`).join("、");
-  return `已物化 ${rs.length} 个资源 · 启用 ${on}：${ids}`;
-}
-
-/** 网关额度池（`remaining-reserved`）与厂商余额快照量纲不同 → 只进展开行（§3）。 */
-function poolLine(a) {
-  const q = a.quota || {};
-  if (q.state === "unknown" || q.state == null) return "网关额度池：未知（尚无缓存或未刷新，不当零）";
-  const n = (q.resources || []).length;
-  return `网关额度池（与厂商余额快照不同量纲）：${q.state === "exhausted" ? "已耗尽" : "有余量"} · 剩余 ${q.remaining == null ? "未给出" : q.remaining} · 预留 ${q.reserved == null ? 0 : q.reserved} · 关联 ${n} 个资源`;
-}
-
-/** 展开行的动作：能力位 false 不渲染（§3 推翻旧「死钮」）；目录出口未接线不渲染。 */
-function detailOpsHTML(p, a, cap) {
-  const out = [];
-  if (cap.refresh) {
-    out.push(iconOp("refresh", `续期 ${a.name}`, "续期：刷新凭据并落盘（与启用位正交，停用账号也可续期）", REFRESH));
-  }
-  if (p.models_wired) {
-    out.push(iconOp("models", `模型目录 ${a.name}`, "模型目录：列出该账号凭据可读到的厂商模型（取不到时如实给出原因，不编造）", CATALOG));
-  }
-  if (cap.onboarding && ONBOARDING_ENDPOINT_READY) {
-    out.push(iconOp("onboarding", `新手任务 ${a.name}`, "新手任务：一次性登录奖励", AWARD));
-  }
-  return out.length ? out.join("") : `<span style="color:var(--text-faint)">该产品无可追加的行内动作</span>`;
+function textOp(op, label, title, text, extra = "") {
+  return `<button class="btn btn-sm ${extra}" data-op="${op}" aria-label="${esc(label)}"
+    title="${esc(title)}">${esc(text)}</button>`;
 }
 
 /* ---------- 绑定（D3：操作即落库，无「保存」按钮） ---------- */
@@ -642,6 +765,10 @@ function bindPanel(p) {
   if (map) map.onclick = () => openModelMap(rootEl, p);
   const claim = panelEl.querySelector("#ac-claim");  // 能力位 false 不渲染（§3 推翻死钮）
   if (claim) claim.onclick = () => batchClaim(claim, { product: p.id });
+  const renew = panelEl.querySelector("#ac-renew");  // 批量续期（能力位 refresh 门控，同判据渲染）
+  if (renew) renew.onclick = () => batchRenew(renew, p);
+  const quota = panelEl.querySelector("#ac-quota");  // 产品级刷新额度（能力位 balance 同判据）
+  if (quota) quota.onclick = () => batchQuota(quota, p);
   const zimp = panelEl.querySelector("#ac-zimport"); // ZCode 专属（headOpsHTML 里同判据渲染）
   if (zimp) zimp.onclick = () => openZImport(rootEl);
   const zshopBtn = panelEl.querySelector("#ac-zshop");
@@ -661,14 +788,24 @@ function bindRow(p, a) {
     sw.innerHTML = "";                                 // 重绘前清空，杜绝开关叠开关
     sw.append(switchEl(a.enabled, `启用 / 停用账号 ${a.name}`, (next) => setEnabled(p, a, next)));
   }
-  const exp = tr.querySelector("[data-exp]");
-  if (exp) exp.onclick = () => toggleExpand(p.id, a.name);
   for (const b of tr.querySelectorAll("[data-op]")) b.onclick = () => runOp(p, a, b.dataset.op, b);
-  const dtr = panelEl.querySelector(`#ac-table tbody tr[data-rexp="${sel}"]`);
-  if (dtr) for (const b of dtr.querySelectorAll("[data-op]")) b.onclick = () => runOp(p, a, b.dataset.op, b);
+  /* 逐包明细就地展开（2026-10-02 用户指令：明细不该只住 tooltip）。
+     展开态记在**数据行**的 data-open 上，重绘后据此恢复（否则刷一次额度就自己收起）。 */
+  const btn = tr.querySelector("[data-qpacks]");
+  const detail = tr.querySelector(`.qpacks-detail[data-qpacks-for="${sel}"]`);
+  if (btn && detail) {
+    const apply = (open) => {
+      detail.hidden = !open;
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+      btn.textContent = open ? "收起明细" : `展开 ${(a.runtime && a.runtime.quota && a.runtime.quota.items || []).length} 个包`;
+      tr.dataset.open = open ? "1" : "";
+    };
+    apply(tr.dataset.open === "1");
+    btn.onclick = () => apply(detail.hidden);
+  }
 }
 
-/** 三级重绘之第三级：单行原地替换（含其展开行）；结构变化时退化为面板级重绘。 */
+/** 三级重绘之第三级：单行原地替换；结构变化时退化为面板级重绘。 */
 function patchRow(pid, name) {
   const p = productOf(pid) || selectedProduct();
   const a = p && p.accounts.find((x) => x.name === name);
@@ -677,22 +814,11 @@ function patchRow(pid, name) {
   const tr = panelEl.querySelector(`#ac-table tbody tr[data-acc="${sel}"]`);
   if (!tr) { paintPanel(); return; }
   const holder = document.createElement("tbody");
-  holder.innerHTML = rowHTML(p, a) + detailHTML(p, a);
-  const made = Array.from(holder.children);
-  const detail = panelEl.querySelector(`#ac-table tbody tr[data-rexp="${sel}"]`);
-  if (detail) detail.remove();
-  const head = made[0];
+  holder.innerHTML = rowHTML(p, a);
+  const head = holder.children[0];
   if (!head || !tr.replaceWith) { paintPanel(); return; }
   tr.replaceWith(head);
-  let last = head;
-  for (const el of made.slice(1)) { if (last.after) last.after(el); last = el; }
   bindRow(p, a);
-}
-
-function toggleExpand(pid, name) {
-  const key = rowKey(pid, name);
-  if (expanded.has(key)) expanded.delete(key); else expanded.add(key);
-  patchRow(pid, name);
 }
 
 /** 启停（1 击 + 1 请求，§4-5）。BD1 已落地 → title 可对两条腿都说实话。 */
@@ -714,23 +840,222 @@ async function refreshAfter(pid, name) {
   if (name) patchRow(pid, name); else paintPanel();
 }
 
+/* ---------- 批量动作的回执（🔴 单层弹窗红线的构造化落点） ----------
+ *
+ * 项目红线：任意交互序列后 `.modal-mask` 计数 ∈ {0,1}（frontend-spec §7.11/§8-13 + 规矩 16）。
+ * `components.js::modal()` 是**追加不是替换**，而批量腿的形状天生危险：
+ *   页级按钮 → 长 await（产品级扇出是**分钟级**窗口）→ 迟到回执。
+ * 用户在等待期顺手点开「模型映射」→ 回执到达时页面上已经有一层遮罩 → 直接开第二层就违规。
+ *
+ * v4 的"就地槽 + 判遮罩"写法被 PM r5 判为**半个修法**：槽会被随后的整块重绘吃掉。
+ * 因此这里把**文本**存进模块级 `bulkReceipt`，由 `paintPanel()` 末尾回填 ——
+ * 送达不再依赖"记得按顺序调用"，红线与可见性都由构造保证。
+ * 切产品 / 换页 / 再次触发批量动作时清空（旧结论不留在新画面上）。 */
+let bulkReceipt = null;
+
+/** 槽的骨架（每次面板重绘都会重建；文本由 `renderBulkReceipt()` 回填）。 */
+function bulkReceiptHTML() {
+  return `<div class="bulk-receipt" id="ac-receipt" hidden></div>`;
+}
+
+function renderBulkReceipt() {
+  if (!panelEl || !bulkReceipt) return;
+  const slot = panelEl.querySelector("#ac-receipt");
+  if (!slot) return;
+  slot.innerHTML = bulkReceipt.html;
+  slot.hidden = false;
+  const close = slot.querySelector("[data-receipt-close]");
+  if (close) close.onclick = () => clearBulkReceipt();
+}
+
+/** 清空批量回执：模块级文本与**当前画面上那个槽**一起清。
+ *
+ *  🔴 只清 `bulkReceipt` 变量不够：槽的 DOM 要等下一次 `paintPanel()` 才重绘，
+ *  于是"新批次在飞的几十秒里，屏幕上仍挂着**上一批**的结论"—— 实盘实测到
+ *  （连点两个产品的「刷新额度」，第二个产品的回执位一度还写着第一个产品的「刷新 2 个」，
+ *  而它那一批只有 1 个号）。产品级扇出是分钟级窗口，这个错位不是边角料。 */
+function clearBulkReceipt() {
+  bulkReceipt = null;
+  if (!panelEl) return;
+  const slot = panelEl.querySelector("#ac-receipt");
+  if (!slot) return;
+  slot.hidden = true;
+  slot.innerHTML = "";
+}
+
+/** 批量回执的唯一出口：有遮罩 → 只写就地槽（**不开第二层**）；无遮罩 → 弹窗 + 同文入槽兜底。 */
+function showBulkReceipt(title, html) {
+  bulkReceipt = { title, html };
+  const masked = document.querySelector(".modal-mask");
+  if (!masked) {
+    const body = document.createElement("div");
+    body.innerHTML = html;
+    const foot = document.createElement("div");
+    foot.innerHTML = `<button class="btn">关闭</button>`;
+    const closeBtn = foot.querySelector(".btn");        // modal() 之前取引用（§7.11 契约）
+    const dlg = modal({ title, body, footer: foot });
+    closeBtn.onclick = dlg.close;
+  }
+  renderBulkReceipt();                                   // 遮罩存在时这是**唯一**出口；否则是兜底
+}
+
 /* ---------- 行内操作 ---------- */
 const accountPath = (pid, name) => `/admin/api/accounts/${pid}/${encodeURIComponent(name)}`;
 
 async function runOp(p, a, op, btn) {
   if (op === "delete") return delAccount(p, a);
-  if (op === "models") return openModels(p, a);          // 只读弹窗：不重取视图、不锁按钮
+  if (op === "check") return openModelCheck(p, a);   // 自带弹窗与逐行状态，不参与行操作刷新链
   if (!btn) return;
   btn.disabled = true;                                    // 长操作防连点
   try {
     if (op === "probe") await doProbe(p, a);
     else if (op === "refresh") await doRefresh(p, a);
+    else if (op === "quota") await doQuota(p, a);
     else if (op === "claim") await doClaim(p, a);
     else if (op === "onboarding") await doClaim(p, a, "claim_onboarding");
   } finally {
     btn.disabled = false;
     await refreshAfter(p.id, a.name);                     // 结果与视图一起刷新
   }
+}
+
+/* ---------- 模型检测（账号维度，2026-10-02 用户指令） ----------
+ * 契约：
+ *  · 范围 = `GET …/check-models` 返回的**已开启**映射（映射级开关关掉的不测，与调度同判据）；
+ *  · 一次一条（同账号并发打上游容易进风控，且"检测中"逐行显形本来就是顺序语义）；
+ *  · 三态：检测中（灰/橘交替闪烁）· 可用（蓝，附延迟）· 不可用（红，附**具体原因**原文）；
+ *  · 🔴 单层弹窗：本弹窗内不再开第二层（frontend-spec §7.11 红线），也不放任何账号级动作；
+ *  · 用户中途关窗 ⇒ 立刻停止后续请求（不后台继续烧额度，也不假装跑完）。 */
+function checkRowHTML(it, i) {
+  return `
+    <div class="list-row mc-row" data-mc="${i}"
+      style="padding:0;height:44px;gap:10px;${i ? "border-top:1px solid var(--border);" : ""}">
+      <span class="mc-ico">${SCAN}</span>
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+        <span class="mono" style="font-weight:700">${esc(it.vendor_model)}</span>
+        <span style="color:var(--text-faint);font-size:12px"> → ${esc(it.system_model)}</span>
+      </span>
+      <span class="mc-result" style="flex:none;max-width:46%;text-align:right">排队中</span>
+    </div>`;
+}
+
+function checkBodyHTML(p, a, list, info) {
+  const head = `
+    <p style="margin:0 0 12px;font-size:13px;font-weight:600;color:var(--text-soft)">
+      将向该账号逐个发起最小对话请求（1 条 ping · max_tokens=1）检测
+      <b>${list.length}</b> 个已开启的模型 —— <b>真实出站，会消耗该账号额度</b>。</p>`;
+  const warn = !list.length
+    ? `<div class="alert alert-warn" style="margin-bottom:12px">
+         <div>该账号没有任何**已开启**的模型映射，检测不会发出任何请求。
+         要测别的模型，先到卡头「模型映射」里挂上并把「进池」开关打开。</div></div>`
+    : (info.resource_enabled === false
+      ? `<div class="alert alert-warn" style="margin-bottom:12px">该账号当前停用，
+             其资源不参与调度；下面这些请求仍会真发（只为验证凭据与上游是否可用）。</div>` : "")
+      + (info.mapped_off
+        ? `<p class="form-hint" style="margin:0 0 12px">另有 ${info.mapped_off} 条映射处于关闭状态，
+             不在本次检测范围内（关闭即不进资源池、不可对外调用）。</p>` : "");
+  return `${head}${warn}
+    ${list.length ? `<div class="list-card" id="ac-mc-list">${list.map(checkRowHTML).join("")}</div>` : ""}
+    <p class="mc-summary form-hint" style="margin-top:12px" hidden></p>`;
+}
+
+async function openModelCheck(p, a) {
+  const body = document.createElement("div");
+  body.innerHTML = `<div class="loading">正在读取该账号已开启的模型映射…</div>`;
+  const foot = document.createElement("div");
+  foot.innerHTML = `<button class="btn">关闭</button>`;
+  const [closeBtn] = foot.querySelectorAll("button");        // 引用必须在 modal() 之前取（§7.11）
+  const dlg = modal({ title: `模型检测 · ${p.title} · ${a.name}`, body, footer: foot, wide: true });
+  closeBtn.onclick = dlg.close;
+
+  let info = {};
+  try {
+    info = await GET(`${accountPath(p.id, a.name)}/check-models`) || {};
+  } catch (e) {
+    body.innerHTML = `<div class="alert alert-err"><div class="alert-title">可检测模型读取失败</div>
+      <div>${esc(e.message)}</div></div>`;
+    return;
+  }
+  const list = info.models || [];
+  body.innerHTML = checkBodyHTML(p, a, list, info);
+  if (!list.length) return;
+
+  const sum = body.querySelector(".mc-summary");
+  let done = 0, okN = 0;
+  const paint = (i, st, text) => {
+    const row = body.querySelector(`[data-mc="${i}"]`);
+    if (!row) return;
+    row.classList.remove("mc-run", "mc-ok", "mc-fail");
+    row.classList.add(st === "run" ? "mc-run" : st === "ok" ? "mc-ok" : "mc-fail");
+    const cell = row.querySelector(".mc-result");
+    if (cell) { cell.textContent = text; cell.title = text; }
+  };
+  for (let i = 0; i < list.length; i++) {
+    if (!document.body.contains(body)) return;      // 用户已关窗 ⇒ 立即停手（不后台烧额度）
+    paint(i, "run", "检测中");
+    let res = null, err = "";
+    try {
+      res = await POST("/admin/api/resources/test",
+        { resource: list[i].resource_id, model: list[i].vendor_model });
+    } catch (e) { err = e.message || "检测请求失败"; }
+    if (!document.body.contains(body)) return;
+    if (res && res.ok) { okN += 1; paint(i, "ok", `可用 · ${res.latency_ms ?? "—"}ms`); }
+    else paint(i, "fail", `不可用 · ${(res && res.error) || err || "上游未给出原因"}`);
+    done += 1;
+    if (sum) {
+      sum.hidden = false;
+      sum.textContent = `检测进度 ${done}/${list.length} · 可用 ${okN} · 不可用 ${done - okN}`;
+    }
+  }
+  if (sum) sum.textContent = `检测完成 ${list.length} 个模型 · 可用 ${okN} · 不可用 ${list.length - okN}`;
+}
+
+/** 账号级刷新额度：成功后单行重绘就能看到新数值（`refreshAfter` 已负责重取视图）。 */
+async function doQuota(p, a) {
+  try {
+    const r = await POST(`${accountPath(p.id, a.name)}/quota`);
+    const cat = CATEGORIES[r.category] || { label: r.category, toast: "" };
+    const bits = [cat.label || r.category];
+    if (r.reason) bits.push(r.reason);
+    toast(`账号 ${a.name} 额度刷新：${bits.join(" · ")}${r.detail ? "\n" + r.detail : ""}`, cat.toast);
+  } catch (e) {
+    toast("刷新额度失败：" + e.message, "err");
+  }
+}
+
+/** 产品级刷新额度：三段计数 = 刷新 N · 失败 K · 未发起 J（后端 `receipt` 按 reason 码算，
+ *  界面**不做中文串匹配**）；结果走 `showBulkReceipt`（就地槽 + 必要时弹窗）。 */
+async function batchQuota(btn, p) {
+  if (!btn || btn.disabled || !p) return;
+  const label = btn.innerHTML;
+  btn.disabled = true;
+  btn.textContent = "执行中…";
+  clearBulkReceipt();                       // 上一批的结论不留在这一批的画面上（槽也要清）
+  let r = null;
+  try {
+    r = await POST(`/admin/api/accounts/${p.id}/quota-all`, {});
+  } catch (e) {
+    toast("刷新额度失败：" + e.message, "err");
+  }
+  if (panelEl && panelEl.contains(btn)) { btn.innerHTML = label; btn.disabled = false; }
+  await refreshAfter(p.id, null);           // 🔴 先重绘（拿到服务端最新额度），再落回执
+  if (!r) return;
+  const rc = r.receipt || {};
+  const rows = Object.entries(rc.by_reason || {}).map(([acc, reason]) => `
+    <div class="list-row" style="display:flex;gap:8px;align-items:center;min-height:40px">
+      <b class="mono" style="flex:1;min-width:0">${esc(acc)}</b>
+      <span class="badge ${reason ? "b-gray" : "b-ok"}">${esc(reason || "已刷新")}</span>
+    </div>`).join("");
+  const html = `
+    <p class="form-hint" style="margin:0 0 12px">
+      刷新 ${esc(String(rc.refreshed ?? 0))} 个 · 失败 ${esc(String(rc.failed ?? 0))} 个 ·
+      未发起 ${esc(String(rc.not_fired ?? 0))} 个${rc.not_participating ? ` · 未参与（停用）${esc(String(rc.not_participating))} 个` : ""}。
+    </p>
+    <p class="form-hint" style="margin:0 0 12px">「未发起」= 熔断中 / 网络不可达 / 缺凭据（本轮未对上游发请求，
+      上一轮的数值原样保留）/ 查了但上游没给可量化余量；「未参与」= 这一轮没被执行到
+      （账号锁没拿到 / 该产品下没有账号）。停用账号照样查（额度是只读视图）。前两者与「未参与」都不是一回事。</p>
+    ${rows || `<p class="form-hint" style="margin:0">该产品下没有账号。</p>`}`;
+  showBulkReceipt(`刷新额度结果 · ${p.title}`, html);
 }
 
 async function doProbe(p, a) {
@@ -770,94 +1095,31 @@ async function doClaim(p, a, endpoint = "claim") {
 async function delAccount(p, a) {
   if (!await confirmDialog("删除账号",
     `确定删除 ${p.title} 的账号「${a.name}」？删除后其关联资源会被置为停用并保留`
-    + `（统计与历史不丢，彻底删除请到「接入模型资源」页），账号凭据目录将被移除。`)) return;
+    + `（统计与历史不丢：它的资源行只置为停用并保留，不再参与调度；该行不在「接入模型资源」页显示——`
+    + `要彻底清除请在配置文件的 resources[] 里删掉它），账号凭据目录将被移除。`)) return;
   try {
     await POST(`${accountPath(p.id, a.name)}/delete?confirm=1`);      // 破坏性：必须显式确认
     toast(`账号 ${a.name} 已删除`, "ok");
-    expanded.delete(rowKey(p.id, a.name));
   } catch (e) {
     toast("删除失败：" + e.message, "err");
   }
   await refreshAfter(p.id, null);                                     // 行已不在册 → 面板级重取
 }
 
-/* ---------- 模型目录（B-1：账号 → 产品 `list_models` → 目录弹窗） ----------
- * 契约（`api/admin_accounts.py::account_models`）：`{state, source, models[]}` ——
- * 只有 `state==="ok"` 才是目录；`state==="unknown"`（钩子取不动）只展示原因，**不编造条目**
- * （`21 §5.1-1`；与运行态 `status:"unknown"` 同口径）。 */
-
-async function openModels(p, a) {
-  const body = document.createElement("div");
-  body.innerHTML = `<div class="loading">正在读取模型目录…</div>`;
-  const foot = document.createElement("div");
-  foot.innerHTML = `<button class="btn">关闭</button>`;
-  /* 必须在 modal() **之前**取引用：modal() 会把 footer 子节点平铺进 .modal-foot（§7.11 契约） */
-  const closeBtn = foot.querySelector(".btn");
-  const dlg = modal({ title: `模型目录 · ${p.title} / ${a.name}`, body, footer: foot });
-  closeBtn.onclick = dlg.close;
-  try {
-    const r = await GET(`/admin/api/accounts/${p.id}/${encodeURIComponent(a.name)}/models`);
-    body.innerHTML = modelsHTML(r);
-  } catch (e) {
-    body.innerHTML = `
-      <div class="alert alert-err"><div class="alert-title">模型目录读取失败</div>
-        <div>${esc(e.message)}</div></div>`;
-  }
-}
-
-/** 目录体：来源恒展示；`ok` 才出列表，`unknown` 只给原因（不编造）。 */
-function modelsHTML(r) {
-  const src = sourceText(r.source);
-  if (r.state !== "ok") {
-    return `
-      <div class="alert alert-warn"><div class="alert-title">目录取不动</div>
-        <div>${esc(r.reason || "上游未给出原因")}</div></div>
-      <p class="form-hint" style="margin-top:12px">来源：${esc(src)} · 不展示任何未取回的条目（不编造）。</p>`;
-  }
-  const list = r.models || [];
-  if (!list.length) {
-    return `
-      <p class="form-hint">目录为空：该账号凭据下未读到任何模型条目。</p>
-      <p class="form-hint">来源：${esc(src)}</p>`;
-  }
-  return `
-    <div class="sec-head"><span class="t">模型（${list.length}）</span>
-      <span class="d">来源：${esc(src)}</span></div>
-    <div style="display:flex;flex-direction:column;gap:8px">${list.map(modelRowHTML).join("")}</div>
-    <p class="form-hint" style="margin-top:12px">只标注上游明确给出的信息（未取到的不展示，不编造）；
-      厂商模型 ID 可直接用于「接入模型资源」页的资源映射。</p>`;
-}
-
-/** 单条模型行（id 等宽加粗 + 12px 辅助行；只列已知事实）。 */
-function modelRowHTML(m) {
-  const facts = [
-    (m.name && m.name !== m.id) ? m.name : "",
-    m.context_window != null ? `上下文 ${fmtTok(m.context_window)}` : "",
-    m.max_output != null ? `输出 ${fmtTok(m.max_output)}` : "",
-    m.reasoning === true
-      ? `深度推理${(m.effort_levels || []).length ? `（${m.effort_levels.join("/")}）` : ""}` : "",
-    m.image_input === true ? "图片输入" : "",
-    m.tool_call === true ? "工具调用" : "",
-  ].filter(Boolean);
-  return `
-    <div data-mdl="${esc(m.id)}" style="display:flex;align-items:center;min-height:44px;padding:8px 12px;gap:12px;border:1px solid var(--border);border-radius:var(--radius-md)">
-      <span style="flex:1;min-width:0">
-        <b class="mono">${esc(m.id)}</b>
-        ${facts.length ? `<span style="display:block;font-size:12px;color:var(--text-faint);margin-top:4px">${esc(facts.join(" · "))}</span>` : ""}
-      </span>
-    </div>`;
-}
-
 /* ---------- 模型映射（产品内部模型 → 网关模型）与批量签到 / 领取 ----------
  * 契约（后端随本轮落地，前端按冻结 payload 实现，不预判字段）：
  *   GET  /admin/api/accounts/{product}/catalog → {product,title,checkin,source,models[],accounts[]}
+ *        （ModelInfo 全字段随 asdict 带出——映射行的目录辅助信息即来源于此，**无需第二个弹窗**；
+ *         单账号 `/{product}/{name}/models` 是 B-1 生产出口，仅后端/测试消费，界面不再调用）
  *   POST /admin/api/accounts/mappings          {product, items:[{model,target}]}
  *   POST /admin/api/accounts/claim-all         {product} 或 {product:null}（null = 全部支持签到的产品）
  * 两处共用纪律：动作期间触发钮进「执行中…」禁用态（顺序执行可达数十秒，**不加人为超时**）；
  * 结果一律从响应 payload 出（失败只报原文，不编造成功）；写完重取服务端视图自同步（D3）。
  */
 
-/** 模型映射弹窗（root = 页面 root，落库后按 models.js `persist(root)` 同款口径重绘本页）。 */
+/** 模型映射弹窗（root = 页面 root，落库后按 models.js `persist(root)` 同款口径重绘本页）。
+ *  🔴 **宽版 + 单层弹窗**（2026-10-01 用户定版：弹窗里绝不许再叠弹窗——需要更多信息就
+ *  加宽弹窗、把信息融合进列表或就地展开）。目录字段（上下文/输出/推理…）直接画进映射行。 */
 async function openModelMap(root, p) {
   if (!p) return;
   const body = document.createElement("div");
@@ -865,9 +1127,9 @@ async function openModelMap(root, p) {
   const foot = document.createElement("div");
   foot.innerHTML = `<button class="btn">取消</button>
     <button class="btn btn-primary" disabled>初始化映射</button>`;
-  /* 同 `openModels`：必须在 modal() **之前**取引用（components.js 会把 footer 子节点平铺走，§7.11） */
+  /* 必须在 modal() **之前**取引用（components.js 会把 footer 子节点平铺走，§7.11） */
   const [cancelBtn, okBtn] = foot.querySelectorAll("button");
-  const dlg = modal({ title: `模型映射 · ${p.title}`, body, footer: foot });
+  const dlg = modal({ title: `模型映射 · ${p.title}`, body, footer: foot, wide: true });
   cancelBtn.onclick = dlg.close;
   let catalog = null;
   try {
@@ -878,9 +1140,60 @@ async function openModelMap(root, p) {
     ]);
     catalog = cat || {};
     const options = targetOptions((cfg && cfg.models) || [], (enums && enums.entries) || []);
-    body.innerHTML = mapBodyHTML(catalog, options);
+    body.innerHTML = mapBodyHTML(catalog, options, p);
     /* 没账号 = 没有资源可挂：目录照常可看，落库按钮禁用（写了也挂不上，只会在配置里留空映射）。 */
     okBtn.disabled = !(catalog.accounts || []).length;
+    /* 行开关：状态存在 mapOn（渲染态与配置态在点成功后一起更新），关掉时行变灰但保留映射。 */
+    const mapOn = new Map();
+    (catalog.models || []).forEach((m, i) => { mapOn.set(i, m.map_enabled !== false); });
+    const rowOf = (i) => body.querySelector(`[data-mapsw="${i}"]`)?.closest(".list-row");
+    const repaintState = (i) => {
+      const row = rowOf(i);
+      if (!row) return;
+      const m = (catalog.models || [])[i] || {};
+      const mapped = (m.mapped_to || []).filter(Boolean);
+      const on = mapOn.get(i);
+      const cell = row.children[3];
+      if (cell) cell.innerHTML = !mapped.length ? `<span class="badge b-gray">未映射</span>`
+        : on ? `<span class="badge b-ok" title="${esc("已映射到：" + mapped.join("、"))}">已映射 · 进池</span>`
+             : `<span class="badge b-gray" title="${esc("已映射到：" + mapped.join("、") + "；当前关闭：不进资源池、不出现在 /v1/models")}">已映射 · 已关</span>`;
+      row.style.opacity = on ? "" : "0.6";
+    };
+    const mountSwitch = (i, on) => {
+      const holder = body.querySelector(`[data-mapsw="${i}"]`);
+      if (!holder) return;
+      const m = (catalog.models || [])[i] || {};
+      holder.replaceChildren();
+      holder.append(switchEl(on, `进池开关 ${m.name || m.id}`, () => togglePool(i)));
+    };
+    /* 单行开关 = 一次即时落库（D3 操作即保存）：目标取当前下拉值，
+       落点仍是后端那个 (产品, 模型) 组的全部账号条目；失败把原因留在槽内并按原态重挂。 */
+    const togglePool = async (i) => {
+      const m = (catalog.models || [])[i] || {};
+      const select = body.querySelector(`select[data-idx="${i}"]`);
+      const target = String((select && select.value) || (m.mapped_to || [])[0] || "");
+      if (!target) { toast("该条目还没有映射目标，先选系统模型", "warn"); return; }
+      const next = !mapOn.get(i);
+      mountSwitch(i, next);                            // 先落到目标态并禁二次点击（执行中）
+      try {
+        const r = await POST("/admin/api/accounts/mappings",
+          { product: p.id, items: [{ model: m.id, target, enabled: next }] });
+        mapOn.set(i, next);
+        m.map_enabled = next;
+        m.mapped_to = m.mapped_to && m.mapped_to.length ? m.mapped_to : [target];
+        repaintState(i);
+        const n = next ? (r.turned_on ?? 0) : (r.turned_off ?? 0);
+        toast(next ? `已进池（${n} 个账号的映射）`
+                   : `已移出资源池（${n} 个账号的映射，映射关系保留）`, "ok");
+      } catch (e) {
+        const slot = body.querySelector("#ac-map-err");
+        if (slot) slot.innerHTML = `
+          <div class="alert alert-err" style="margin-bottom:12px"><div class="alert-title">开关写入失败</div>
+            <div>${esc(e.message)}</div></div>`;
+        mountSwitch(i, mapOn.get(i));                  // 回到落库前的真实态，不假装成功
+      }
+    };
+    body.querySelectorAll("[data-mapsw]").forEach((holder) => mountSwitch(Number(holder.dataset.mapsw), mapOn.get(Number(holder.dataset.mapsw))));
   } catch (e) {
     body.innerHTML = `
       <div class="alert alert-err"><div class="alert-title">模型目录读取失败</div>
@@ -892,8 +1205,10 @@ async function openModelMap(root, p) {
     const items = [];
     for (const select of body.querySelectorAll("select[data-idx]")) {
       const target = String(select.value || "");
-      const m = models[Number(select.dataset.idx)];
-      if (m && target) items.push({ model: m.id, target });     // 空值 = 跳过（用户显式没选）
+      const i = Number(select.dataset.idx);
+      const m = models[i];
+      // 空值 = 跳过（用户显式没选）；开关态一并带上，否则"初始化映射"会把刚关掉的行悄悄拨回进池
+      if (m && target) items.push({ model: m.id, target, enabled: mapOn.get(i) !== false });
     }
     okBtn.disabled = true;
     try {
@@ -911,12 +1226,14 @@ async function openModelMap(root, p) {
   };
 }
 
-/** 弹窗体：来源行（服务端口径原样给出，含 fallback 的如实声明）+ 表头 + 逐模型一行。
- *  状态列只报事实：`mapped_to` 非空 = 已映射（目标名进 title 悬停可见），空 = 未映射（不猜）。 */
-function mapBodyHTML(cat, options) {
+/** 弹窗体：来源行（服务端口径原样给出，含 fallback 的如实声明）+ 账号操作区 + 表头 + 逐模型一行。
+ *  状态列只报事实：`mapped_to` 非空 = 已映射（目标名进 title 悬停可见），空 = 未映射（不猜）。
+ *  🔴 2026-10-01 用户定版：**目录字段直接画进行内**（上下文/输出/推理/图片/工具——取不到不展示），
+ *  原「模型目录」二级弹窗废除（弹窗套弹窗 = 用户明令禁止的交互，frontend-spec §7.11 红线）。 */
+function mapBodyHTML(cat, options, p) {
   const models = cat.models || [];
   const src = cat.source || {};
-  const grid = "display:grid;grid-template-columns:minmax(0,1.4fr) 56px 180px 76px;gap:12px;align-items:center";
+  const grid = "display:grid;grid-template-columns:minmax(0,1.4fr) 60px 196px 104px 72px;gap:12px;align-items:center";
   const th = (t) => `<span style="font-size:12px;font-weight:700;color:var(--text-faint)">${t}</span>`;
   const head = `
     <p class="form-hint" style="margin:0 0 12px">${esc(src.detail || "目录来源未说明")}</p>
@@ -929,25 +1246,51 @@ function mapBodyHTML(cat, options) {
   }
   const rows = models.map((m, i) => {
     const mapped = (m.mapped_to || []).filter(Boolean);
+    // 状态三态：未映射 / 已映射·进池 / 已映射·已关（`map_enabled` 由后端与调度读同一个位）
+    const on = m.map_enabled !== false;
+    const state = !mapped.length
+      ? `<span class="badge b-gray">未映射</span>`
+      : on
+        ? `<span class="badge b-ok" title="${esc("已映射到：" + mapped.join("、"))}">已映射 · 进池</span>`
+        : `<span class="badge b-gray" title="${esc("已映射到：" + mapped.join("、") + "；当前关闭：不进资源池、不出现在 /v1/models")}">已映射 · 已关</span>`;
+    const sw = mapped.length
+      ? `<span data-mapsw="${i}" title="${esc(on ? "开启：该映射进资源池，可对外调用" : "关闭：该映射不进资源池，不可对外调用（映射关系保留，随时可拨回）")}"></span>`
+      : `<span style="color:var(--text-faint);font-size:12px">—</span>`;
     return `
       <div class="list-row" style="${grid}">
         <span style="min-width:0">
           <b>${esc(m.name || m.id)}</b>
-          <span class="mono" style="display:block;font-size:12px;color:var(--text-faint);margin-top:4px">${esc(m.id)}</span>
+          <span style="display:block;font-size:12px;color:var(--text-faint);margin-top:4px">
+            <span class="mono">${esc(m.id)}</span>${modelFactsHTML(m)}</span>
         </span>
         <span>${ruleHTML(m)}</span>
         <select class="in" data-idx="${i}" style="width:100%" aria-label="映射目标 ${esc(m.name || m.id)}"
           >${optionHTML(options, pickTarget(m, options))}</select>
-        <span>${mapped.length
-          ? `<span class="badge b-ok" title="${esc("已映射到：" + mapped.join("、"))}">已映射</span>`
-          : `<span class="badge b-gray">未映射</span>`}</span>
+        <span>${state}</span>
+        <span style="display:flex;justify-content:flex-end">${sw}</span>
       </div>`;
   }).join("");
   return `${head}
     <div class="list-card">
-      <div class="list-row" style="${grid}">${th("模型")}${th("规则")}${th("目标网关模型")}${th("状态")}</div>
+      <div class="list-row" style="${grid}">${th("模型")}${th("规则")}${th("目标网关模型")}${th("状态")}${th("进池")}</div>
       ${rows}
-    </div>`;
+    </div>
+    <p class="form-hint" style="margin-top:12px">行内辅助信息 = 目录字段（上下文 / 输出 / 推理 / 图片 / 工具——
+      取不到的不展示，不编造）；目录来源见顶部。<b>「进池」开关</b>：开 = 该映射参与资源池并可被对外调用；
+      关 = 不进资源池、不出现在 /v1/models（映射关系与账号凭据都保留，随时可拨回）。</p>`;
+}
+
+/** 目录字段辅助段（拼在模型 ID 后；只列上游明确给出的事实，None/缺省一律不展示）。 */
+function modelFactsHTML(m) {
+  const facts = [
+    m.context_window != null ? `上下文 ${fmtTok(m.context_window)}` : "",
+    m.max_output != null ? `输出 ${fmtTok(m.max_output)}` : "",
+    m.reasoning === true
+      ? `深度推理${(m.effort_levels || []).length ? `（${m.effort_levels.join("/")}）` : ""}` : "",
+    m.image_input === true ? "图片输入" : "",
+    m.tool_call === true ? "工具调用" : "",
+  ].filter(Boolean);
+  return facts.length ? ` · ${esc(facts.join(" · "))}` : "";
 }
 
 /** 消耗规则：显式 `free:true` → 免费徽章；否则非空 `rate` 文本；都没有 = `—`（**不冒充免费**）。 */
@@ -989,6 +1332,7 @@ const optionHTML = (options, cur) => options.map((o) =>
  *  `payload.product = null` = 全部支持签到的产品（谁参与由后端按能力位判，前端不筛）。 */
 async function batchClaim(btn, payload) {
   if (!btn || btn.disabled) return;
+  clearBulkReceipt();            // 与另两条批量腿同一条纪律：新批次在飞时不留上一批结论
   const label = btn.innerHTML;
   btn.disabled = true;
   btn.textContent = "执行中…";
@@ -1000,20 +1344,61 @@ async function batchClaim(btn, payload) {
   }
   btn.innerHTML = label;                   // 钮可能已被重绘替换：改的是旧节点也不影响页面
   btn.disabled = false;
-  if (r) showClaimAllResult(r);
-  await refreshAfter(selected, null);      // 运营会改额度快照 → 取服务端最新（不动在飞向导）
+  await refreshAfter(selected, null);      // 🔴 先重绘（运营会改额度快照，且整块 innerHTML 重建）
+  if (r) showClaimAllResult(r);            // 再落回执：反序则回执刚写进槽就被自己的重绘吃掉
+}
+
+/** 批量续期（2026-10-01 用户裁决：产品维度批量续期，窗口 = 5h 内失效）：
+ *  `POST /admin/api/accounts/{product}/refresh-due`（缺省窗口由后端 `BATCH_RENEW_WITHIN_S` 定）。
+ *  回执只说"动了谁"：续期 / 失败 / 失效时间未知（不猜、不续）三类分开列。 */
+async function batchRenew(btn, p) {
+  if (!btn || btn.disabled || !p) return;
+  clearBulkReceipt();
+  const label = btn.innerHTML;
+  btn.disabled = true;
+  btn.textContent = "执行中…";
+  let r = null;
+  try {
+    r = await POST(`/admin/api/accounts/${p.id}/refresh-due`, {});
+  } catch (e) {
+    toast("批量续期失败：" + e.message, "err");
+  }
+  btn.innerHTML = label;                   // 钮可能已被重绘替换：改旧节点不影响页面
+  btn.disabled = false;
+  await refreshAfter(p.id, null);          // 🔴 先重绘（整块 innerHTML 重建）
+  if (r) showRenewResult(r);               // 再落回执 —— 顺序反了回执就被自己抹掉（PM r5 B-R4-5）
+}
+
+function showRenewResult(r) {
+  const SKIP_TEXT = { "no-expiry": "未续（失效时间未知）", cooldown: "冷却中（30 分钟内已续过）",
+    terminal: "需重新登录（上游判不可续期）" };
+  const rows = (r.results || []).map((x) => `
+    <div class="list-row" style="display:flex;gap:8px;align-items:center;min-height:40px">
+      <b class="mono" style="flex:1;min-width:0">${esc(x.account)}</b>
+      ${x.skipped ? `<span class="badge b-gray">${esc(SKIP_TEXT[x.skipped] || "未续")}</span>`
+        : x.ok ? `<span class="badge b-ok">已续期</span>` : `<span class="badge b-err">失败</span>`}
+      <span style="color:var(--text-muted);font-size:12px">${esc(x.detail || "")}</span>
+    </div>`).join("");
+  const sk = r.skipped || {};
+  const bits = [`续期 ${r.renewed} 个`, `失败 ${r.failed} 个`];
+  if (sk["no-expiry"]) bits.push(`失效时间未知 ${sk["no-expiry"]} 个`);
+  if (sk.cooldown) bits.push(`冷却中 ${sk.cooldown} 个`);
+  if (sk.terminal) bits.push(`需重新登录 ${sk.terminal} 个`);
+  const html = `
+    <p class="form-hint" style="margin:0 0 12px">窗口 ${esc(String(r.within_hours))} 小时内到期的账号：
+      ${esc(bits.join(" · "))}。</p>
+    ${rows || `<p class="form-hint" style="margin:0">该窗口内没有到期的账号（未发起任何续期）。</p>`}`;
+  // 🔴 走 `showBulkReceipt` 这**一条**出口（不再自己 `modal()`）：批量腿的形状是
+  //    "页级按钮 → 长 await → 迟到回执"，无条件开弹窗在"等待期用户已开映射弹窗"的序列里
+  //    会叠出第二层遮罩 = 撞单层弹窗红线；文本同时进就地槽 ⇒ 重绘后仍看得见。
+  const p = productOf(r.product);
+  showBulkReceipt(`批量续期结果 · ${p ? p.title : r.product}`, html);
 }
 
 /** 批量结果弹窗：摘要行 + 每参与账号一行（分类 + 明细）；**只有失败着红**（行级 claim 同口径）。 */
 function showClaimAllResult(r) {
   const p = r.product ? productOf(r.product) : null;
-  const body = document.createElement("div");
-  body.innerHTML = claimReportHTML(r);
-  const foot = document.createElement("div");
-  foot.innerHTML = `<button class="btn">关闭</button>`;
-  const closeBtn = foot.querySelector(".btn");          // modal() 之前取（§7.11 契约）
-  const dlg = modal({ title: `批量签到结果 · ${p ? p.title : "全部支持签到的产品"}`, body, footer: foot });
-  closeBtn.onclick = dlg.close;
+  showBulkReceipt(`批量签到结果 · ${p ? p.title : "全部支持签到的产品"}`, claimReportHTML(r));
 }
 
 function claimReportHTML(r) {
@@ -1062,10 +1447,12 @@ async function repaintPanel(root) {
  * 交互纪律：
  *   · 409 设备身份冲突**绝不自动选**：弹窗把「复用其身份 / 重新生成」说清，用户按了才带
  *     `reuse` / `regenerate` 二次提交，成功/失败落点与首次导入同一套（attempt 由调用方给）；
+ *   · 弹窗正文 = 分段 tab 两页（照 ZCode Panel 形式）：「商品」默认页（价格右置 / `validity`
+ *     额度条 / 数量+下单 / 售罄徽章）与「我的订单」（商品标题+状态 / 单号+时间+实付）；
  *   · 订单轮询 2500ms 一条 timer：终态（delivered/failed/expired）即停、无在飞单即清、关窗即清，
  *     生命周期唯一所有者 = `stopZShop()`（照 `stopWizard()` 口径）；轮询不做人为超时。
- *   · 订单台账只存 `{orderId, token}`（localStorage `mgw.zshop.orders`，上限 5 条；失败/超时出表、
- *     已到账保留以便回来再导）—— 凭据内容一个字节都不进浏览器存储；
+ *   · 订单台账只存 `{orderId, token, title?, ts?}`（localStorage `mgw.zshop.orders`，上限 5 条；
+ *     失败/超时出表、已到账保留以便回来再导）—— 凭据内容一个字节都不进浏览器存储；
  *   · 一切失败展示**响应里的原因**（api.js 的统一错误提取），不写裸「失败」。
  */
 const Z_PRODUCT = "zcode";               // 两颗入口的唯一门控（只有 ZCode 有本机工具与一元小店）
@@ -1181,7 +1568,7 @@ function bindZImport(root, body) {
       return;
     }
     pasteBtn.disabled = true;
-    try { await zImportFlow({ source: "payload", payload }, (r) => onOk(r), setErr); }
+    try { await zImportFlow({ source: "payload", payload }, (r) => onOk(r), setErr, errEl); }
     finally { pasteBtn.disabled = false; }
   };
   const fileEl = body.querySelector("#ac-zimp-file");
@@ -1196,26 +1583,29 @@ function bindZImport(root, body) {
       setErr(`文件 ${f.name} 读取或解析失败：` + e.message);
       return;
     }
-    await zImportFlow({ source: "payload", payload }, (r) => onOk(r), setErr);
+    await zImportFlow({ source: "payload", payload }, (r) => onOk(r), setErr, errEl);
   };
   for (const b of body.querySelectorAll('[data-z="row"]')) {
     b.onclick = async () => {
       const rowBtn = b;
       b.disabled = true;
       const outcome = await zImportFlow({ source: b.dataset.src, account: b.dataset.acc },
-        (r) => onOk(r, rowBtn), setErr);
+        (r) => onOk(r, rowBtn), setErr, errEl);
       if (outcome !== "ok") b.disabled = false;   // 成功时钮已被徽章替换（不再恢复）
     };
   }
 }
 
-/** 导入请求一次（不抛）：成功 / 409 冲突 / 其它错误三态原样带回，由调用方决定怎么呈现。 */
+/** 导入请求一次（不抛）：成功 / 409 冲突 / 其它错误三态原样带回，由调用方决定怎么呈现。
+ *  🔴 409 的附加字段嵌在 `error` 里（`_json_error` 把 extra 并进 `error`；
+ *  判据同源 `tests/integration/test_zcode_import_api.py:257` 与本页 :725 的 refreshable 读法）——
+ *  早先读 `e.data.conflict` 恒 undefined，**冲突决策路径整条是死的**（2026-10-01 红线审计抓修）。 */
 async function zImportOnce(body) {
   try {
     const r = await POST("/admin/api/zcode/import", body);
     return { ok: true, account: (r && r.account) || "" };
   } catch (e) {
-    const d = e.data || {};
+    const d = (e.data && e.data.error) || {};
     if (d.conflict) return { conflict: d };
     return { err: e.message };
   }
@@ -1228,21 +1618,21 @@ async function zImportSucceed(r) {
 }
 
 /** 统一导入出口（粘贴 / 本机行 / 到账导入三处共用）：
- *  成功 → onOk；409 → 冲突弹窗（用户二选一后二次提交，成功仍走 onOk）；其余 → onErr。
- *  settle 口径：Promise<"ok"|"cancel"|"err"> —— 冲突在弹窗**之后**才结束，调用方据此恢复自身钮的禁用态。 */
-function zImportFlow(body, onOk, onErr) {
+ *  成功 → onOk；409 → **在 `host` 槽内就地渲染决策**（🔴 红线：弹窗内禁止再开弹窗，
+ *  frontend-spec §7.11 / 规矩16——2026-10-01 用户定版，原二级冲突弹窗已废）；其余 → onErr。
+ *  settle 口径：Promise<"ok"|"cancel"|"err"> —— 冲突在决策**之后**才结束，调用方据此恢复自身钮的禁用态。 */
+function zImportFlow(body, onOk, onErr, host) {
   return new Promise((resolve) => {
     zImportOnce(body).then((r) => {
       if (r.ok) { resolve(onOk(r)); return; }        // onOk 可 async：settle 等它完成
       if (r.conflict) {
-        zConflictDialog(r.conflict,
+        zConflictInline(host, r.conflict,
           async (patch) => {
             const r2 = await zImportOnce({ ...body, ...patch });
             if (r2.ok) { await onOk(r2); return "ok"; }
             if (r2.conflict) return `仍有冲突：${r2.conflict.hint || r2.conflict.error || "需要再次确认"}`;
             return r2.err;
-          },
-          (outcome) => resolve(outcome));
+          }).then(resolve);
         return;
       }
       onErr && onErr(r.err);
@@ -1251,51 +1641,49 @@ function zImportFlow(body, onOk, onErr) {
   });
 }
 
-/** 设备身份冲突（409）决策窗：**绝不自动选**（复用 = 与既有账号共用设备身份；
- *  重新生成 = 换新设备身份）。「取消」最左（与 `confirmDialog` 同序），两个决策钮放右、主色给
- *  「复用其身份」（任务契约列为首选路径，但两个动作都等用户按了才走）；
- *  attempt 执行期三钮禁用，失败把原因原文留在窗内（不吞、不静默重试）。 */
-function zConflictDialog(res, attempt, settled = () => {}) {
-  const account = String(res.account || "");
-  const withName = String(res.conflict_with || "");
-  const body = document.createElement("div");
-  body.innerHTML = `
-    <p style="margin:0 0 12px;font-size:13px;font-weight:600;color:var(--text-soft)">
-      账号「${esc(account)}」的设备身份与既有账号「${esc(withName)}」冲突。</p>
-    <div class="alert alert-warn" style="margin-bottom:12px">
-      <div>复用其身份 = 与既有账号「${esc(withName)}」共用同一设备身份；重新生成 = 为新账号换一个新设备身份。两者都会立即导入，请按上游对设备数量的要求选择。</div>
-      ${res.hint ? `<div style="margin-top:4px">${esc(res.hint)}</div>` : ""}
-    </div>
-    <div id="ac-zconf-err"></div>`;
-  const foot = document.createElement("div");
-  foot.innerHTML = `<button class="btn" data-zc="cancel">取消</button>
-    <button class="btn" data-zc="regen">重新生成</button>
-    <button class="btn btn-primary" data-zc="reuse">复用其身份</button>`;
-  const [cancelBtn, regenBtn, reuseBtn] = foot.querySelectorAll("button");   // modal() 之前取（§7.11）
-  let done = false;
-  const finish = (v) => { if (!done) { done = true; settled(v); } };
-  const dlg = modal({ title: `设备身份与账号 ${account} 冲突`, body, footer: foot,
-    onClose: () => finish("cancel") });
-  cancelBtn.onclick = dlg.close;
-  const errEl = body.querySelector("#ac-zconf-err");
-  const pick = async (patch) => {
-    cancelBtn.disabled = regenBtn.disabled = reuseBtn.disabled = true;
-    let out = "";
-    try {
-      out = await attempt(patch);
-    } catch (e) {
-      out = e.message;
-    }
-    if (out === "ok") {
-      finish("ok");                              // 先答复再关窗（close 的 onClose 会再报 "cancel"，被 done 挡掉）
-      dlg.close();
-      return;
-    }
-    errEl.innerHTML = `<div class="alert alert-err"><div class="alert-title">仍未导入</div><div>${esc(out || "后端未给出原因")}</div></div>`;
-    cancelBtn.disabled = regenBtn.disabled = reuseBtn.disabled = false;
-  };
-  reuseBtn.onclick = () => pick({ reuse: withName });
-  regenBtn.onclick = () => pick({ regenerate: true });
+/** 设备身份冲突（409）决策：**就地画在宿主槽里，绝不再开第二层弹窗**（红线见 §7.11）。
+ *  「绝不自动选」与旧弹窗版一致：取消最左、两个决策钮在右、主色给「复用其身份」；
+ *  执行期三钮禁用，失败原因原文留在槽内（不吞、不静默重试）；决策结束后宿主恢复原内容。
+ *  无宿主（异常形态）→ 直接 "cancel"，不替用户做选择。 */
+function zConflictInline(host, res, attempt) {
+  return new Promise((resolve) => {
+    const account = String(res.account || "");
+    const withName = String(res.conflict_with || "");
+    if (!host || !host.querySelector) { resolve("cancel"); return; }
+    const prev = host.innerHTML;
+    let settled = false;
+    const finish = (v) => { if (settled) return; settled = true; host.innerHTML = prev; resolve(v); };
+    host.innerHTML = `
+      <div class="alert alert-warn" style="margin-bottom:12px">
+        <div class="alert-title">设备身份与账号 ${esc(account)} 冲突</div>
+        <div>复用其身份 = 与既有账号「${esc(withName)}」共用同一设备身份；重新生成 = 为新账号换一个新设备身份。两者都会立即导入，请按上游对设备数量的要求选择。</div>
+        ${res.hint ? `<div style="margin-top:4px">${esc(res.hint)}</div>` : ""}
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">
+          <button class="btn" data-zcf="cancel">取消</button>
+          <button class="btn" data-zcf="regen">重新生成</button>
+          <button class="btn btn-primary" data-zcf="reuse">复用其身份</button>
+        </div>
+        <div data-zcf="err"></div>
+      </div>`;
+    const btns = [...host.querySelectorAll("button[data-zcf]")];
+    const errEl = host.querySelector("[data-zcf='err']");
+    const cancelBtn = host.querySelector("[data-zcf='cancel']");
+    cancelBtn.onclick = () => finish("cancel");
+    const pick = async (patch) => {
+      btns.forEach((b) => { b.disabled = true; });
+      let out = "";
+      try {
+        out = await attempt(patch);
+      } catch (e) {
+        out = (e && e.message) || String(e);
+      }
+      if (out === "ok") { finish("ok"); return; }
+      if (errEl) errEl.innerHTML = `<div class="alert alert-err" style="margin-top:8px"><div class="alert-title">仍未导入</div><div>${esc(out || "后端未给出原因")}</div></div>`;
+      btns.forEach((b) => { b.disabled = false; });
+    };
+    host.querySelector("[data-zcf='reuse']").onclick = () => pick({ reuse: withName });
+    host.querySelector("[data-zcf='regen']").onclick = () => pick({ regenerate: true });
+  });
 }
 
 /* ---------- 购买账号（一元账号 · YouYu Shop）弹窗 ---------- */
@@ -1312,8 +1700,9 @@ function readZOrders() {
 function writeZOrders(list) {
   writeStore(ZSHOP_STORE, JSON.stringify((list || []).slice(0, ZSHOP_STORE_MAX)));
 }
-function zRememberOrder(orderId, token) {
-  writeZOrders([{ orderId, token }].concat(readZOrders().filter((o) => o.orderId !== orderId)));
+function zRememberOrder(orderId, token, meta) {
+  writeZOrders([Object.assign({ orderId, token }, meta || {})]
+    .concat(readZOrders().filter((o) => o.orderId !== orderId)));
 }
 function zForgetOrder(orderId) {
   writeZOrders(readZOrders().filter((o) => o.orderId !== orderId));
@@ -1329,20 +1718,27 @@ function zBlankOrder(orderId, token) {
   };
 }
 
-/** 购买账号弹窗：订单区（台账恢复，pending 继续轮询）+ 商品区（开窗即读）。 */
+/** 购买账号弹窗：分段 tab 两页（照 ZCode Panel）——商品 tab 默认 + 我的订单 tab（台账恢复，pending 继续轮询）。 */
 function openZShop(root) {                          // root 仅为调用点签名一致；落点统一走 repaintPanel(rootEl)
   stopZShop();                                     // 单实例：开新窗先收干净旧窗（timer 一并清）
-  const st = { body: null, m: null, timer: null,
-    orders: readZOrders().map((o) => zBlankOrder(o.orderId, o.token)) };
+  const st = { body: null, m: null, timer: null, tab: "items",
+    orders: readZOrders().map((o) => {
+      const od = zBlankOrder(o.orderId, o.token);
+      od.title = String(o.title || "");            // 下单时刻的商品名（台账老记录没有 → 卡上退化为通用名）
+      od.ots = String(o.ts || "");                 // 下单本地时间
+      return od;
+    }) };
   zshop = st;
   const body = document.createElement("div");
   st.body = body;
   body.innerHTML = `
     <div id="ac-zshop-err"></div>
-    <div class="sec-head"><span class="t">我的订单</span><span class="d">台账存本机浏览器（只存订单号与查询令牌）</span></div>
-    <div id="ac-zshop-orders"></div>
-    <div class="sec-head"><span class="t">商品</span><span class="d">YouYu Shop · 一元买一个可用账号</span></div>
-    <div id="ac-zshop-items"><div class="loading">正在读取商品列表…</div></div>`;
+    <div class="tabs" id="ac-zshop-tabs" role="tablist">
+      <button class="tab active" data-zt="items">商品</button>
+      <button class="tab" data-zt="orders"></button>
+    </div>
+    <div id="ac-zshop-pane-items" style="margin-top:12px"></div>
+    <div id="ac-zshop-pane-orders" hidden></div>`;
   const foot = document.createElement("div");
   foot.innerHTML = `<button class="btn" style="margin-right:auto" data-zs="refresh">${REFRESH}刷新</button>
     <button class="btn" data-zs="close">关闭</button>`;
@@ -1350,10 +1746,22 @@ function openZShop(root) {                          // root 仅为调用点签�
   st.m = modal({ title: "购买账号 · ZCode（一元账号 · YouYu Shop）", body, footer: foot,
     onClose: () => { if (zshop === st) stopZShop(); } });
   closeBtn.onclick = st.m.close;
-  refreshBtn.onclick = () => paintZItems(st);
-  paintZOrders(st);
+  refreshBtn.onclick = () => { paintZItems(st); zShopTick(st); };
+  for (const b of body.querySelectorAll("#ac-zshop-tabs .tab"))
+    b.onclick = () => zShopTab(st, b.dataset.zt);
+  paintZOrders(st);                                // 先绘订单（补 tab 上的计数），再拉商品
   paintZItems(st);
   zShopTick(st);                                   // 恢复未完成订单：立即查一轮，再按 2.5s 节拍走
+}
+
+/** tab 切换：只翻页不重拉（数据由各自 paint 函数维护，「刷新」钮负责重读）。 */
+function zShopTab(st, name) {
+  if (zshop !== st) return;
+  st.tab = name === "orders" ? "orders" : "items";
+  for (const b of st.body.querySelectorAll("#ac-zshop-tabs .tab"))
+    b.classList.toggle("active", b.dataset.zt === st.tab);
+  st.body.querySelector("#ac-zshop-pane-items").hidden = st.tab !== "items";
+  st.body.querySelector("#ac-zshop-pane-orders").hidden = st.tab !== "orders";
 }
 
 /** 一元账号弹窗生命周期**唯一**出口（照 `stopWizard()`）：timer 只在这里清、`zshop` 只在这里置空。 */
@@ -1411,13 +1819,15 @@ function zApplyOrder(st, od, r) {
   paintZOrders(st);
 }
 
-/** 订单区整绘（单量 ≤5，整绘最简单；待付 / 到账 / 超时 / 失败四态各有落点）。 */
+/** 订单页整绘（单量 ≤5，整绘最简单；待付 / 已发货 / 超时 / 失败四态各有落点），顺带把单数补到 tab 上。 */
 function paintZOrders(st) {
   if (zshop !== st) return;
-  const holder = st.body && st.body.querySelector("#ac-zshop-orders");
+  const tabBtn = st.body && st.body.querySelector('[data-zt="orders"]');
+  if (tabBtn) tabBtn.textContent = st.orders.length ? `我的订单（${st.orders.length}）` : "我的订单";
+  const holder = st.body && st.body.querySelector("#ac-zshop-pane-orders");
   if (!holder) return;
   if (!st.orders.length) {
-    holder.innerHTML = `<div class="list-empty" style="margin-bottom:12px">还没有订单：下单后在这里看支付状态。</div>`;
+    holder.innerHTML = `<div class="list-empty">还没有订单：下单后在这里看支付状态与取货。</div>`;
     return;
   }
   holder.innerHTML = st.orders.map((od, i) => `<div data-zord="${i}">${zOrderHTML(od)}</div>`).join("");
@@ -1437,12 +1847,12 @@ function paintZOrders(st) {
 }
 
 function zOrderHTML(od) {
-  const money = od.amount == null ? "" : `实付 ¥${od.amount}`;
   const state = od.term
-    ? (od.delivered ? `<span style="color:var(--ok)">已到账</span>`
+    ? (od.delivered ? `<span style="color:var(--ok)">已发货</span>`
       : od.expired ? `<span style="color:var(--warn)">已超时</span>`
         : `<span style="color:var(--err)">下单失败</span>`)
-    : `<span style="color:var(--text-muted)">等待付款…</span>`;
+    : `<span style="color:var(--text-muted)">待付款</span>`;
+  const when = od.ots || od.deliveredAt;
   let bottom = "";
   if (!od.term) {
     bottom = `
@@ -1461,10 +1871,14 @@ function zOrderHTML(od) {
   return `
     <div class="list-card" style="margin-bottom:12px">
       <div class="list-row" style="display:block">
-        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-          <b class="mono">${esc(od.orderId)}</b>
-          ${money ? `<span class="form-hint" style="margin:0">${esc(money)}${od.payTypeName ? " · " + esc(od.payTypeName) : ""}</span>` : ""}
+        <div style="display:flex;align-items:center;gap:8px">
+          <b>${esc(od.title || "ZCode 账号订单")}</b>
           <span style="margin-left:auto;font-size:12px;font-weight:700">${state}</span>
+        </div>
+        <div style="display:flex;align-items:baseline;gap:8px;margin-top:4px">
+          <span class="mono" style="font-size:12px;color:var(--text-faint)">${esc(od.orderId)}</span>
+          ${when ? `<span style="font-size:12px;color:var(--text-faint)">${esc(shortTime(when))}</span>` : ""}
+          <span style="margin-left:auto;color:var(--err);font-weight:700;white-space:nowrap">${od.amount == null ? "" : `¥${esc(od.amount)}`}</span>
         </div>
         ${od.err ? `<div class="alert alert-err" style="margin-top:12px"><div>${esc(od.err)}</div></div>` : ""}
         ${bottom}
@@ -1475,9 +1889,9 @@ function zOrderHTML(od) {
 /** 已到账：逐账号一行（名称 + 已核验套餐 + 复制 JSON + 导入到网关）。 */
 function zDeliveredHTML(od) {
   const accs = od.accs || [];
-  if (!accs.length) return `<p class="form-hint" style="margin:8px 0 0">订单已到账，但响应里没有账号内容；可到 YouYu Shop 的订单里查看。</p>`;
+  if (!accs.length) return `<p class="form-hint" style="margin:8px 0 0">订单已发货，但响应里没有账号内容；可到 YouYu Shop 的订单里查看。</p>`;
   return `
-    <p class="form-hint" style="margin:8px 0 0">已到账${od.deliveredAt ? `（${esc(shortTime(od.deliveredAt))}）` : ""}，共 ${accs.length} 个账号：</p>
+    <p class="form-hint" style="margin:8px 0 0">已发货${od.deliveredAt ? `（${esc(shortTime(od.deliveredAt))}）` : ""}，共 ${accs.length} 个账号：</p>
     <div style="margin-top:8px">${accs.map((a, i) => zAccRowHTML(a, i)).join("")}</div>`;
 }
 
@@ -1509,13 +1923,14 @@ async function zImportDelivered(st, od, idx, btn) {
       btn.replaceWith(badge);
       await zImportSucceed(r);
     },
-    (msg) => { od.err = msg; paintZOrders(st); });
+    (msg) => { od.err = msg; paintZOrders(st); },
+    st.body && st.body.querySelector("#ac-zshop-err"));   // 冲突决策就地画在弹窗错误槽（红线：不开第二层弹窗）
   if (outcome !== "ok") btn.disabled = false;      // 成功时钮已被徽章替换（不再恢复）
 }
 
-/** 商品区（开窗首绘与「刷新」共用；失败给出响应里的原因）。 */
+/** 商品页（开窗首绘与「刷新」共用；失败给出响应里的原因）。 */
 async function paintZItems(st) {
-  const holder = st.body && st.body.querySelector("#ac-zshop-items");
+  const holder = st.body && st.body.querySelector("#ac-zshop-pane-items");
   if (!holder) return;
   holder.innerHTML = `<div class="loading">正在读取商品列表…</div>`;
   let items = null;
@@ -1533,48 +1948,92 @@ async function paintZItems(st) {
   holder.innerHTML = items.length ? zItemsHTML(items) : `<div class="list-empty">商店当前没有在售商品。</div>`;
   for (const b of holder.querySelectorAll("[data-zi]")) {
     const it = items[Number(b.dataset.idx)];
-    b.onclick = () => zBuy(st, it, b);
+    b.onclick = () => {
+      const inp = holder.querySelector(`input[data-zq="${b.dataset.idx}"]`);
+      const qty = Math.max(1, Math.min(99, Math.floor(Number(inp && inp.value) || 1)));
+      zBuy(st, it, b, qty);
+    };
   }
 }
 
-function zItemsHTML(items) {
-  return `<div class="list-card" style="margin-bottom:12px">${items.map((it, i) => {
-    const soldout = typeof it.stock === "number" && it.stock <= 0;
-    const off = it.listed === false || soldout;
-    const meta = [
-      `¥${it.price}`,
-      typeof it.stock === "number" ? `库存 ${it.stock}` : "",
-      it.validity || "",
-      it.note || "",
-    ].filter(Boolean);
-    return `
-    <div class="list-row">
-      <span style="min-width:0;flex:1">
-        <b>${esc(it.title || it.id || "未命名商品")}</b>
-        <span style="display:block;font-size:12px;color:var(--text-faint);margin-top:4px">${esc(meta.join(" · "))}</span>
-      </span>
-      <button class="btn btn-sm btn-primary" data-zi="buy" data-idx="${i}"
-        ${off ? `disabled title="${soldout ? "已售罄" : "已下架"}"` : ""}>${SHOP}购买</button>
-    </div>`;
-  }).join("")}</div>`;
+/** 小店 `validity` 对象 → 面板同款额度条（券量/券名/到期/剩余小时 + 账号有效期）；没数据就不出条。 */
+function zValidityHTML(v) {
+  if (!v || typeof v !== "object") return "";
+  const lines = [];
+  if (Number(v.couponUnits) > 0) {
+    lines.push(`券实际 ${zFmtUnits(Number(v.couponUnits))}${v.couponName ? `（${v.couponName}）` : ""}`
+      + (v.couponEndsAt ? `，${zFmtMD(v.couponEndsAt)} 到期` : "")
+      + (v.couponHoursLeft != null ? ` 剩 ${v.couponHoursLeft} 小时` : ""));
+  }
+  if (v.planEndsAt) lines.push(`账号有效期至 ${zFmtMD(v.planEndsAt)}`);
+  if (!lines.length) return "";
+  return `<div style="margin-top:10px;padding:8px 10px;border-radius:var(--radius-sm);background:var(--cool-bg);font-size:12px;color:var(--text-muted);line-height:1.7">`
+    + lines.map(esc).join("<br>") + `</div>`;
 }
 
-/** 下单：payload 固定 `{itemId, qty:1}`；成功即入台账 + 立绘订单块 + 立即查一轮状态。 */
-async function zBuy(st, it, btn) {
+/** 1 亿 → 「1亿」、3 万 → 「3万」（与面板口径一致）；非整亿落万、其余原样。 */
+function zFmtUnits(n) {
+  return n >= 1e8 && n % 1e8 === 0 ? `${n / 1e8}亿`
+    : n >= 1e4 ? `${Math.round((n / 1e4) * 10) / 10}万`
+    : String(n);
+}
+
+/** unix 秒 → 「10-2 00:00」（面板同款不补零月日）。 */
+function zFmtMD(sec) {
+  const d = new Date(Number(sec) * 1000);
+  if (isNaN(d)) return "";
+  const hh = String(d.getHours()).padStart(2, "0"), mm = String(d.getMinutes()).padStart(2, "0");
+  return `${d.getMonth() + 1}-${d.getDate()} ${hh}:${mm}`;
+}
+
+/** 商品卡照 ZCode Panel：标题+右置单价 → 说明 → 额度条 → 数量+下单+剩余/售罄。 */
+function zItemsHTML(items) {
+  return items.map((it, i) => {
+    const soldout = typeof it.stock === "number" && it.stock <= 0;
+    const off = it.listed === false || soldout;
+    return `
+    <div class="list-card" style="margin-bottom:12px">
+      <div class="list-row" style="display:block">
+        <div style="display:flex;align-items:baseline;gap:8px">
+          <b>${esc(it.title || it.id || "未命名商品")}</b>
+          <span style="margin-left:auto;color:var(--warn);font-weight:700;white-space:nowrap">¥${esc(it.price)}<span style="font-size:12px;font-weight:400;color:var(--text-faint)">/个</span></span>
+        </div>
+        ${it.note ? `<p style="margin:6px 0 0;font-size:12px;color:var(--text-faint);line-height:1.6">${esc(String(it.note))}</p>` : ""}
+        ${zValidityHTML(it.validity)}
+        <div style="margin-top:12px;display:flex;align-items:center;gap:8px">
+          <input type="number" min="1" step="1" value="1" data-zq="${i}" ${off ? "disabled" : ""}
+            aria-label="购买数量" style="width:64px;text-align:center">
+          <button class="btn btn-sm btn-primary" data-zi="buy" data-idx="${i}"
+            ${off ? `disabled title="${soldout ? "已售罄" : "已下架"}"` : ""}>下单</button>
+          ${soldout ? `<span class="badge b-warn">已售罄</span>`
+            : it.listed === false ? `<span class="badge">已下架</span>`
+            : typeof it.stock === "number" ? `<span style="margin-left:auto;font-size:12px;color:var(--text-faint)">剩余 ${it.stock} 个</span>` : ""}
+        </div>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+/** 下单：payload `{itemId, qty}`（数量随商品卡输入，钳 1~99）；成功即入台账 + 立绘订单 + 立即查一轮状态。 */
+async function zBuy(st, it, btn, qty) {
   if (!it || !btn || btn.disabled) return;
   const label = btn.innerHTML;
   btn.disabled = true;
   btn.textContent = "下单中…";
   try {
-    const r = await POST("/admin/api/zcode/shop/buy", { itemId: it.id, qty: 1 });
+    const r = await POST("/admin/api/zcode/shop/buy", { itemId: it.id, qty: qty || 1 });
     const od = zBlankOrder(r.orderId, r.orderToken);   // 查询令牌 = 下单响应的 orderToken
+    od.title = String(it.title || it.id || "");
+    od.ots = new Date().toISOString();
     od.payPath = String(r.payPath || "");
     od.payTypeName = String(r.payTypeName || "");
     if (r.reallyPrice != null || r.amount != null) od.amount = r.reallyPrice != null ? r.reallyPrice : r.amount;
     st.orders = st.orders.filter((o) => o.orderId !== od.orderId);   // 同号去重：台账恢复的单撞号时不出现两张卡
     st.orders.unshift(od);
-    zRememberOrder(od.orderId, od.token);
+    zRememberOrder(od.orderId, od.token, { title: od.title, ts: od.ots });
     paintZOrders(st);
+    zShopNote(st, "");
+    zShopTab(st, "orders");                        // 面板行为：下单成功即切至订单 tab 看支付状态
     zShopTick(st);                                 // 立刻查一次（不必等 2.5s 节拍）
   } catch (e) {
     zShopNote(st, "下单未完成：" + e.message);

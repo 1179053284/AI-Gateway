@@ -916,14 +916,29 @@ def _balance_root(tmp_path, monkeypatch, *, log_line: str | None):
 
 
 async def test_query_balance_success_writes_quota_pool(tmp_path, monkeypatch):
-    """读到快照 → `success`，且**同一实现**把余量写进额度池（§17① 与 §19 M5-3 同源）。"""
+    """取回带数值的快照 → `success`，且**同一个实现**把余量写进额度池（§17① 与 §19 M5-3）。
+
+    🔴 2026-10-02 迁移（方案 §8.1-8 列明的"必然变红并给处置"三条之一）：
+    旧实现是"ops 腿读账号目录里的客户端日志"，本轮改成 ops 腿只调产品 `quota` 钩子
+    （联网腿），日志面降级为离线聚合 —— 所以旧夹具那行日志**不再是执行路径的一部分**，
+    detail 文案也随 `items` 结构化改造换形（`"余 4"`/`"96/100"` 两个子串都是旧形状）。
+    保留的判据内核**没变**：**数值真的进共享池**（这是当初为它保留私有通道的唯一理由）。
+    """
     from model_gateway.ops.builtin import query_balance as qb
+    from model_gateway.accounts.types import QuotaSnapshot
     from model_gateway.config.schemas import AppConfig
     from model_gateway.core.resources import ResourceManager
 
-    line = ('billing/balance 请求完成 {"data":{"balances":[{"show_name":"通用",'
-            '"total_units":100,"used_units":96,"available_units":4,"period":"5h"}]}}')
-    _balance_root(tmp_path, monkeypatch, log_line=line)
+    _balance_root(tmp_path, monkeypatch, log_line=None)
+
+    async def _hook(cred, meta):
+        return QuotaSnapshot(state="available", source="zcode-billing",
+                             detail="plan=Start Plan；可用余量 4（token 量纲）",
+                             plan="Start Plan", remaining=4,
+                             items=({"name": "通用", "unit": "token", "remaining": 4,
+                                     "total": 100, "used": 96, "active": True,
+                                     "expires_at": ""},))
+    monkeypatch.setattr(qb.product_hooks, "hook_of", lambda product, kind: _hook)
 
     # 走真实 rebuild()：它才负责把 ResourceState.quota 接到按 rid 共享的池上
     mgr = ResourceManager()
@@ -939,35 +954,45 @@ async def test_query_balance_success_writes_quota_pool(tmp_path, monkeypatch):
         resources = mgr
         config = cfg
 
-    res = await qb.query_balance("acct-a", runtime=_RT)
+    # `via="user"`：默认 `quota_net=false` 只挡 cron 腿（用户当场点的按钮必须真刷）
+    res = await qb.run_for("zcode", "acct-a", runtime=_RT, via="user")
     assert res.category == "success"
-    assert "余 4" in res.detail and "96/100" in res.detail
-    assert st.quota.remaining == 4            # 快照 100-96 → 余 4
+    assert "可用余量 4" in res.detail          # 钩子原话进回执（不再由 ops 层自己拼旧文案）
+    assert st.quota.remaining == 4            # 🔴 数值进池：这是私有通道当初存在的唯一理由
 
 
-async def test_query_balance_without_logs_is_inactive_not_failed(tmp_path, monkeypatch):
-    """🔴 新账号本就没有日志 → `inactive`（正常业务态）。判 `failed` 会让红点每轮常亮，
-    把真正需要关注的失败稀释掉（§21.3 原则 3）。"""
+async def test_query_balance_without_credentials_is_inactive_not_failed(tmp_path, monkeypatch):
+    """🔴 取不到额度 = `inactive`（正常业务态），**不是** `failed`。
+
+    判 `failed` 会让顶栏红点每轮常亮，把真正需要关注的失败稀释掉（§21.3 原则 3）。
+    旧用例钉的串是「账号目录不匹配」—— 那是**日志通道**的语义（目录里的日志属于谁），
+    联网腿没有"账号目录匹配"这件事（凭据走 `hook_meta` 单一入口），故该串随旧通道退役。
+    今天等价的事实是「缺凭据 → 未发起」，档位改钉 `reason=no_credentials`。
+    """
     from model_gateway.ops.builtin import query_balance as qb
 
     _balance_root(tmp_path, monkeypatch, log_line=None)
-    res = await qb.query_balance("acct-a", runtime=None)
+    res = await qb.run_for("zcode", "acct-a", runtime=None, via="user")
     assert res.category == "inactive"
-    assert "账号目录不匹配" in res.detail
+    assert "未发起" in res.detail             # 说清楚"没查"，而不是含糊的"查不到"
 
 
-async def test_query_balance_read_error_is_failed(tmp_path, monkeypatch, caplog):
-    """读取过程真出错（权限/磁盘）→ `failed`，且异常类型进 detail 供排查。"""
+async def test_query_balance_hook_error_is_failed(tmp_path, monkeypatch):
+    """执行体真抛（权限/解析/磁盘）→ `failed` 且异常类型进 detail 供排查。
+
+    旧用例 monkeypatch 的是 `read_account_snapshot`（ops 腿今天已不调它）；
+    同一判据换个落点继续有效：**钩子抛出的异常必须冒到类别上**，
+    不能被"失败面返回快照不冒异常"那条规则顺手吞掉（吞掉 = 红点永不亮）。
+    """
     from model_gateway.ops.builtin import query_balance as qb
-    from model_gateway.upstream.zcode import quota as zq
 
     _balance_root(tmp_path, monkeypatch, log_line=None)
 
-    def boom(*a, **kw):
+    async def boom(cred, meta):
         raise OSError("permission denied")
 
-    monkeypatch.setattr(zq, "read_account_snapshot", boom)
-    res = await qb.query_balance("acct-a", runtime=None)
+    monkeypatch.setattr(qb.product_hooks, "hook_of", lambda product, kind: boom)
+    res = await qb.run_for("zcode", "acct-a", runtime=None, via="user")
     assert res.category == "failed"
     assert "OSError" in res.detail
 

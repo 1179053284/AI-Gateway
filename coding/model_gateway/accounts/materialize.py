@@ -16,7 +16,10 @@
    绝不猜一个域名；`custom` 协议族落 `"openai"` 仅为 schema 字面量兼容（§22.5-3 裁决，
    真正分派以 `product` 优先）。
 3. **删除 = 停用**（§22.5-1）：`disable_resource()` 只把 `enabled` 置 false **保留历史**
-   （统计与事件不丢）；彻底删除是资源页的手动操作，不在本模块。
+   （统计与事件不丢）。🔴 2026-10-02 用户裁决：原句「彻底删除是资源页的手动操作」**作废**
+   —— 派生资源已从「接入模型资源」页整体移出（两类接入不得互串），该页看不见它；
+   资源位的日常归属改为**账号那颗开关**（`set_resource_enabled`，一个开关一个主人），
+   彻底清除 = 直接编辑配置文件 `resources[]`。本模块仍不提供删除口。
 
 ⚠️ 热重载：写盘后由 `main.py` 的既有 mtime 轮询（1s）自动重载；本模块**不 import
    `main`**（分层：公共层不得反向依赖装配层）。需要即时生效的调用方可自行
@@ -140,6 +143,44 @@ def disable_resource(product: str, name: str, *, config_path: Path | str | None 
         logger.info("账号已删除/停用，其 %d 条资源置为停用（保留历史）：%s/%s",
                     changed, prod, account)
         return True
+
+
+def set_resource_enabled(product: str, name: str, enabled: bool,
+                         *, config_path: Path | str | None = None) -> int:
+    """账号启用/停用 ⇒ 其派生资源的 `enabled` 位**同步跟上**，返回改动条数（0 = 本就一致）。
+
+    🔴 为什么需要这一条（2026-10-02 用户裁决，两类资源分流暴露的缺陷）：
+    分流后派生资源**不再出现在**「接入模型资源」页，而账号页那颗开关原先只写账号 meta
+    （§22.6 的运营跳过位）—— 于是资源级启用位变成**没有任何主人的隐藏开关**：
+    账号被删时我们把它置 false（`disable_resource`），用户后来重新启用账号，
+    资源却仍 false ⇒ 永久不可服务且界面上看不见（`ensure_resource` 按纪律 1 也**不**拨回）。
+    定版 = **一个开关一个主人**：账号开关同时驱动其资源位。
+
+    与纪律 1 不冲突：纪律 1 说的是「**登录/续期**不得拨回用户手动停用的开关」，
+    那条路径本函数不参与；这里只在**用户显式启停账号**时同步。
+    """
+    prod = str(product or "").strip()
+    account = str(name or "").strip()
+    if not prod or not account:
+        return 0
+    path = paths.resolve_config_path(config_path)
+    with _ORDER_LOCK:
+        config = _load_or_fail(path, prod)
+        changed = 0
+        for r in config.resources:
+            if (r.product or "").strip() != prod:
+                continue
+            ref = (r.account_ref or "").strip() or (r.account or "").strip()
+            if ref == account and bool(r.enabled) != bool(enabled):
+                r.enabled = bool(enabled)
+                changed += 1
+        if not changed:
+            return 0
+        _save(config, path)
+        logger.info("账号 %s/%s %s，其 %d 条派生资源的启用位同步为 %s",
+                    prod, account, "启用" if enabled else "停用", changed,
+                    "启用" if enabled else "停用")
+        return changed
 
 
 def credential_fingerprint(product: str, name: str, *, root: Path | str | None = None) -> str:

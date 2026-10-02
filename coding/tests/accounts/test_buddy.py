@@ -592,3 +592,22 @@ def test_inference_headers_send_attribution_name_not_deployment_type():
     # 未登记的档案 → 当场拒绝（fail closed：编个归属名 = 把用量记到别人头上）
     with pytest.raises(ValueError, match="未登记推理面归属头"):
         p.inference_headers(replace(buddy._PROFILE, id="ghost"), _CRED_WITH_IDS)
+
+
+async def test_quota_structured_items_and_plan(monkeypatch):
+    """2026-10-01 加字段：逐包结构（items）+ 套餐名（plan）随快照下发——
+    失效包 `active=False` 且不进 plan；`DeductionEndTime`（毫秒）归一化成 ISO。"""
+    _install_http(monkeypatch, {"/v2/billing/meter/get-user-resource": (200, {"code": 0, "data": {
+        "Response": {"Data": {"Accounts": [
+            {"PackageName": "CodeBuddy个人体验版", "Status": 0,
+             "CycleCapacityRemain": 100, "CycleCapacitySize": 300,
+             "CapacityUnit": "credits", "DeductionEndTime": 0},
+            {"PackageName": "Bonus Pack", "Status": 3, "CycleCapacityRemain": 500}]}}}})})
+    snapshot = await buddy.quota(_CRED, buddy.meta())
+    assert snapshot.plan == "CodeBuddy个人体验版"
+    assert [it["name"] for it in snapshot.items] == ["CodeBuddy个人体验版", "Bonus Pack"]
+    assert snapshot.items[0]["remaining"] == 100
+    assert snapshot.items[0]["total"] == 300
+    assert snapshot.items[0]["active"] is True
+    assert snapshot.items[1]["active"] is False
+    assert snapshot.items[1]["expires_at"] == ""

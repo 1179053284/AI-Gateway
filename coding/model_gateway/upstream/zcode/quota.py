@@ -1,18 +1,19 @@
-"""ZCode 额度读取与熔断（tech-design v2.0 §17 关键决策）。
+"""ZCode 额度**离线面**与熔断（tech-design v2.1 §17 关键决策）。
 
-**三通道**（`18` §②），优先级：
+**三通道**（`18` §②）与 2026-10-02 之后的实际分工：
 
-| # | 通道 | 说明 |
+| # | 通道 | 本轮定位 |
 |---|---|---|
-| 1 | **客户端日志** | ⭐ 主用 —— 日志是客户端拿到的**第一手响应**，且**绕开签名风控**（联网请求需 `X-Client-Sig/Nonce/Pow` 私钥握手 + PoW，脚本无法复刻） |
-| 2 | 联网（Plan） | `GET zcode.z.ai/api/v1/zcode-plan/billing/balance`，需 `Bearer <jwt>` + **`X-Device-Mid`**（缺则 400/3001） |
-| 3 | 联网（API Key） | BigModel biz 网关 —— **不同维度**（账户余额/资源包），非额度桶 |
+| 1 | **联网（Plan）** | ⭐ **实时源** —— `billing.fetch_balance` ← `product.quota`（一条带 `Bearer <jwt>` + `X-Device-Mid` 的只读 GET）。旧口径「需 `X-Client-Sig/Nonce/Pow` 私钥握手 + PoW，脚本无法复刻」**从未实测、已被证伪**：16/16 号 200 / code=0（【探针台账】§2/§6.1–6.3，**仅测了这条只读 GET**，推理面与 D1 其余子问题仍未验证） |
+| 2 | **客户端日志** | 降级为**离线聚合面** —— 本模块的 `read_account_snapshot` / `parse_log_tail`，只服务启动种值与 `/admin/api/zcode/quota` 的聚合视图。⚠️ 本机实况：网关账号根内**没有任何 `.log`**（16/16 号恒 `ok=False`），故它的失败**不得**被读成"上游说了没有" |
+| 3 | 联网（API Key） | BigModel biz 网关 —— **不同维度**（账户余额/资源包），非额度桶，本模块不接 |
 
 **3012 熔断**（`18` §③）：服务端风控 `unusual activity` → **全局熔断 30 分钟**，
-节流 10s，状态**落盘**（防重启丢失）。
+节流 10s，状态**落盘**（防重启丢失）。🔴 熔断**在发起前拦额度腿**（0 请求）—— 旧注释
+「熔断不拦额度读取」的前提（额度只走零请求的日志通道）已随联网化失效，见 `CooldownManager`。
 
 **串号防护**（`18` §②）：按 `expectUserPlanId` 精确匹配；匹配不上 → 返回 None，
-**绝不能把别人的额度顶上来**。
+**绝不能把别人的额度顶上来**。主键 = 联网成功那一轮落盘的 `quota.plan_key`。
 
 **熔断回写**（§17）：熔断/额度耗尽 → 回写该账号对应 `ResourceState.status`，
 统一用 **`bench`**（临时冷却，非 `disable`）+ 写 `last_error` 原因
@@ -50,16 +51,29 @@ CODE_RISK_CONTROL = 3012
 
 @dataclass
 class Bucket:
-    """额度桶（按 `show_name` 归并）。"""
+    """额度桶（按 `show_name` 归并）。
+
+    🔴 `available` 可以是 `None` = **上游没给出可用数**（2026-10-02 方案 §4-3）：
+    聚合口径「任一桶 `None` ⇒ 整号未知」，**绝不把 `None` 当 0、也绝不拿 `total-used` 猜**
+    （`18` §④ 的老纪律；v3 之前这里的兜底写法是 `max(0, total-used)`，已被推翻）。
+    `unit_type` / `period_end` / `remaining_units` 是实盘真字段（见【探针台账】§6.4），
+    展示层要什么就从这里取什么，不再硬编码 `"token"`。
+    """
 
     show_name: str
     period: str
     total: int
     used: int
-    available: int
+    available: int | None = None
+    unit_type: str = ""
+    period_end: int | None = None           # epoch 秒（归一化成 ISO 是**钩子**的责任）
+    remaining_units: int | None = None      # 只进展示；聚合唯一来源是 `available`
 
     @property
     def reset_note(self) -> str:
+        """用量比注记。`total` 缺失时**不出「0/0」**（那是"上游没给"被读成"用完了"）。"""
+        if not self.total:
+            return "未给出"
         return f"{self.used}/{self.total}"
 
 
@@ -113,6 +127,28 @@ def _extract_json_after(text: str) -> dict | None:
     return None
 
 
+def _unwrap_log_record(rec: dict) -> dict:
+    """客户端**日志记录** → `normalize_remote` 能直接吃的形状。
+
+    🔴 两条通道的形状不同，v3 把它们混成一条，于是"修 B2"差点把本来正确的联网通道改坏：
+
+    - **网络响应体**（`billing.fetch_balance`）顶层就是 `{code, msg, data:{…}, logid}`
+      ⇒ `normalize_remote` 读 `body["data"]` **本来就对**，**不经过本函数**；
+    - **客户端日志记录**是 `{…, payload:{code, data:{…}, msg, logid}}`（实测 2962/2962 条带
+      `payload`、0 条带顶层 `data`，见【探针台账】§4「两条通道被混成一条」那行）⇒ 必须剥一层。
+
+    既有夹具（`test_v2_zcode_quota.py:_log_record()`、`tests/accounts/test_zcode.py:_log_record()`、
+    `test_int_v2_zcode_admin.py:_log_line()`）都是**无 `payload` 的老形状** ⇒ 没有 `payload.data`
+    就**原样返回**，否则三处夹具整片红。
+
+    🔴 返回的是 `rec["payload"]` **本身**，不是 `rec["payload"]["data"]` ——
+    后者会让 `normalize_remote` 的 `body.get("code")` / `body.get("data")` 双双落空，
+    **静默得到零桶**（不报错、不红，只是"额度数据还是没有"，正是本轮要修的那个症状）。
+    """
+    p = rec.get("payload") if isinstance(rec, dict) else None
+    return p if isinstance(p, dict) and isinstance(p.get("data"), dict) else rec
+
+
 def parse_log_tail(path: Path, *, expect_user_plan_id: str | None = None,
                    max_scan: int = MAX_LOG_SCAN) -> dict | None:
     """日志通道：读文件尾 4 MiB，定位最后 N 条 `billing/balance` 记录。
@@ -141,8 +177,13 @@ def parse_log_tail(path: Path, *, expect_user_plan_id: str | None = None,
         if data is None:
             continue
         if expect_user_plan_id:
-            # 串号防护：只认本账号的 user_plan_id
-            plans = (data.get("data") or {}).get("plans") or []
+            # 串号防护：只认本账号的 user_plan_id。
+            # 🔴 取值必须**经同一个剥层器**再读 `data.plans`（工程 r6 B-R5-3）：
+            #    直接把路径写死成 `payload.data.plans` 会让两条无 `payload` 的既有夹具
+            #    （`test_v2_zcode_quota.py:77-83` 是唯一传 id 的用例）当场变红；
+            #    而维持旧写法 `data.get("data")` 则对**实盘形状恒取空集** ⇒ 一旦真接上防护，
+            #    所有记录都被判成"别人的"（方案 §0.1 记的那条"现状比方案说的更坏"）。
+            plans = ((_unwrap_log_record(data).get("data") or {}).get("plans")) or []
             ids = {str(p.get("user_plan_id") or "") for p in plans if isinstance(p, dict)}
             if expect_user_plan_id not in ids:
                 continue
@@ -150,21 +191,40 @@ def parse_log_tail(path: Path, *, expect_user_plan_id: str | None = None,
     return found[-1] if found else None
 
 
-def _bucket_from_balance(b: dict) -> Bucket | None:
+def bucket_from_balance(b: dict) -> Bucket | None:
+    """一条 `balances[]` → `Bucket`（公开名：`billing` 与 ops 层都要用，不跨模块调私有名）。
+
+    🔴 口径（方案 §3-6 / §4-3）：**`available_units` 是唯一可用来源**；
+    缺它就是 `None`（未给出），**不再** `max(0, total-used)` —— 拿总量当可用是
+    `18` §④ 明令禁止的事，v3 之前这里的兜底写法已被推翻（见 §8.1-2 的两条改后期望值）。
+    `remaining_units` 一并带出但只供展示，不参与聚合。
+    """
     show = str(b.get("show_name") or b.get("showName") or "")
     total = int(b.get("total_units") or 0)
     used = int(b.get("used_units") or 0)
     avail = b.get("available_units")
-    # 🔴 兜底：available 缺省时**绝不能拿总量当可用**（`18` §④）
-    available = int(avail) if avail is not None else max(0, total - used)
+    available = int(avail) if avail is not None else None
+    rem = b.get("remaining_units")
+    pend = b.get("period_end")
     return Bucket(show_name=show, period=str(b.get("period") or ""),
-                  total=total, used=used, available=available)
+                  total=total, used=used, available=available,
+                  unit_type=str(b.get("unit_type") or ""),
+                  period_end=int(pend) if pend is not None else None,
+                  remaining_units=int(rem) if rem is not None else None)
+
+
+#: 旧私有名保留为别名（`normalize_remote` 与既有测试都用它，改名不该波及测试面）
+_bucket_from_balance = bucket_from_balance
 
 
 def normalize_remote(body: dict, *, account: str = "") -> QuotaSnapshot:
     """联网通道归一化：Anthropic/Plan 响应 → `QuotaSnapshot`。
 
     对字段别名做防御（不同通道键名不同）。
+
+    🔴 本函数读的是 `body["data"]`，**对网络响应体是正确的**（顶层 `{code,msg,data,logid}`，
+    【探针台账】§6.1）。日志记录要先过 `_unwrap_log_record` 再进来（`snapshot_from_log_record`
+    负责），不要在这里加剥层 —— 那会把本来好的通道改成"永远零桶"。
     """
     snap = QuotaSnapshot(account=account)
     if not isinstance(body, dict):
@@ -191,8 +251,14 @@ def normalize_remote(body: dict, *, account: str = "") -> QuotaSnapshot:
 
 
 def snapshot_from_log_record(record: dict, *, account: str = "") -> QuotaSnapshot:
-    """日志记录 → `QuotaSnapshot`（复用同一套归一化，统一数据模型）。"""
-    return normalize_remote(record, account=account)
+    """日志记录 → `QuotaSnapshot`（复用同一套归一化，统一数据模型）。
+
+    🔴 这里**必须**先过 `_unwrap_log_record`：实盘日志记录带 `payload` 包，
+    直接喂 `normalize_remote` 会得到"`ok=True` 但零桶"（= v3 的 B2 症状，
+    而 B2 只存在于日志通道 —— 网络通道走 `billing`，形状本来就对）。
+    无 `payload` 的旧形状/旧夹具原样透传，故既有断言不受影响（工程 r6 B-R6-7 的"第二个应用点"）。
+    """
+    return normalize_remote(_unwrap_log_record(record), account=account)
 
 
 def aggregate(snapshots: list[QuotaSnapshot]) -> dict:
@@ -212,11 +278,25 @@ def aggregate(snapshots: list[QuotaSnapshot]) -> dict:
 
 
 def read_account_snapshot(accounts_root: Path, account: str,
-                          *, log_dirs_tail: int = 3) -> QuotaSnapshot:
-    """单账号额度快照：**客户端日志通道优先** → 无记录则 `ok=False`（§17 数据源优先级）。
+                          *, log_dirs_tail: int = 3,
+                          expect_user_plan_id: str | None = None) -> QuotaSnapshot:
+    """**离线面**：只读本账号客户端日志目录的 `billing/balance` 记录 → 快照；无记录则 `ok=False`。
 
-    🔴 不走联网：额度/权益接口需 `X-Client-Sig/Nonce/Pow` 私钥握手 + PoW，脚本无法复刻，
-    且日志是客户端拿到的**第一手响应**（`18` §②）。
+    🔴 2026-10-02 的定位改述（方案 §7-4）：**额度的实时值由联网腿负责**
+    （`billing.fetch_balance` ← `product.quota`，实测 16/16 号 200/code=0，
+    见【探针台账】§2）；本函数只是**离线快照面**（启动种一次 + `/admin/api/zcode/quota` 聚合），
+    不联网、不代表"额度就是这些数"。
+
+    旧注释写的理由「不走联网：额度/权益接口需 `X-Client-Sig/Nonce/Pow` 私钥握手 + PoW，
+    脚本无法复刻」——**这句从未实测，本轮已证伪**（一条 `auth.build_headers("jwt", …)` 的 GET
+    就拿到 `plans/balances` 数值），故整段删除，不留一条被否证的技术断言在代码里。
+
+    ⚠️ 本机实况：网关账号根内**没有 `logs/`**（`find coding/data/upstream/zcode/accounts -name '*.log'`
+    = 0）⇒ 对 16 个导入号本函数**恒返回 `ok=False`**，这与"剥层修没修"无关（那是"文件里有记录时
+    解错层"）。所以调用方**不得**把它的失败当成"上游说了没有"。
+
+    `expect_user_plan_id`（串号防护主键）= 上一次**联网成功**落盘的 `quota.plan_key`。
+    取不到时**如实**在 `note` 里写"未做串号校验"，不假装防护在位（方案 §3-4）。
     """
     from model_gateway.upstream.zcode.dataroot import v2_dir_of
 
@@ -227,20 +307,31 @@ def read_account_snapshot(accounts_root: Path, account: str,
         except OSError:
             logs = []
         for log in logs:
-            rec = parse_log_tail(log)
+            rec = parse_log_tail(log, expect_user_plan_id=expect_user_plan_id)
             if rec is not None:
                 return snapshot_from_log_record(rec, account=account)
+        if not expect_user_plan_id and logs:
+            return QuotaSnapshot(account=account, ok=False,
+                                 note="无可用日志记录（且无套餐主键，未做串号校验）")
     return QuotaSnapshot(account=account, ok=False, note="无可用日志记录")
 
 
 def remaining_units(snap: QuotaSnapshot) -> int | None:
     """快照的**可用余量**（各桶求和）。取不到 → None（未知，不做额度管控）。
 
+    🔴 聚合口径（方案 §4-3，工程 r3 B-R3-3 的三处未闭合之一）：
+    **任一桶 `available is None` ⇒ 整号 `None`**（上游没给可用数就是"未知"），
+    求和时逐桶 `max(0, …)` clamp（负值不当余量，也保证与日志腿/网络腿口径一致）。
+    v3 之前的写法 `sum(max(0, b.available))` 在 `available=None` 时抛 `TypeError`
+    ——`Bucket.available` 转 Optional 之后那一行必然炸，故这里先筛。
+
     ⚠️ 口径：1 请求预留 1 单位（`amount` 缺省值），与 `total_units/used_units` 同量纲。
     真实每请求扣减多少由上游决定，网关侧只做**保守闸门**：
     余量为 0 时不再选这条资源，而不是精确记账。
     """
     if not snap.ok or not snap.buckets:
+        return None
+    if any(b.available is None for b in snap.buckets):
         return None
     return sum(max(0, b.available) for b in snap.buckets)
 
@@ -269,42 +360,62 @@ def refresh_runtime_quotas(runtime, *, accounts: list[str] | None = None) -> int
     return updated
 
 
-def apply_snapshot_to_runtime(runtime, account: str, snap: "QuotaSnapshot") -> int:
-    """把一个额度快照写回该账号资源的额度池，返回被更新的资源数。
+def apply_remaining_to_runtime(runtime, account: str, remaining: int | None) -> int:
+    """把一个**已算好的余量数值**写回该账号资源的额度池，返回被更新的资源数。
 
-    🔴 单一实现：`refresh_runtime_quotas`（批量）与 `query_balance`（单账号）共用它，
-    避免出现"两条路径算了两种额度"。
-    按 **rid** 写共享池，不是按 `(rid, vendor_model)` 各写一份 —— 后者会让同账号多映射
-    在余量为 1 时并发放行 N 个（验收 S-1）。
-    取不到余量（未知）→ **不动旧值**：宁可不管控，也不误封资源。
+    🔴 2026-10-02：§17 回写义务的**唯一实现**搬到这里，两个入口共用它 ——
+    `apply_snapshot_to_runtime`（离线面：先 `remaining_units(snap)`）与
+    `ops/builtin/query_balance._apply_zcode_quota`（联网腿：钩子已算好 `snap.remaining`）。
+    留在原处不动会让 ops 腿自己再抄一份"写池 + bench"，那就是
+    `quota.py:275-278` 老注释警告过的"两条路径算了两种额度"。
 
-    🔴 余量为 0 时**同时回写资源状态**（§17 表格的字面要求：`last_error = ZCode 额度耗尽`）：
-    只写额度池是不够的 —— 预留闸门虽挡住了派发，但用户在总览看到的是 `active`
-    且没有任何原因，"为什么这个模型不干活"依旧要猜。
-    时长取**一个额度刷新周期**（下次 tick 会重读上游快照；已充值则不再 bench，
-    资源在一个周期内自动回池），避免"本地判定"比"上游真相"更久地锁死资源。
+    口径与搬过来时逐字一致（**只是换了取值入口，没换判断**）：
+
+    - `remaining is None` → **不动旧值**（未知 ≠ 没额度：宁可不管控，也不误封资源）；
+    - 按 **rid**（一把凭据）写共享池，不按 `(rid, vendor_model)` 各写一份
+      —— 后者会让同账号多映射在余量为 1 时并发放行 N 个（验收 S-1）；
+    - 🔴 `remaining == 0` 时**同时回写资源状态**（§17 表格的字面要求：
+      `last_error = ZCode 额度耗尽`）：只写额度池是不够的 —— 预留闸门虽挡住了派发，
+      但用户在总览看到的是 `active` 且没有任何原因，"为什么这个模型不干活"依旧要猜。
+      时长取**一个额度刷新周期**（下次 tick 会重读上游；已充值则不再 bench，
+      资源在一个周期内自动回池），避免"本地判定"比"上游真相"更久地锁死资源。
+    - 匹配口径用**本模块自己的** `resource_ids_of_account`（账号备注相等 **且**
+      `product ∈ {zcode, ""}`），**不是**通用体的严格相等：实盘 `config.yaml` 里
+      `res-sensenova-main`（`product` 为空串）被前者命中、被后者排除 —— 两者今天已差 1 条，
+      用 zcode 谓词才是 §17 的既有行为（PM r4 N-R4-11 / QA r5 N-1 实测）。
     """
-    remaining = remaining_units(snap)
     if remaining is None or runtime is None:
         return 0
-    mgr = runtime.resources
+    mgr = getattr(runtime, "resources", None)
+    config = getattr(runtime, "config", None)
+    if mgr is None or config is None:
+        return 0
+    rids = resource_ids_of_account(account, config)
     updated = 0
-    rids = resource_ids_of_account(account, runtime.config)
     for rid in rids:
         # 按 **rid（一把凭据）** 覆盖共享池，不是按 (rid, vendor_model) 各写一份
         if mgr.set_quota(rid, remaining):
             updated += 1
     if remaining == 0 and rids:
         apply_to_resource(runtime, rids, reason=QUOTA_EXHAUSTED_REASON,
-                          seconds=_quota_refresh_seconds(runtime))
+                          seconds=quota_refresh_seconds(runtime))
     return updated
+
+
+def apply_snapshot_to_runtime(runtime, account: str, snap: "QuotaSnapshot") -> int:
+    """把一个**离线面快照**写回额度池（薄适配器：算余量 → 交给 `apply_remaining_to_runtime`）。
+
+    🔴 单一实现：`refresh_runtime_quotas`（批量离线面）与联网腿（`_apply_zcode_quota`）
+    共用 `apply_remaining_to_runtime`，避免出现"两条路径算了两种额度"。
+    """
+    return apply_remaining_to_runtime(runtime, account, remaining_units(snap))
 
 
 #: 额度耗尽写入 `last_error` 的原因串（§17 表格的**字面**取值，不改写、不加戏）
 QUOTA_EXHAUSTED_REASON = "ZCode 额度耗尽"
 
 
-def _quota_refresh_seconds(runtime) -> float:
+def quota_refresh_seconds(runtime) -> float:
     """额度耗尽后把资源挡出生效集的时长 = **一个额度刷新周期**（下次 tick 会重读上游）。"""
     try:
         interval = float(getattr(runtime.config.gateway.zcode, "claim_interval_seconds", 60) or 60)
@@ -442,8 +553,12 @@ class CooldownManager:
     | 落盘 | `circuit_path()`（与账号目录同级）；**每次判定前按 mtime 回读文件** |
     | 解除 | 到期自动解除；**文件被删除 = 已解除**（跨进程一致，CLI 对用户承诺的出口）|
 
-    ⚠️ 熔断**不拦额度读取**：`query_balance` 走的是**客户端日志通道**（本模块文件读取，
-    零上游请求、零签名），继续读没有风控代价，也不与"停止打上游"矛盾。
+    ⚠️ 熔断**拦额度腿**（2026-10-02 联网化后的改述）：`product.quota` 在**发起前**判一次
+    `active()`/`untrusted`，已熔着就一个请求都不发（`reason=circuit`，界面附属标注
+    「（冷却中）」）。旧注释写的"不拦"的前提是**额度只走客户端日志通道**（零上游请求、
+    零签名），那个前提已随联网腿落地而失效 —— 现在不拦就是拿 15 个身份去撞正在惩罚的风控。
+    同理 §17 的 **10s 节流只属于领取腿**（`wait_throttle()` 由调用方 await）：额度腿的节奏
+    是 ops tick + 扇出 `delay_s=1.2`，与这 10s 无关，别把两个旋钮当成一个。
 
     🔴 为什么"每次回读"：写状态的一方可能是**另一个进程**（`mgw zcode claim` 在 CLI 进程里
     命中风控，网关进程必须立刻知道）。为它加 watcher 是过度设计 —— 这是一次

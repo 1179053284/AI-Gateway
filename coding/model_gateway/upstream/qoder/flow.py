@@ -586,8 +586,15 @@ async def quota(product: QoderProduct, cred: dict, meta: dict) -> QuotaSnapshot:
     total = max(0, round(sum(packages.values())))
     detail = "余额 0" if total == 0 else f"{total} credits（{len(packages)} 个包）"
     names = "、".join(f"{name} {value:g}" for name, value in packages.items())
+    # 逐包结构（2026-10-01）：上游只给 remaining（无总额/到期），不编造（qoder-credits.ts:315-336）。
+    items = tuple({"name": name, "unit": "credits", "remaining": value,
+                   "total": None, "used": None, "active": True, "expires_at": ""}
+                  for name, value in packages.items())
+    user_type = usage.get("userType")
     return QuotaSnapshot(state="available" if total > 0 else "exhausted",
-                         source=source, detail=f"{detail}：{names}")
+                         source=source, detail=f"{detail}：{names}",
+                         plan=str(user_type) if isinstance(user_type, str) else "",
+                         items=items)
 
 
 def _usage_packages(usage: dict) -> dict[str, float]:

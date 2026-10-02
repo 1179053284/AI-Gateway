@@ -8,8 +8,8 @@
  * 端点/分组为系统模型级数据字段（创建时由目录带入），页面不提供编辑区（2026-09-05 用户定版去掉「基本属性」板块）。
  * 交互 = 操作即保存（D3）：变更确认后直接 PUT 并以服务端最新配置重渲染。 */
 
-import { GET, PUT, esc } from "../api.js";
-import { confirmDialog, modal, toast } from "../components.js";
+import { GET, PUT, esc, isDerivedResource } from "../api.js";
+import { confirmDialog, modal, toast, initSplitResize } from "../components.js";
 
 let cfg = null;
 let presets = [];
@@ -85,23 +85,19 @@ function cardHTML(c) {
     </div>`;
 }
 
-/* ---------- 页面骨架：左子侧栏厂商卡 + 右撑满配置区 ---------- */
+/* ---------- 页面骨架：左子侧栏厂商卡 + 右撑满配置区（骨架类 .panel-split，v2.19 改类） ---------- */
 function draw(root) {
   const { cards, custom } = vendorCards();
   root.innerHTML = `
     <style>
-      #md-wrap { margin: -12px -12px -48px; height: calc(100vh - 60px); }
       /* 参数配置两列栅格：单元格不继承 .list-row 兄弟分割线（网格中左右线错位），
          行距对齐 12px 节奏；窄屏回退单列 */
       #md-params .list-row + .list-row { border-top: 0; }
       @media (max-width: 1080px) { #md-params { grid-template-columns: minmax(0,1fr) !important; } }
-      @media (max-width: 1280px) { #md-wrap { margin-bottom: -40px; } }
-      @media (max-width: 768px) { #md-wrap { margin: -12px -10px -36px; } }
     </style>
-    <div id="md-wrap" style="display:flex;align-items:stretch;min-height:0">
-      <aside class="subnav" style="height:100%">
+    <div class="panel-split">
+      <aside class="subnav">
         <div class="subnav-scroll">
-          <div class="nav-group-title" style="padding:0;margin-bottom:8px">模型厂商</div>
           ${cards.map(cardHTML).join("") ||
             `<p class="form-hint" style="padding:2px 0">内置目录为空</p>`}
           ${custom.length ? `
@@ -120,7 +116,7 @@ function draw(root) {
             </div>` : ""}
         </div>
       </aside>
-      <main style="flex:1;min-width:0;overflow-y:auto;padding:12px">
+      <main>
         <div id="md-detail"></div>
       </main>
     </div>`;
@@ -129,6 +125,7 @@ function draw(root) {
     b.onclick = () => { selected = b.dataset.sel; draw(root); });
   root.querySelectorAll("[data-add]").forEach((b) =>
     b.onclick = () => addModelModal(root, b.dataset.add));
+  initSplitResize(root, "models");
   drawDetail(root);
 }
 
@@ -266,7 +263,7 @@ function drawDetail(root) {
             <span class="badge ${disabled ? "b-muted" : "b-ok"}" style="flex:none">${disabled ? "已禁用" : "启用"}</span>
           </div>
           <div style="margin-top:4px;font-size:12px;font-weight:600;color:var(--text-faint)">
-            ${esc(EP_TEXT[m.endpoint] || m.endpoint)} · ${esc(m.group || "未分组")} · ${m.resources.length} 个资源（顺序 = 优先级）</div>
+            ${esc(EP_TEXT[m.endpoint] || m.endpoint)} · ${esc(m.group || "未分组")} · ${(m.resources || []).filter((e) => e.enabled !== false).length} 个资源（顺序 = 优先级）</div>
         </div>
       </div>
       <div style="display:flex;flex:none;align-items:center;gap:8px">
@@ -294,7 +291,7 @@ function drawDetail(root) {
           <div style="font-size:12px;font-weight:500;color:var(--text-faint)">顺序 = 优先级：生效集 top-x 承接、失败切换按序补位</div>
         </div>
         <div id="md-pool" style="display:flex;flex-direction:column">${poolRows(m)}</div>
-        <p class="form-hint" style="margin-top:12px">新增 / 调整映射：在「接入模型资源」页编辑对应资源${isChat ? "；行内 effort 为该资源推理默认（请求级指定优先，空 = 不注入）" : ""}。</p>
+        <p class="form-hint" style="margin-top:12px">新增 / 调整映射：供应商侧在「接入模型资源」页编辑对应资源，账号侧在「接入账号资源」页用「模型映射」（产品 × 模型）${isChat ? "；行内 effort 为该资源推理默认（请求级指定优先，空 = 不注入）" : ""}。</p>
       </section>
 
       <!-- 参数配置：工具传参 > 网关设置 > 厂商内置（Q24，仅 chat 注入） -->
@@ -326,39 +323,88 @@ function drawDetail(root) {
 /* ---------- 推理 effort 下拉：官方档位枚举优先，无档位文档的模型用跨厂商通用三档 ---------- */
 const EFFORT_LABEL = { low: "low · 轻量", medium: "medium · 中档", high: "high · 增强", max: "max · 深度" };
 
+/** 池的「配置单元」= 界面上的一行。两类两种维度（2026-10-02 用户裁决收敛）：
+ *  - **供应商侧**：一条映射 = 一行（模型供应商 + Key 维度，维持既有形式）；
+ *  - **账号侧**：同一 `(产品, 上游模型)` 的多条派生映射**聚成一行**（产品 × 模型维度）——
+ *    账号页「模型映射」的落点是"每个已启用账号的物化资源"
+ *    （`api/admin_accounts.py:1355-1358`），所以 CodeBuddy 两个账号 × 同一模型
+ *    在数组里是两条、在界面上是一行「N 个账号」。
+ * 🔴 只与**相邻**同组条目合并：`m.resources[]` 的下标就是调度优先级，
+ *    被别的条目隔开说明这一组在两处各有一个优先级位，合成一行就是在撒谎（也会让"上移"跨位移动）。 */
+function poolUnits(m) {
+  const byId = new Map((cfg.resources || []).map((x) => [x.id, x]));
+  const units = [];
+  (m.resources || []).forEach((r, i) => {
+    const res = byId.get(r.resource);
+    const prod = res ? String(res.product || "").trim() : "";
+    // 映射级开关（账号页模型映射弹窗那一颗）关掉的条目**不进池**，也就不是本表的行；
+    // 但它仍占数组里的一个优先级位 —— 单元下标必须按全量算，交换才不会跨过它搬别人。
+    const off = r.enabled === false;
+    if (!isDerivedResource(res)) { units.push({ kind: "provider", key: "p:" + i, idxs: [i], res, model: r.model, off }); return; }
+    const key = "a:" + prod + ":" + r.model;
+    const last = units[units.length - 1];
+    if (last && last.key === key && last.off === off) { last.idxs.push(i); return; }
+    units.push({ kind: "account", key, idxs: [i], res, model: r.model,
+                 prod, title: res.vendor || prod, off });
+  });
+  return units;
+}
+
 function poolRows(m) {
-  return (m.resources || []).map((r, i) => {
-    const res = (cfg.resources || []).find((x) => x.id === r.resource);
-    const label = res ? (res.name || res.id) : r.resource;
-    const vendor = res
-      ? (res.vendor || (res.preset ? (presets.find((p) => p.id === res.preset)?.name || res.preset) : "自定义"))
-      : "未知";
-    const curEffort = r.reasoning?.effort || "";
+  const all = m.resources || [];
+  const units = poolUnits(m);
+  const live = units.map((u, k) => ({ u, k })).filter(({ u }) => !u.off);
+  const prevLive = new Map(), nextLive = new Map();
+  live.forEach(({ k }, n) => {
+    if (n > 0) prevLive.set(k, live[n - 1].k);
+    if (n < live.length - 1) nextLive.set(k, live[n + 1].k);
+  });
+  return live.map(({ u, k }, n) => {
+    const r = all[u.idxs[0]];
+    const isAcc = u.kind === "account";
+    const label = isAcc ? u.title : ((u.res && (u.res.name || u.res.id)) || r.resource);
+    const badge = isAcc ? `账号供给 ${u.idxs.length}`
+      : (u.res ? (u.res.vendor || (u.res.preset
+          ? (presets.find((p) => p.id === u.res.preset)?.name || u.res.preset) : "自定义")) : "未知");
+    const badgeTitle = isAcc
+      ? `产品 ${u.prod} 的账号体系供给：该产品的 ${u.idxs.length} 个已启用账号各一条映射`
+        + "（增删/停用账号请到「接入账号资源」页的「模型映射」）"
+      : "";
+    // 档位取组内首条；组内不一致时如实标出来（不静默按第一条显示）
+    const efforts = new Set(u.idxs.map((i) => all[i].reasoning?.effort || ""));
+    const curEffort = efforts.size === 1 ? [...efforts][0] : "";
+    const mixed = efforts.size > 1;
     const levels = (e2levels(m) || ["low", "high", "max"]).slice();
     if (curEffort && !levels.includes(curEffort)) levels.push(curEffort);
-    const effTitle = e2levels(m)
+    for (const e of efforts) if (e && !levels.includes(e)) levels.push(e);
+    const effTitle = (e2levels(m)
       ? "该模型官方推理档位（资源级默认；请求级指定优先；空 = 不注入）"
-      : "该模型官方未公布档位枚举——low/high/max 为跨厂商通用值（资源级默认；空 = 不注入）";
+      : "该模型官方未公布档位枚举——low/high/max 为跨厂商通用值（资源级默认；空 = 不注入）")
+      + (isAcc ? "；改一次作用于该组全部账号" : "")
+      + (mixed ? "；⚠ 组内当前档位不一致，改动会统一成所选值" : "");
+    const idxs = u.idxs.join(",");
+    const up = prevLive.get(k), down = nextLive.get(k);
     return `
-      <div class="list-row" style="padding:0;height:46px;gap:10px;${i ? "border-top:1px solid var(--border);" : ""}">
-        <span style="width:20px;text-align:right;color:var(--text-faint);font-variant-numeric:tabular-nums;flex:none">${i + 1}.</span>
+      <div class="list-row" style="padding:0;height:46px;gap:10px;${n ? "border-top:1px solid var(--border);" : ""}">
+        <span style="width:20px;text-align:right;color:var(--text-faint);font-variant-numeric:tabular-nums;flex:none">${n + 1}.</span>
         <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
           <span class="mono" style="font-weight:700">${esc(label)}</span>
-          <span class="badge b-brand">${esc(vendor)}</span>
+          <span class="badge ${isAcc ? "b-gray" : "b-brand"}"${badgeTitle ? ` title="${esc(badgeTitle)}"` : ""}>${esc(badge)}</span>
           <b class="mono">/ ${esc(r.model)}</b>
+          ${mixed ? `<span class="badge b-warn" title="组内档位不一致：${esc([...efforts].join(" / "))}">档位不一</span>` : ""}
         </span>
         ${m.endpoint === "chat" ? `
-        <select class="in mono" data-effort="${i}" title="${esc(effTitle)}" style="width:150px;flex:none">
-          <option value="" ${curEffort ? "" : "selected"}>不注入（厂商默认）</option>
+        <select class="in mono" data-effort="${idxs}" title="${esc(effTitle)}" style="width:150px;flex:none">
+          <option value="" ${curEffort ? "" : "selected"}>${mixed ? "组内不一致（改以统一）" : "不注入（厂商默认）"}</option>
           ${levels.map((lv) => `<option value="${esc(lv)}" ${lv === curEffort ? "selected" : ""}>${esc(EFFORT_LABEL[lv] || lv)}</option>`).join("")}
         </select>` : ""}
         <span style="display:flex;gap:4px;flex:none;margin-right:12px">
-          <button class="btn btn-sm" data-up="${i}" ${i === 0 ? "disabled" : ""} title="上移（提高优先级）">↑</button>
-          <button class="btn btn-sm" data-down="${i}" ${i === m.resources.length - 1 ? "disabled" : ""} title="下移（降低优先级）">↓</button>
-          <button class="icon-btn sm danger" data-rmres="${i}" title="移除该映射">${TRASH}</button>
+          <button class="btn btn-sm" data-up="${k}" data-with="${up === undefined ? "" : up}" ${up === undefined ? "disabled" : ""} title="上移（提高优先级）">↑</button>
+          <button class="btn btn-sm" data-down="${k}" data-with="${down === undefined ? "" : down}" ${down === undefined ? "disabled" : ""} title="下移（降低优先级）">↓</button>
+          <button class="icon-btn sm danger" data-rmres="${idxs}" title="${isAcc ? `移除该组 ${u.idxs.length} 个账号的映射` : "移除该映射"}">${TRASH}</button>
         </span>
       </div>`;
-  }).join("") || `<p class="form-hint" style="padding:2px 0">无资源（调用将无可用资源 503）——到「接入模型资源」页编辑资源添加映射</p>`;
+  }).join("") || `<p class="form-hint" style="padding:2px 0">无资源（调用将无可用资源 503）——供应商侧到「接入模型资源」页添加映射，账号侧到「接入账号资源」页做「模型映射」</p>`;
 }
 
 /** 当前模型目录的官方推理档位（无 = null，用通用三档兜底） */
@@ -391,29 +437,38 @@ function bindDetail(root, m, e) {
   };
   root.querySelectorAll("[data-effort]").forEach((input) =>
     input.addEventListener("change", async () => {
-      const r = m.resources[+input.dataset.effort];
+      const idxs = input.dataset.effort.split(",").map(Number);   // 账号侧一行 = 一组，改一次全组生效
       const effort = input.value.trim();
-      if ((r.reasoning?.effort || "") === effort) return;
-      r.reasoning = effort ? { enabled: true, effort } : null;
-      await persist(root, "推理默认已更新");
+      if (idxs.every((i) => (m.resources[i]?.reasoning?.effort || "") === effort)) return;
+      for (const i of idxs) m.resources[i].reasoning = effort ? { enabled: true, effort } : null;
+      await persist(root, idxs.length > 1 ? `推理默认已更新（该组 ${idxs.length} 个账号）` : "推理默认已更新");
     }));
-  root.querySelectorAll("[data-up]").forEach((b) =>
-    b.onclick = async () => {
-      const i = +b.dataset.up;
-      [m.resources[i - 1], m.resources[i]] = [m.resources[i], m.resources[i - 1]];
-      await persist(root, "优先级已更新");
-    });
-  root.querySelectorAll("[data-down]").forEach((b) =>
-    b.onclick = async () => {
-      const i = +b.dataset.down;
-      [m.resources[i + 1], m.resources[i]] = [m.resources[i], m.resources[i + 1]];
-      await persist(root, "优先级已更新");
-    });
+  /* 优先级 = 数组顺序，而一行可能代表**一组**条目 ⇒ 移动必须按"块"整组搬：
+   * 两个单元在它们共同占据的那段下标里换位置，组内相对顺序不动、组外条目一个字节都不受影响。
+   * （旧实现按相邻下标交换，遇到组/隐藏条目会把用户的"上移"变成"什么都没发生"或静默改到别人头上。） */
+  const swapUnits = async (a, b) => {
+    const u = poolUnits(m);
+    const ua = u[a], ub = u[b];
+    if (!ua || !ub || ua.off || ub.off) return;
+    const arr = m.resources.slice();
+    const span = [...ua.idxs, ...ub.idxs].sort((x, y) => x - y);
+    const moved = [...ub.idxs, ...ua.idxs].map((i) => arr[i]);
+    span.forEach((pos, k) => { arr[pos] = moved[k]; });
+    m.resources = arr;
+    await persist(root, "优先级已更新");
+  };
+  root.querySelectorAll("[data-up]").forEach((btn) =>
+    btn.onclick = () => { const w = +btn.dataset.with; if (w >= 0) swapUnits(+btn.dataset.up, w); });
+  root.querySelectorAll("[data-down]").forEach((btn) =>
+    btn.onclick = () => { const w = +btn.dataset.with; if (w >= 0) swapUnits(+btn.dataset.down, w); });
   root.querySelectorAll("[data-rmres]").forEach((b) =>
     b.onclick = async () => {
-      if (!await confirmDialog("移除映射", `确定从「${m.name}」资源池移除该映射条目？仅断开此映射，不删除资源。`)) return;
-      m.resources.splice(+b.dataset.rmres, 1);
-      await persist(root, "映射已移除");
+      const idxs = b.dataset.rmres.split(",").map(Number);
+      const what = idxs.length > 1 ? `该组 ${idxs.length} 个账号的映射条目` : "该映射条目";
+      if (!await confirmDialog("移除映射",
+        `确定从「${m.name}」资源池移除${what}？仅断开映射，不删除资源。`)) return;
+      m.resources = m.resources.filter((_, i) => !idxs.includes(i));
+      await persist(root, idxs.length > 1 ? `映射已移除（${idxs.length} 条）` : "映射已移除");
     });
 
   /* 参数配置（Q24）：编辑 / 官方默认带入 / 新增键 */

@@ -325,8 +325,12 @@ async def quota(cred, meta) -> QuotaSnapshot:
     raw, reason = protocol.parse_balance(body)
     if raw is None:
         return QuotaSnapshot(state="unknown", source=C.QUOTA_SOURCE, detail=reason)
+    # 无套餐概念，单一余额；单位未取证（constants.BALANCE_SOURCE_NOTE），unit 留空不编造。
     return QuotaSnapshot(state="available" if raw > 0 else "exhausted", source=C.QUOTA_SOURCE,
-                         detail=f"余额 {protocol.num_text(raw)}（{C.BALANCE_SOURCE_NOTE}）")
+                         detail=f"余额 {protocol.num_text(raw)}（{C.BALANCE_SOURCE_NOTE}）",
+                         items=({"name": "余额", "unit": "", "remaining": raw,
+                                 "total": None, "used": None, "active": True,
+                                 "expires_at": ""},))
 
 
 # ==================== 签到 / 领取（本产品无此能力）====================

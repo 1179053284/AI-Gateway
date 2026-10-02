@@ -13,6 +13,14 @@
     ④ 假上游：`httpx.MockTransport` 顶掉全部 `AsyncClient` 传输层 —— 本实例**结构上无法**
        发出真实网络请求（轨迹落 `fake-trace.jsonl` 供核对）。🔴 **不使用任何真实厂商凭据**，
        也不做真实登录/领取（那是 UI/接口层真机，不是凭据测试）。
+       2026-10-02 起假上游多一条 `GET /billing/balance`，按 `X-Device-Mid` 分流两种回体
+       （【台账】§6.1 有数值原件 / §6.2 空 plans 原件 —— 缺后者则「无套餐」这条判据真机零覆盖），
+       并给每条轨迹落 `ts` + `mid` + `kind`，使"哪个号打了几次"是**可核对**的。
+    ⑤ 额度**联网腿**分段（`run_quota_legs`，方案 §6 九格里真机可及的那几格）：主实例跑完后
+       再起**四台**独立实例（各自数据根 + 各自 `MGW_FAKE_TRACE`）——
+       段① 强制腿 + 产品级 + V16 迟到回执 / 段② 门侧**预写** `circuit.json` 的熔断腿（跑完删除）/
+       段③ 反向撤证（同窗口先点「探活」，额度腿判据必须红）/ 段④ `quota_net=false` 的 cron 腿。
+       🔴 窗口纪律：额度腿与探活腿打的是**同一个** `/billing/balance`，分实例 + 分窗口才不被互喂绿。
 
 用法：
     .venv/bin/python scripts/verify_accounts_ui_live.py                  # 全量真机断言 + 截图
@@ -20,6 +28,7 @@
     .venv/bin/python scripts/verify_accounts_ui_live.py --basetemp DIR   # 指定临时根
     .venv/bin/python scripts/verify_accounts_ui_live.py --shots DIR      # 截图目录
     .venv/bin/python scripts/verify_accounts_ui_live.py --retract 1|2|3  # 三项成对撤证
+    .venv/bin/python scripts/verify_accounts_ui_live.py --skip-legs      # 只跑主实例（跳过额度腿）
     .venv/bin/python scripts/verify_accounts_ui_live.py --keep           # 保留临时目录
 
 退出码：0 = 全绿；1 = 有失败；2 = 装配级错误（实例起不来 / 浏览器跑不出读数）。
@@ -31,9 +40,11 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
+import traceback
 import sys
 import threading
 import time
@@ -46,21 +57,55 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 PY = Path(sys.executable)
 BANNED = ["正常", "在服务", "健康", "在线", "已取消"]
-QUOTA_WORDS = ["有余量", "已耗尽", "未知", "尚未刷新"]
+#: 额度列**五档**（2026-10-02 方案 §4-7：「无套餐」= `state=unknown + reason=no_plan` 的**前端映射**，
+#: 不是第四态枚举；「（冷却中）」等附属标注**不在此表**——它们挂在同一档后面，多一档就会打红 D6a）。
+QUOTA_WORDS = ["有余量", "已耗尽", "无套餐", "未知", "尚未刷新"]
 PRODUCT_IDS = ["buddy", "workbuddy", "lobsterai", "qoder", "qodercn",
                "trae", "cline", "loomy", "raccoon", "zcode"]
 CHECKED_AT = "2026-10-01T09:30:00"
 
+#: 界面空态文案的形态表 = `accounts.js:99 KIND_TEXT` 的 Python 镜像。C3 用它把"空态按 login 生成"
+#: 钉成**数据侧期望**，而不是在 JS 里再抄一份同样字面量的文案（那等于前端自证）。
+KIND_TEXT = {"device_code": "设备码授权", "external_link": "外链授权",
+             "local_callback": "本机回跳", "qr": "扫码", "sms_code": "短信验证码"}
+#: 种子用的**假 jwt 前缀**（进 A3c 的凭据外泄词表；值本身是假值，SEED 顶注写了为什么必须带）。
+SEED_JWT_PREFIX = "IX-SEED-JWT"
+
+#: 🔴 假上游 `/billing/balance` 的**分流键** = 请求头 `X-Device-Mid`（`auth.build_headers` 的唯一
+#:    设备头）。单一定义 + 经环境变量同时喂给 FAKEBOOT 与种子，杜绝"门里两处各抄一份、改一处静默分叉"。
+ZCODE_MID_NET = "ix-mid-quota-net"          # → §6.1 有数值原件（plans/balances 各 1）
+ZCODE_MID_NO_PLAN = "ix-mid-no-plan"        # → §6.2 空 plans 原件（no_plan 只能由**这条**产出）
+ZCODE_MID_NULL = "ix-mid-null-remaining"    # → 同 §6.1 体（这一档的「未给出」是**展示档**，由种子
+                                            #    的 `items[].remaining=null` 钉，见 V13；联网侧同格
+                                            #    = 仅单测覆盖，真机门未构造，见报告「仍未覆盖」）
+
+#: 上游时间字段全是**秒级整数 epoch**（【台账】§6.4），种子必须写归一化**之后**的 ISO；
+#: 日期动态算（固定日期会随时间腐坏成"临期/已失效"，那类跳变不是本轮判据的对象）。
+def _iso_ahead(seconds: float) -> str:
+    import datetime as dt
+
+    return (dt.datetime.now() + dt.timedelta(seconds=seconds)).isoformat(timespec="seconds")
+
+
+EXPIRES_ISO = _iso_ahead(86400)             # 明天：active + ISO 形状 ⇒ 「重置于 MM-DD HH:mm」必出
+
 #: 种子表（生产入口 commit_login 落盘；runtime 三形态 absent / dict / corrupt）
 SEED = [
-    {"product": "buddy", "name": "ix-on", "enabled": True, "runtime": "absent"},
-    {"product": "buddy", "name": "ix-off", "enabled": False, "runtime": "absent"},
+    # 登录态失效时刻三形态（2026-10-01 用户裁决）：≤2h（警示 + 自动续期）/ 远期（正常）/ 无字段（未知）
+    {"product": "buddy", "name": "ix-on", "enabled": True, "runtime": "absent",
+     "cred": {"expires_at": str(int((__import__("time").time() + 1800) * 1000))}},
+    {"product": "buddy", "name": "ix-off", "enabled": False, "runtime": "absent",
+     "cred": {"expires_at": str(int((__import__("time").time() + 10 * 86400) * 1000))}},
     {"product": "workbuddy", "name": "ix-only-off", "enabled": False, "runtime": "absent"},
     {"product": "lobsterai", "name": "ix-quota-avail", "enabled": True,
      "device": {"uuid": "ix-uuid-0001"},
      "runtime": {"quota": {"state": "available", "source": "ix-fake",
-                           "detail": "有效包 1 个，本周期剩余 300 credits",
-                           "checked_at": CHECKED_AT}}},
+                           "detail": "有效包 1 个，本周期剩余 300 积分",
+                           "checked_at": CHECKED_AT,
+                           "plan": "LobsterAI 活动包",
+                           "items": [{"name": "LobsterAI 活动包", "unit": "积分",
+                                      "remaining": 300, "total": None, "used": None,
+                                      "active": True, "expires_at": ""}]}}},
     {"product": "qoder", "name": "ix-quota-exhausted", "enabled": True,
      "device": {"machine_id": "ix-mid-qoder"},
      "runtime": {"quota": {"state": "exhausted", "source": "ix-fake",
@@ -71,9 +116,52 @@ SEED = [
      "device": {"machine_id": "ix-mid-trae", "device_id": "ix-did-trae"},
      "runtime": {"quota": {"state": "unknown", "source": "ix-fake",
                            "detail": "上游未给出余额（IX 假值）", "checked_at": CHECKED_AT}}},
-    {"product": "cline", "name": "ix-device", "enabled": True, "runtime": "absent"},
+    {"product": "cline", "name": "ix-device", "enabled": True, "runtime": "absent",
+     "cred": {"expires_at": str(int((__import__("time").time() - 3600) * 1000))}},   # 已过期 1h
     {"product": "loomy", "name": "ix-norefresh", "enabled": True, "runtime": "absent"},
+    # 🔴 2026-10-02 方案 §8.2 的 zcode 三行额度种子。每行**必须**带 `cred.jwt` + `device_mid`：
+    #    `product.quota` 在 `_resolved_credentials`（cred 优先 → meta["device_mid"]）之前就判
+    #    「缺 jwt / 缺设备码 ⇒ reason=no_credentials、**不发起**」⇒ 少任一个联网腿恒 0 请求、
+    #    Δtrace 恒 0，额度腿判据"红得没有道理"（QA r5 X-R4-7 点名的坑）。
+    {"product": "zcode", "name": "ix-quota-net", "enabled": True,
+     "cred": {"jwt": SEED_JWT_PREFIX + "-quotanet-0001"},
+     "device": {"device_mid": ZCODE_MID_NET},
+     "runtime": {"quota": {"state": "available", "source": "zcode-billing",
+                           "detail": "plan=ZCode Trust Build；可用余量 100000000（token 量纲）",
+                           "checked_at": CHECKED_AT, "plan": "ZCode Trust Build",
+                           "items": [{"name": "GLM-5.3-Flash", "unit": "token",
+                                      "remaining": 100000000, "total": 100000000, "used": 0,
+                                      "active": True, "expires_at": EXPIRES_ISO}],
+                           "remaining": 100000000, "reason": "", "data_at": CHECKED_AT,
+                           "plan_key": "upl_2105792494636244992"}}},
+    {"product": "zcode", "name": "ix-no-plan", "enabled": True,
+     "cred": {"jwt": SEED_JWT_PREFIX + "-noplan-0002"},
+     "device": {"device_mid": ZCODE_MID_NO_PLAN},
+     # 「无套餐」= `state=unknown` + `reason=no_plan` + `items=[]`（裁决③：**不动枚举**）。
+     # 两可性原文进 detail（【台账】§5：分不清"确实无套餐"与"该身份无 entitlement"）。
+     "runtime": {"quota": {"state": "unknown", "source": "zcode-billing",
+                           "detail": "上游返回空套餐列表（plans=[] 且 balances=[]）；无法区分"
+                                     "「确实无套餐」与「该身份无 entitlement」",
+                           "checked_at": CHECKED_AT, "plan": "", "items": [],
+                           "remaining": None, "reason": "no_plan", "data_at": CHECKED_AT,
+                           "plan_key": ""}}},
+    {"product": "zcode", "name": "ix-null-remaining", "enabled": True,
+     "cred": {"jwt": SEED_JWT_PREFIX + "-nullrem-0003"},
+     "device": {"device_mid": ZCODE_MID_NULL},
+     # 有桶但 `available` 未给出 ⇒ 整号 `remaining=None` ⇒ `state=unknown`（**绝不**当 0、
+     # 绝不落「已耗尽」；V13 钉的就是这一格）。
+     "runtime": {"quota": {"state": "unknown", "source": "zcode-billing",
+                           "detail": "plan=ZCode Trust Build；可用余量 未给出（token 量纲）",
+                           "checked_at": CHECKED_AT, "plan": "ZCode Trust Build",
+                           "items": [{"name": "GLM-5.3-Flash", "unit": "token",
+                                      "remaining": None, "total": 100000000, "used": None,
+                                      "active": True, "expires_at": EXPIRES_ISO}],
+                           "remaining": None, "reason": "", "data_at": CHECKED_AT,
+                           "plan_key": "upl_2105792494636244992"}}},
 ]
+
+#: 额度联网腿的分段实例只用 zcode 三行（独立数据根 + 独立 `MGW_FAKE_TRACE`，见「窗口纪律」）。
+ZCODE_SEED = [row for row in SEED if row["product"] == "zcode"]
 
 
 # ==================== 小工具 ====================
@@ -165,6 +253,10 @@ CONFIG_TMPL = """gateway:
   zcode:
     claim_interval_seconds: {interval}
     claim_cron: ''
+    # 🔴 显式写死**缺省形态**（方案 §2 裁决②/§6 第 8 格：默认 false = cron 腿不发起，
+    #    只有用户当场点「刷新额度」（via="user"）才联网）。QN1/QN2 两条判据钉的就是这一格，
+    #    靠"读不到键时的 fail-closed 缺省"来绿等于把判据建在隐式行为上。
+    quota_net: false
 scheduling:
   max_active_per_model: 2
   fail_threshold: 2
@@ -195,11 +287,68 @@ def _trace(entry):
         f.write(json.dumps(entry, ensure_ascii=False) + "\\n")
 
 
+#: `/billing/balance` 的分流键（= 种子 `meta.device_mid`，经 `X-Device-Mid` 头带过来）。
+#: 单一来源 = 门侧环境变量，门与假上游不各抄一份。
+MID_NO_PLAN = os.environ.get("MGW_IX_NO_PLAN_MID", "")
+
+
+def _balance_ok(now):
+    """【台账】§6.1 无损原件的**逐字形状**（字段名/量纲/嵌套照抄，只有 epoch 换成"现跑"值——
+    上游时间字段全是秒级整数 epoch（§6.4），绑死历史 epoch 会让判据随日期腐坏）。"""
+    return {"code": 0, "msg": "", "data": {
+        "server_time": now,
+        "plans": [{"user_plan_id": "upl_2105792494636244992",
+                   "plan_id": "zcode-v3-start-plan-trust-1002",
+                   "name": "ZCode Trust Build", "description": "ZCode Global Build",
+                   "priority": 110, "status": "active",
+                   "starts_at": now - 3600, "ends_at": now + 86400,
+                   "entitlements": [{"entitlement_id": "zcode-v3-start-plan-trust-1002",
+                                     "show_name": "GLM-5.3-Flash", "meter": "model_usage",
+                                     "unit_type": "token",
+                                     "capabilities": ["model:glm-5.3-flash"],
+                                     "grant_units": 100000000, "period": "one_time",
+                                     "priority": 110, "effective_at": 0}]}],
+        "balances": [{"bucket_id": "bucket_2105792494661410816",
+                      "user_plan_id": "upl_2105792494636244992",
+                      "plan_id": "zcode-v3-start-plan-trust-1002",
+                      "entitlement_id": "zcode-v3-start-plan-trust-1002",
+                      "show_name": "GLM-5.3-Flash", "meter": "model_usage",
+                      "unit_type": "token", "capabilities": ["model:glm-5.3-flash"],
+                      "priority": 110, "plan_priority": 110, "entitlement_priority": 110,
+                      "total_units": 100000000, "used_units": 0,
+                      "remaining_units": 100000000, "available_units": 100000000,
+                      "period_start": now - 3600, "period_end": now + 86400,
+                      "expires_at": now + 86400}]},
+        "logid": "ix-fake-balance-ok"}
+
+
+def _balance_empty(now):
+    """【台账】§6.2 空 plans 原件（135 字节那条的形状，逐字 `plans=[] balances=[]` + code=0）。
+    🔴 「无套餐」这条判据在真机上**只有这一条产出路径**（后端 no_plan 走整键覆盖 ⇒ items 恒空），
+       删掉它就等于「无套餐」零真机覆盖——反向实验①（将本路由改回 503）钉的就是这件事。"""
+    return {"code": 0, "msg": "", "data": {"server_time": now, "plans": [], "balances": []},
+            "logid": "ix-fake-balance-empty"}
+
+
 def _handler(request):
     url = str(request.url)
-    _trace({"method": request.method, "url": url, "host": request.url.host,
-            "path": request.url.path})
     path = request.url.path
+    mid = request.headers.get("X-Device-Mid") or ""
+    is_balance = request.method == "GET" and path.endswith("/billing/balance")
+    kind = ""
+    if is_balance:
+        kind = "empty-plans" if mid == MID_NO_PLAN else "ok"
+    entry = {"method": request.method, "url": url, "host": request.url.host,
+             "path": path, "ts": _t.time()}
+    if mid:
+        entry["mid"] = mid
+    if kind:
+        entry["kind"] = kind
+    _trace(entry)                                    # 轨迹**先落**，再回响应（断腿不丢计数）
+    if is_balance:
+        now = int(_t.time())
+        body = (_balance_empty if kind == "empty-plans" else _balance_ok)(now)
+        return httpx.Response(200, json=body)
     if path.endswith("/user_management/authorize/device"):
         return httpx.Response(200, json={
             "device_code": "IX-PRIVATE-DEVICE-CODE", "user_code": "GX-012345",
@@ -258,6 +407,7 @@ for row in spec:
     product, name = row["product"], row["name"]
     cred = {"ix_fake_token": "IXFAKE-" + product + "-" + name + "-token",
             "access_token": "IXFAKE-" + product + "-" + name + "-access"}
+    cred.update(row.get("cred") or {})     # 2026-10-01：登录态失效时刻（credexp 判据）按种子注入
     meta = {"enabled": row["enabled"], "nickname": "IX·" + product, "plan": "pro",
             "expires_at": "2026-12-31T10:00:00"}
     meta.update(row.get("device") or {})
@@ -287,6 +437,9 @@ def gateway_env(cfg_path: Path, run_dir: Path, repo: Path) -> dict:
     env["MGW_IX_REPO"] = str(repo)
     env["MGW_FAKE_TRACE"] = str(run_dir / "fake-trace.jsonl")
     env["MGW_OPS_LOCK_DIR"] = str(run_dir / "ops-locks")
+    # 假上游 `/billing/balance` 的分流键（与种子同源的那个常量，见 FAKEBOOT 顶注）：
+    # 只有 `ix-no-plan` 的 mid 走空 plans 体，其余走 §6.1 有数值体。
+    env["MGW_IX_NO_PLAN_MID"] = ZCODE_MID_NO_PLAN
     env.pop("MGW_ZCODE_PROXY", None)
     for pid in PRODUCT_IDS:
         env.pop(f"MGW_{pid.upper()}_ACCOUNTS", None)
@@ -411,12 +564,6 @@ class InjectHandler(BaseHTTPRequestHandler):
                     if p.get("id") == "buddy" and a.get("name") == "ix-on":
                         a["resource"] = None
             raw = json.dumps(data, ensure_ascii=False).encode()
-        if (method == "GET" and mode == "models-unknown" and resp.status == 200
-                and self.path.endswith("/models") and "json" in ctype):
-            raw = json.dumps({"product": "loomy", "account": "ix-norefresh", "source": "remote",
-                              "state": "unknown", "models": [],
-                              "reason": "IX 注入：上游目录端点不可用（ConnectError）"},
-                             ensure_ascii=False).encode()
         self.send_response(resp.status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(raw)))
@@ -461,7 +608,26 @@ const ck = (id, desc, ok, measured) => {
 };
 const j = (v) => JSON.stringify(v);
 const task = await taskSpace("M7-UI 账号接入页真机验收");
-const page = task.page("p1");
+/* 🔴 页标签按"进程 + 分段"唯一：并行跑动时会话之间会抢同一个 taskSpace 的同一标签
+   （实测被抢后本段后续判据全报 `page label not found: p1`，且上一段留在标签页里的弹窗
+   会串进本段读数 —— 遮罩数、行内钮全都不可信）。唯一标签 = 各跑各的页，红就红在自己的因上。 */
+/* 🔴 取页姿势要**两种 API 都能跑**（2026-10-02 实测）：
+   - 旧：`task.page(label)` 直接按标签建页；
+   - 新（本机 ego lite 现版本）：`task.page(label)` 只**查**已有页 —— 返回的是懒代理，
+     第一次真正使用才抛 `Error: page label not found: <label>`，而建页只有 `task.newPage()`。
+   不兜底的症状 = **每一个浏览器分段都以 FATAL 收场**（读数全空、下游判据"红得没道理"），
+   看起来像页面坏了，其实是取页姿势失效 ⇒ 先按标签试（保留并行会话的标签隔离），
+   试不通（或拿不到可执行页）就 `newPage()`，两版都能跑完。 */
+const page = await (async () => {
+  const label = PAYLOAD.pageLabel || "p1";
+  try {
+    const p = task.page(label);
+    await p.evaluate(() => 1);                     // 真用一次才知道这个标签到底存不存在
+    return p;
+  } catch (e) {
+    return await task.newPage();                   // 每次调用自带独立页 ⇒ 同样不与别的会话抢标签
+  }
+})();
 
 async function section(name, fn) {
   try { await fn(); } catch (e) {
@@ -574,27 +740,28 @@ const READ = () => {
   const rows = q("#ac-table tbody tr[data-acc]").map((tr) => {
     const td = q("td", tr);
     const sw = tr.querySelector("[role=switch]");
-    const cell = td[3] ? td[3].firstElementChild : null;
+    const qcell = td[2] || null;
+    const cell = qcell ? qcell.firstElementChild : null;
     return {
       name: tr.dataset.acc, cls: tr.className,
-      account: txt(td[1]), state: txt(td[2]),
-      stateTitle: td[2] && td[2].lastElementChild ? td[2].lastElementChild.getAttribute("title") : "",
-      quota: txt(td[3]), quotaColor: cell ? cs(cell).color : "",
-      quotaSub: td[3] ? txt(td[3].querySelector("span + span")) : null,
+      account: txt(td[0]), state: txt(td[1]),
+      sub: (() => { const ds = q("div", td[0]); return ds.length > 1 ? txt(ds[1]) : ""; })(),
+      quota: txt(td[2]), quotaColor: cell ? cs(cell).color : "",
+      quotaSub: td[2] ? txt(td[2].querySelector(".qchk")) : null,
+      quotaTip: (cell && cell.getAttribute && cell.getAttribute("title")) || "",
+      // 🔴 2026-10-02 用户指令：逐包明细不再只住 tooltip（不可选不可复制 + 被截断到 12 行），
+      //    改为**本格内就地展开块** `.qpacks-detail` ⇒ 判据的读取点随之搬家（理由写进 D4b/V13）。
+      quotaPacks: (() => { const d = td[2] && td[2].querySelector(".qpacks-detail");
+        return d ? txt(d) : ""; })(),
+      packsBtn: (() => { const b = td[2] && td[2].querySelector("[data-qpacks]");
+        return b ? txt(b) : ""; })(),
       ops: q("[data-op]", tr).map((b) => b.dataset.op),
-      expCls: td[0] ? td[0].className : "",
-      chev: td[0] && td[0].querySelector("svg path") ? td[0].querySelector("svg path").getAttribute("d") : "",
       swAria: sw ? { role: sw.getAttribute("role"), checked: sw.getAttribute("aria-checked"),
         label: sw.getAttribute("aria-label"), on: sw.classList.contains("on"),
         h: Math.round(sw.getBoundingClientRect().height * 10) / 10 } : null,
       h: Math.round(tr.getBoundingClientRect().height * 10) / 10,
     };
   });
-  const details = q("#ac-table tbody tr[data-rexp]").map((tr) => ({
-    name: tr.dataset.rexp,
-    bits: q(".req-detail > span", tr).filter((s) => !s.classList.contains("sep")).map(txt),
-    ops: q("[data-op]", tr).map((b) => b.dataset.op),
-  }));
   const panel = document.querySelector("#ac-panel");
   let resident = "";
   if (panel) {
@@ -644,7 +811,7 @@ const READ = () => {
     groupCards: q(".group-card").length,
     modeBtns: q(".mode-btn").length,
     filterSwitch: q("#ac-only").length,
-    navTitle: txt(document.querySelector(".subnav .nav-group-title")),
+    navTitles: q(".subnav .nav-group-title").map(txt),
     subnav: subnav ? Object.assign({ w: cs(subnav).width, bg: cs(subnav).backgroundColor,
       fd: cs(subnav).flexDirection, borderRight: cs(subnav).borderRightWidth,
       borderBottom: cs(subnav).borderBottomWidth }, box(subnav)) : null,
@@ -666,10 +833,42 @@ const READ = () => {
     sideAddText: txt(document.querySelector(".side-add")),
     addBtnsAnywhere: q("button").filter((b) => (b.textContent || "").indexOf("接入账号") >= 0).length,
     ths: q("#ac-table th").map((t) => ({ cls: t.className, text: txt(t) })),
-    rows, details, resident,
+    rows, resident,
+    expCells: q("#ac-table [data-exp]").length + q("#ac-table tr[data-rexp]").length,
+    modalMopRows: q(".modal [data-mop]").map((b) => b.dataset.acc + ":" + b.dataset.mop),
+    modalMopTexts: q(".modal [data-mop]").map(txt),
+    modalMaskCount: document.querySelectorAll(".modal-mask").length,
+    modalW: (() => { const m = document.querySelector(".modal");
+      return m ? Math.round(m.getBoundingClientRect().width) : null; })(),
+    mapRows: (() => { const card = document.querySelector(".modal .list-card");
+      return card ? Array.from(card.querySelectorAll(".list-row")).slice(1).map((r2) => {
+        const name = r2.querySelector("b");
+        const sub = r2.querySelector("span span");
+        const sel = r2.querySelector("select[data-idx]");
+        return { name: name ? txt(name) : "", sub: sub ? txt(sub) : "",
+                 hasSel: !!sel, selV: sel ? sel.value : null };
+      }) : []; })(),
     alertErr: q("#ac-panel .alert-err").length,
     alertErrText: txt(document.querySelector("#ac-panel .alert-err")),
     retry: q("#ac-retry").length,
+    // 🔴 批量回执**就地槽**（2026-10-02 方案 §5-5：单层弹窗红线的构造化落点；文本存模块级、
+    //    paintPanel 末尾回填）。V16 的三段判据要的是"槽在不在、说了什么、点得到点不到"。
+    bulkReceipt: (() => {
+      const b = document.querySelector("#ac-panel .bulk-receipt");
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      const cx = Math.round(r.x + r.width / 2), cy = Math.round(r.y + r.height / 2);
+      const hit = document.elementFromPoint(cx, cy);
+      return {
+        hidden: !!b.hidden, text: txt(b),
+        w: Math.round(r.width * 10) / 10, h: Math.round(r.height * 10) / 10,
+        center: [cx, cy], inModal: !!(b.closest && b.closest(".modal")),
+        hitTag: hit ? hit.tagName : "∅",
+        hitCls: hit ? String(hit.className || "") : "",
+        hitInReceipt: !!(hit && (hit === b || b.contains(hit))),
+        masks: document.querySelectorAll(".modal-mask").length,
+      };
+    })(),
     pageStyles: q("#content style").length,
     modalCount: (document.getElementById("modal-root") || { children: [] }).children.length,
     modalProbe: (() => { const m = document.querySelector("#modal-root .modal-mask"); return m ? (m.dataset.ixm || null) : null; })(),
@@ -714,11 +913,6 @@ async function setTheme(mode) {
 }
 const act = (x) => ((x.rail || []).find((y) => y.active) || {}).pid;
 const rowOf = (x, name) => (x.rows || []).find((r2) => r2.name === name) || {};
-const bitOf = (x, name, head) => {
-  const d = (x.details || []).find((v) => v.name === name) || { bits: [] };
-  return (d.bits || []).find((b) => b.indexOf(head) === 0) || "";
-};
-
 async function mainMode() {
 if (MODE === "rail") {
   /* 撤证①：族容器塞回 rail 后，真浏览器侧 rail 判据必须变红 */
@@ -747,6 +941,178 @@ if (MODE === "rail") {
   ck("RT5", "撤证②：额度格文本（断 BD8 → 恒「尚未刷新」；恢复 → 必须移动）",
      true, E.quotaProduct + "/" + E.quotaAccount + " 额度格=「" + row.quota + "」");
   await shot(PAYLOAD.shotName || "retract2-quota");
+} else if (MODE === "quota-leg") {
+  /* 🔴 额度**联网腿**分段（2026-10-02 方案 §8.2「窗口纪律」）。
+     本段跑在**独立实例**上：自己的数据根 + 自己的 `MGW_FAKE_TRACE`（假上游把每条
+     `GET /billing/balance` 落轨迹，带 ts 与 `X-Device-Mid`）。窗口边界时间戳由页面给出
+     （与轨迹同一台机器的墙钟），Python 侧按窗口切轨迹算 Δtrace，再与**回执**对表。
+     为什么非切不可：额度腿与探活腿打的是**同一个** `/billing/balance`，
+     混在一个窗口里就是"被探活喂绿"。 */
+  const leg = E.leg || {};
+  const variant = String(leg.variant || "clean");
+  const pid = String(leg.product || "zcode");
+  const acct = String(leg.account || "ix-quota-net");
+  const onePath = "/admin/api/accounts/" + pid + "/" + acct + "/quota";
+  const allPath = "/admin/api/accounts/" + pid + "/quota-all";
+  const probePath = "/admin/api/accounts/" + pid + "/" + acct + "/probe";
+  const windows = [];
+  const SETTLE = 700;                       // 窗口两端的余量（轨迹 ts 落在窗口内即可归属）
+  await setViewport(1440, 900);
+  await page.goto(PAYLOAD.url + "#/accounts?p=" + pid);
+  await page.waitForSelector("#ac-table tbody tr[data-acc]", { timeout: 25000 });
+  await page.waitForTimeout(400);
+  await instrument();
+  const has = (k) => page.evaluate((key) => !!(window.__ix && window.__ix.byPath
+                                      && window.__ix.byPath[key]), k);
+  const waitResp = async (k, ms) => {
+    const dl = Date.now() + (ms || 45000);
+    while (Date.now() < dl) { if (await has(k)) return true; await page.waitForTimeout(150); }
+    return false;
+  };
+  // 就地槽的"新鲜度"探针：点击前给当旧槽打 `ixw3` 标记，面板重绘（回执到达后）会重建该节点 ⇒
+  // 「标记消失 + 非 hidden + 含"刷新"」= 这批回执**真的送达并重绘过**，不是上一批的残影。
+  const markSlot = () => page.evaluate(() => {
+    const s = document.querySelector("#ac-panel .bulk-receipt");
+    if (s) { s.hidden = true; s.dataset.ixw3 = "1"; }
+    return !!s;
+  });
+  const waitReceipt = async (ms) => {
+    const dl = Date.now() + ms;
+    while (Date.now() < dl) {
+      const ready = await page.evaluate(() => {
+        const s = document.querySelector("#ac-panel .bulk-receipt");
+        return !!s && !s.hidden && !s.dataset.ixw3 && (s.textContent || "").indexOf("刷新") >= 0;
+      });
+      if (ready) return true;
+      await page.waitForTimeout(150);
+    }
+    return false;
+  };
+  const snap = async (name, t0) => {
+    await page.waitForTimeout(SETTLE);
+    const rr = await read();
+    windows.push({ name, t0, t1: await page.evaluate(() => Date.now()) });
+    return rr;
+  };
+
+  if (variant === "circuit") {
+    /* 熔断腿：门侧**预写** circuit.json（与账号根同级，`quota.py::circuit_path()` 同一口径）
+       ⇒ 钩子在"发起前判定"就拒跑：Δtrace 必须恒 0、reason=circuit、合并写保住旧数值面。 */
+    const t0 = await page.evaluate(() => Date.now());
+    await click("tr[data-acc='" + acct + "'] [data-op='quota']");
+    const arrived = await waitResp(onePath, 45000);
+    const rr = await snap("circuit", t0);
+    ck("QC0", "熔断腿：账号级「刷新额度」端点有响应（熔断是**拒跑**，不是把请求挂死）",
+       arrived, "响应到位=" + arrived);
+    ck("QC-UI", "熔断腿界面：数值**不被洗掉**且挂附属标注「（冷却中）」（合并写的可见后果，五档不新增）",
+       (rowOf(rr, acct).quota || "").indexOf("（冷却中）") >= 0
+       && /\d/.test(rowOf(rr, acct).quota || ""),
+       "额度格=「" + (rowOf(rr, acct).quota || "") + "」 toasts=" + j(rr.toasts));
+    extra.leg = { variant, windows, bodies: await page.evaluate((keys) => {
+      const o = {}; keys.forEach((k) => { o[k] = window.__ix.byPath[k] || null; }); return o;
+    }, [onePath]), rows: (rr.rows || []).map((x) => ({ name: x.name, quota: x.quota, sub: x.quotaSub })) };
+    await shot(PAYLOAD.shotName || "quota-leg-circuit");
+  } else if (variant === "probe-window") {
+    /* 🔴 反向撤证：同一窗口内先点「探活」（同一个 `/billing/balance`），再点「刷新额度」。
+       额度腿判据（Δtrace == 回执 N）在这种窗口里**必须红**——不写这条就等于"被探活喂绿"。 */
+    const t0 = await page.evaluate(() => Date.now());
+    await click("tr[data-acc='" + acct + "'] [data-op='probe']");
+    const p1 = await waitResp(probePath, 45000);
+    await page.waitForTimeout(SETTLE);
+    await click("tr[data-acc='" + acct + "'] [data-op='quota']");
+    const p2 = await waitResp(onePath, 45000);
+    const rr = await snap("probe-then-quota", t0);
+    ck("QR0", "撤证窗口装配：探活与额度两次响应都到位（红要红得起来，先得确认动作发生了）",
+       p1 && p2, "probe=" + p1 + " quota=" + p2);
+    extra.leg = { variant, windows, bodies: await page.evaluate((keys) => {
+      const o = {}; keys.forEach((k) => { o[k] = window.__ix.byPath[k] || null; }); return o;
+    }, [probePath, onePath]), rows: (rr.rows || []).map((x) => ({ name: x.name, quota: x.quota })) };
+    await shot(PAYLOAD.shotName || "quota-leg-probe-window");
+  } else {
+    /* 干净窗口三段：W1 账号级强制腿 → W2 产品级（扇出 delay_s=1.2）→ W3 迟到回执 V16。 */
+    const t0 = await page.evaluate(() => Date.now());
+    await click("tr[data-acc='" + acct + "'] [data-op='quota']");
+    const a1 = await waitResp(onePath, 45000);
+    const r1 = await snap("account-quota", t0);
+    ck("QL0a", "强制腿装配：账号级「刷新额度」= 1 击 + 1 次端点响应（回执 N 的来源必须是这一次）",
+       a1 && nOf(await reqs(), onePath) === 1,
+       "响应到位=" + a1 + " POST 计数=" + nOf(await reqs(), onePath));
+    const t2 = await page.evaluate(() => Date.now());
+    await click("#ac-quota");
+    const a2 = await waitResp(allPath, 60000);
+    const r2 = await snap("quota-all", t2);
+    // 🔴 `byPath` 每个 path 只留**最后一次**响应 ⇒ W2 的回执必须当场取走，不能事后从
+    //    `bodies[allPath]` 读（那已经是 W3 的那一次了，Δtrace 与回执就不是同一批的账）。
+    const rcpt2 = await page.evaluate((k) => window.__ix.byPath[k] || null, allPath);
+    ck("QL0b", "产品级装配：卡头「刷新额度」= 1 击 + 1 次 quota-all 响应",
+       a2 && nOf(await reqs(), allPath) === 1,
+       "响应到位=" + a2 + " POST 计数=" + nOf(await reqs(), allPath));
+    await shot("quota-leg-after-all");
+
+    /* 🔴 V16 必须从**零遮罩**起步：W2 的回执在无遮罩时会开一层弹窗（既有出口，E12 同判据），
+       不关掉它，后面"遮罩恒 1"就变成"遮罩恒 2"——量的不是嵌套，是上一段没收尾。 */
+    const masksW2 = await page.evaluate(() => document.querySelectorAll(".modal-mask").length);
+    ck("QL0c", "产品级回执在无遮罩时开**单层**弹窗（遮罩数 === 1；这是 V16 的起点，不是终点）",
+       masksW2 === 1, "W2 之后遮罩数=" + masksW2);
+    await click(".modal-foot .btn");            // 关掉这一层回执弹窗
+    await page.waitForTimeout(400);
+
+    /* V16（迟到回执三段判据，静态门没有遮罩机制 ⇒ 只在真机门跑得成）：
+       ① 批量动作在飞期间打开「模型映射」弹窗 → 回执到达后 `.modal-mask` 计数**恒为 1**；
+       ② `.bulk-receipt` 含三段计数原文；
+       ③ **关掉弹窗后** `elementFromPoint(回执矩形中心)` 命中 `.bulk-receipt` 之内
+          （既没被遮罩挡、也没被整块重绘吃掉）。 */
+    await click("#ac-map");
+    await page.waitForSelector(".modal .list-card", { timeout: 25000 });
+    const slotMarked = await markSlot();
+    const t4 = await page.evaluate(() => Date.now());
+    await click("#ac-quota");
+    const arrived = await waitReceipt(60000);
+    const masks = await page.evaluate(() => document.querySelectorAll(".modal-mask").length);
+    ck("V16a", "🔴 单层弹窗红线：批量额度在飞期间开着映射弹窗，回执到达后 .modal-mask 恒为 1"
+       + "（就地槽是唯一出口，**不开第二层**）",
+       slotMarked && arrived && masks === 1,
+       "槽打标=" + slotMarked + " 回执送达=" + arrived + " 遮罩数=" + masks);
+    const r3a = await read();
+    const rcpt3 = await page.evaluate((k) => window.__ix.byPath[k] || null, allPath);
+    const rec = r3a.bulkReceipt || {};
+    ck("V16b", "就地回执含三段计数**原文**（刷新 N · 失败 K · 未发起 J），且此刻就在映射弹窗之外",
+       /刷新 \d+ 个 · 失败 \d+ 个 · 未发起 \d+ 个/.test(rec.text || "") && rec.inModal === false,
+       "回执=「" + (rec.text || "").slice(0, 160) + "」 inModal=" + rec.inModal);
+    await click(".modal-foot .btn");                 // 取消映射弹窗（不落库）
+    await page.waitForTimeout(500);
+    const hitAfter = await page.evaluate(() => {
+      const s = document.querySelector("#ac-panel .bulk-receipt");
+      if (!s) return { ok: false, why: "槽不存在" };
+      const r = s.getBoundingClientRect();
+      if (r.height < 4) return { ok: false, why: "槽不可见 h=" + Math.round(r.height) };
+      s.scrollIntoView({ block: "center" });
+      const r2 = s.getBoundingClientRect();
+      const cx = Math.round(r2.x + r2.width / 2), cy = Math.round(r2.y + r2.height / 2);
+      const el = document.elementFromPoint(cx, cy);
+      return { ok: !!el && (el === s || s.contains(el)),
+               center: [cx, cy], tag: el ? el.tagName : "∅",
+               cls: el ? String(el.className || "") : "", inReceipt: !!el && s.contains(el) };
+    });
+    const r3b = await read();
+    ck("V16c", "🔴 关掉弹窗后 elementFromPoint(回执中心) 命中 .bulk-receipt 之内"
+       + "（没被遮罩挡、也没被整块重绘吃掉；文本仍在模块级由 paintPanel 回填）",
+       hitAfter.ok === true && /刷新 \d+ 个/.test((r3b.bulkReceipt || {}).text || ""),
+       "中心=" + j(hitAfter.center) + " 命中=" + hitAfter.tag + "." + hitAfter.cls
+       + " 槽文本=「" + ((r3b.bulkReceipt || {}).text || "").slice(0, 120) + "」");
+    ck("V16d", "映射弹窗取消归零（V16 全程零残留，弹窗数回到 0）",
+       (r3b.modalCount === 0) && (r3b.bulkReceipt || {}).hidden === false,
+       "modal-root=" + r3b.modalCount + " 槽 hidden=" + (r3b.bulkReceipt || {}).hidden);
+    const w3 = { name: "v16-quota-all", t0: t4, t1: await page.evaluate(() => Date.now()) };
+    windows.push(w3);
+    extra.leg = { variant, windows, receiptW2: rcpt2, receiptW3: rcpt3, bodies: await page.evaluate((keys) => {
+      const o = {}; keys.forEach((k) => { o[k] = window.__ix.byPath[k] || null; }); return o;
+    }, [onePath, allPath]),
+      rows: (r1.rows || []).map((x) => ({ name: x.name, quota: x.quota, sub: x.quotaSub })),
+      rowsAfter: (r2.rows || []).map((x) => ({ name: x.name, quota: x.quota, sub: x.quotaSub })),
+      receiptText: (r2.bulkReceipt || {}).text || "" };
+    await shot(PAYLOAD.shotName || "quota-leg-receipt-inline");
+  }
 } else {
 
 /* ==================== 全量真机断言 ==================== */
@@ -785,7 +1151,7 @@ await section("rail", async () => {
      dot("qodercn") === r.tokens.warnRgb, "实测=" + dot("qodercn") + " 令牌=" + r.tokens.warn);
   ck("B4c", "四态点·灰（dot-off）：workbuddy（有账号但零启用）== var(--dot-off)",
      dot("workbuddy") === r.tokens.dotOffRgb, "实测=" + dot("workbuddy") + " 令牌=" + r.tokens.dotOff);
-  ck("B4d", "四态点·无：raccoon / zcode 的 dots 数 === 0",
+  ck("B4d", "四态点·无：0 账号产品（按实际计数，2026-10-02 起只剩 raccoon）的 dots 数 === 0",
      E.zeroAccountProducts.every((p) => (((r.rail.find((x) => x.pid === p) || {}).dots) || []).length === 0),
      E.zeroAccountProducts.map((p) => p + "=" + (((r.rail.find((x) => x.pid === p) || {}).dots) || []).length).join(" "));
   ck("B4e", "四态互不相同（绿/橙/灰 三色各异，杜绝「三态同形」）",
@@ -807,31 +1173,34 @@ await section("rail", async () => {
   ck("B8", "roving tabindex：active 行 tabindex=0，其余 9 行 = -1",
      r.rail.filter((x) => x.tab === "0").length === 1 && r.rail.filter((x) => x.tab === "-1").length === 9,
      "tab0=" + r.rail.filter((x) => x.tab === "0").map((x) => x.pid).join(",") + " tab-1 数=" + r.rail.filter((x) => x.tab === "-1").length);
-  ck("B13", "「只看有账号」派生开关在 2 个空产品（<5）时不渲染（§1.3 触发态）",
-     r.filterSwitch === 0, "#ac-only=" + r.filterSwitch + " 空产品数=" + E.zeroAccountProducts.length);
-  ck("B14", "子侧栏小标题「接入产品」在位（不受 J1 门保护，靠 §2 设计裁决）",
-     r.navTitle === "接入产品", "实测=「" + r.navTitle + "」");
+  ck("B13", "「只看有账号」派生开关在空产品数 <5 时不渲染（§1.3 触发态；判据按**实际计数**，不写死个数）",
+     r.filterSwitch === 0 && E.zeroAccountProducts.length < 5,
+     "#ac-only=" + r.filterSwitch + " 空产品数=" + E.zeroAccountProducts.length
+     + "（阈值 5，railScope 同源）");
+  ck("B14", "子侧栏顶部零分组总标题（2026-10-02 用户指示删「产品列表」，与「模型厂商」同口径；"
+     + "页标题已自明，无障碍名保留在 #ac-rail 的 aria-label）",
+     r.navTitles.length === 0, "rail 内 .nav-group-title=" + j(r.navTitles));
 });
 
 await section("panel", async () => {
   // 2026-09-30 改口径：用户判定「选定产品后还要到左下方操作」动线不合理 → 入口定版在卡头（与所作用产品同框）
-  ck("C1", "卡头 = 产品名 + 计数 + **唯一入口按钮**（#ac-add，2026-09-30 定版）",
-     r.head.buttons === 1 && r.headAdd === 1 && r.head.title === "CodeBuddy" && r.head.values.length === 1,
+  // Q30 起卡头 = 模型映射 + 一键领取（checkin 门控）+ 批量续期（refresh 门控）+ 接入账号 → buddy 恒 4 钮
+  // 2026-10-02 方案 §5-6：卡头新增第 5 颗「刷新额度」（balance 能力位门控，产品级）→ buddy 恒 **5** 钮
+  ck("C1", "卡头 = 产品名 + 计数 + 操作组（模型映射/一键领取/刷新额度/批量续期/接入账号，入口 #ac-add 唯一）",
+     r.head.buttons === 5 && r.headAdd === 1 && r.head.title === "CodeBuddy" && r.head.values.length === 1,
      "card-head 按钮=" + r.head.buttons + " #ac-add=" + r.headAdd + " title=「" + r.head.title + "」 values=" + j(r.head.values));
   ck("C2", "全页接入入口恰好 1 处，且就在卡头（rail 底 .side-add 已移除）",
      r.headAdd === 1 && r.addBtnsAnywhere === 1 && r.sideAdd === 0,
      "#ac-add=" + r.headAdd + "；文本含「接入账号」的 button=" + r.addBtnsAnywhere + " .side-add=" + r.sideAdd);
-  ck("C4", "表头逐字 =（.exp 空格列）账号 / 状态 / 额度 / 操作",
-     j(r.ths.map((t) => t.text)) === j(["", "账号", "状态", "额度", "操作"]) && r.ths[0].cls === "exp",
+  ck("C4", "表头逐字 = 账号 / 状态 / 额度 / 操作（4 列，无展开指示列）",
+     j(r.ths.map((t) => t.text)) === j(["账号", "状态", "额度", "操作"]),
      "实测=" + j(r.ths.map((t) => (t.cls ? "." + t.cls : "·") + (t.text || "∅"))));
   ck("C3b", "buddy 面板两行按数据渲染（ix-off / ix-on）",
      j(r.rows.map((x) => x.name)) === j(["ix-off", "ix-on"]), "行=" + r.rows.map((x) => x.name).join(","));
-  ck("C11", "状态列文字实测：已停用 / 已启用（+ 后文「状态未知」档）",
-     rowOf(r, "ix-off").state === "已停用" && rowOf(r, "ix-on").state === "已启用",
+  ck("C11", "状态列零文字：只放开关，不再有「已启用/已停用」状态字（2026-10-01 用户指示）",
+     rowOf(r, "ix-off").state === "" && rowOf(r, "ix-on").state === ""
+     && !!rowOf(r, "ix-on").swAria,
      "ix-off=「" + rowOf(r, "ix-off").state + "」 ix-on=「" + rowOf(r, "ix-on").state + "」");
-  ck("C11b", "状态文字 title 如实（启用位不含凭据有效性结论）",
-     (rowOf(r, "ix-on").stateTitle || "").indexOf("不含凭据有效性事实") >= 0,
-     "「" + (rowOf(r, "ix-on").stateTitle || "").slice(0, 90) + "」");
   ck("C12", "开关 aria 三件套齐（role=switch / aria-checked / aria-label）",
      !!rowOf(r, "ix-on").swAria && rowOf(r, "ix-on").swAria.role === "switch"
      && rowOf(r, "ix-on").swAria.checked === "true"
@@ -875,59 +1244,308 @@ await section("pointer", async () => {
 await section("quota", async () => {
   ck("D3", "无 runtime.json 的账号 → 额度格「尚未刷新」（BUG-2 的可见态）",
      rowOf(r, "ix-on").quota === "尚未刷新", "buddy/ix-on 额度格=「" + rowOf(r, "ix-on").quota + "」");
-  ck("D6", "额度格文本 ⊂ 四值口径（全表扫描零越界）",
-     r.rows.every((x) => QUOTA_LIST.some((w) => x.quota === w || (x.quota || "").indexOf(w) === 0)),
-     "本表=" + j(r.rows.map((x) => x.quota)) + " 词表=" + QUOTA_LIST.join("/"));
+  /* 🔴 D6 拆两半（2026-10-02 方案 §8.2）：旧 D6 的"文案必须以词表词开头"与**结构化行**互斥
+     —— 结构化行（有 items）开头是套餐徽章名（如「ZCode Trust Build 1.00M Token …」），
+     加了 zcode 种子后按原写法必误红。
+     · D6a = 无 items 的行：词表逐字/前缀判据（五档）+ 状态→文案映射；
+     · D6b = 有 items 的行：只要求含「查于」，**不要求前缀相等**（前缀判据由 D6a 承担）。 */
+  const pid = act(r);
+  const plain = r.rows.filter((x) => !(E.quotaItems || {})[pid + "/" + x.name]);
+  const structured = r.rows.filter((x) => !!((E.quotaItems || {})[pid + "/" + x.name]));
+  ck("D6a", "额度格文本 ⊂ 五档词表（**无 items 的行**，全表扫描零越界）",
+     plain.every((x) => QUOTA_LIST.some((w) => x.quota === w || (x.quota || "").indexOf(w) === 0)),
+     "本表=" + j(plain.map((x) => x.quota)) + " 词表=" + QUOTA_LIST.join("/"));
+  ck("D6b", "结构化行（有 items）只钉「查于」在位，**不要求前缀相等**（词表让位给套餐名 + 数值）",
+     structured.every((x) => (x.quota || "").indexOf("查于") >= 0),
+     "结构化行=" + j(structured.map((x) => x.name + "=「" + x.quota + "」")) + "（本表 " + structured.length + " 行）");
   ck("D7", "未知不当零：额度格无 0 / — / undefined / NaN",
      r.rows.every((x) => ["0", "—", "undefined", "NaN"].indexOf(x.quota) < 0),
      "实测=" + j(r.rows.map((x) => x.quota)));
 });
 
-await section("expand", async () => {
-  const before = r.details.length;
-  await click("td[data-exp='ix-on']");
-  await page.waitForSelector("tr[data-rexp='ix-on']", { timeout: 10000 });
-  await page.waitForTimeout(250);
+await section("expand-removed", async () => {
   const r2 = await read();
-  ck("C5", ".exp 展开：详情行 0 → 1（首列 class=exp，不用 .icon-btn 承担展开）",
-     before === 0 && r2.details.length === 1 && r2.rows.find((x) => x.name === "ix-on").expCls === "exp",
-     "details " + before + "→" + r2.details.length + " 首列 class=「" + r2.rows.find((x) => x.name === "ix-on").expCls + "」");
-  ck("C5b", "chevron 图标随状态切换（right → down）",
-     r2.rows.find((x) => x.name === "ix-on").chev !== r.rows.find((x) => x.name === "ix-on").chev
-     && (r2.rows.find((x) => x.name === "ix-on").chev || "").indexOf("6 9 6 6 6-6") >= 0,
-     "展开前 d=「" + r.rows.find((x) => x.name === "ix-on").chev + "」→ 展开后「" + r2.rows.find((x) => x.name === "ix-on").chev + "」");
-  const need = ["协议：", "出站基址：", "模型目录来源", "能力位"];
-  const d = (r2.details.find((x) => x.name === "ix-on") || { bits: [], ops: [] });
-  const hit = need.filter((w) => (d.bits || []).some((b) => b.indexOf(w) >= 0));
-  ck("C6", "展开行含 协议 / 出站基址 / 目录来源 / 能力位（无设备身份产品 4/4）",
-     hit.length === 4, "命中 " + hit.length + "/4；bits=" + (d.bits || []).length + " 条");
-  ck("C6a", "无设备身份产品（buddy）**不渲染**设备行（不写「无 / 0」占位）",
-     (d.bits || []).every((b) => b.indexOf("设备身份字段") < 0),
-     "bits=" + j((d.bits || []).map((b) => b.slice(0, 12))));
-  ck("C6b", "展开行的 base_url 与注册表逐字相同（真值来自后端，不是前端猜的）",
-     bitOf(r2, "ix-on", "出站基址：") === "出站基址：https://copilot.tencent.com",
-     "实测=「" + bitOf(r2, "ix-on", "出站基址：") + "」");
-  ck("C6c", "能力位行逐字含五项口径",
-     /^能力位：签到 支持 · 续期 支持 · 余额 支持 · 永久积分锁 支持 · 新手任务 不支持$/.test(bitOf(r2, "ix-on", "能力位")),
-     "实测=「" + bitOf(r2, "ix-on", "能力位") + "」");
-  const resLine = bitOf(r2, "ix-on", "已物化");
-  ck("C7", "BD3a：非空 resource → 「已物化 N 个资源 · 启用 M」",
-     /^已物化 1 个资源 · 启用 1：res-/.test(resLine), "实测=「" + resLine.slice(0, 90) + "」");
-  ck("C7b", "行内 rid 与后端 resource[0].id 逐字相同",
-     resLine.indexOf(E.resourceIds["buddy/ix-on"]) >= 0,
-     "后端 rid=" + E.resourceIds["buddy/ix-on"] + "；行内尾=" + resLine.slice(-22));
-  ck("C7c", "网关额度池另立一行（与厂商余额快照分列，不混进额度列）",
-     bitOf(r2, "ix-on", "网关额度池").indexOf("网关额度池") === 0,
-     "实测=「" + bitOf(r2, "ix-on", "网关额度池").slice(0, 80) + "」（池摘要 state=" + E.poolStates["buddy/ix-on"] + "）");
-  await shot("1440-light-expanded");
-  await click("td[data-exp='ix-on']");
+  ck("C5", "展开行已废除：[data-exp] 与 tr[data-rexp] 全页为 0（2026-10-01 用户指示）",
+     r2.expCells === 0, "data-exp + data-rexp 计数=" + r2.expCells);
+  ck("B15", "rail 首行 dataset.ixrow 探针仍在（三级重绘只到行级，结构未整页重洗）",
+     r2.railBox.probe === "1" && r2.railBox.rowProbe === "1",
+     "容器探针=" + r2.railBox.probe + " 首行探针=" + r2.railBox.rowProbe);
+  await shot("1440-light-rows");
+});
+
+await section("map-modal", async () => {
+  /* 🔴 2026-10-01 用户裁决（两条定版叠加）：
+     ① 弹窗内禁止再开第二层弹窗（模型目录二级弹窗已废，目录字段融合进映射行）；
+     ② **续期是账号维度动作 → 回到列表行操作列**，映射弹窗内不放任何账号级动作。 */
+  await click("#ac-map");
+  await page.waitForSelector(".modal .list-card", { timeout: 15000 });
   await page.waitForTimeout(300);
-  const r3 = await read();
-  ck("C5c", "再点一次收起：详情行 1 → 0（原地 patch，不整页重洗）",
-     r3.details.length === 0 && r3.rail.length === 10, "details=" + r3.details.length + " rail=" + r3.rail.length);
-  ck("B15", "展开/收起**不重建 rail 行**：首行 dataset.ixrow 探针仍在（三级重绘只到行级）",
-     r3.railBox.probe === "1" && r3.railBox.rowProbe === "1",
-     "容器探针=" + r3.railBox.probe + " 首行探针=" + r3.railBox.rowProbe);
+  const rm = await read();
+  ck("C6", "映射弹窗内零账号级动作：[data-mop] 计数 = 0（续期/刷新额度都只在行内，弹窗不承载账号操作）",
+     rm.modalMopRows.length === 0, "弹窗内账号级动作=" + j(rm.modalMopRows));
+  ck("C6b", "映射弹窗为宽版 800px（§7.11 wide）且全程单层弹窗（mask 计数 == 1）",
+     rm.modalW === 800 && rm.modalMaskCount === 1,
+     "modal 宽=" + rm.modalW + "px 遮罩数=" + rm.modalMaskCount);
+  await shot("1440-light-map-modal");
+  await click(".modal-foot .btn");          // 取消
+  await page.waitForTimeout(300);
+  const closed = await read();
+  ck("C7b", "映射弹窗取消后 modal-root 归零（未落库）",
+     closed.modalCount === 0, "modal-root 子节点=" + closed.modalCount);
+});
+
+await section("model-check", async () => {
+  /* 账号维度「模型检测」（2026-10-02 用户指令）：范围 = 该账号**已开启**的模型映射；
+     三态 = 检测中（灰/橘闪）/ 可用（蓝）/ 不可用（红 + 原因原文）；🔴 单层弹窗。
+     本门实例 `models: []` ⇒ 真配置下没有任何已开启映射 ⇒ 先验"空范围零请求"（不谎报、不偷发），
+     再用 fetch 打桩喂两条结果验三态与计数（与 import-conflict 段同一打桩手法）。 */
+  await click(".anchor-item[data-pid='buddy']");
+  await page.waitForTimeout(400);
+  await page.evaluate(() => {
+    /* 🔴 门在 :662 装了**自己的** fetch 钩子做请求计数（E1/E2/E11/E12 全靠它）。
+       本段打桩必须把上一手存下来并在段末还原——直接覆盖会让后续分段数不到任何请求
+       （实测连带打红 12 条：E1「启停请求=[]」、E2「响应体=undefined」…）。 */
+    if (!window.__mcPrevFetch) window.__mcPrevFetch = window.fetch;
+    const of = window.__mcPrevFetch;
+    window.__mcCalls = [];
+    window.__mcStub = null;                 // null = 不打桩（走真后端）；否则按桩表回答
+    window.fetch = async (u, o) => {
+      const path = String(u).split("?")[0];
+      if (path.endsWith("/check-models")) {
+        window.__mcCalls.push("list");
+        if (window.__mcStub) return { ok: true, status: 200, json: async () => window.__mcStub };
+      }
+      if (path === "/admin/api/resources/test" && o && o.method === "POST") {
+        const b = JSON.parse(o.body || "{}");
+        window.__mcCalls.push("test:" + b.model);
+        if (window.__mcStub) {
+          const hit = (window.__mcStub.tests || {})[b.model];
+          if (hit) return { ok: true, status: 200,
+            json: async () => Object.assign({ model: b.model }, hit) };
+        }
+      }
+      return of(u, o);
+    };
+  });
+  await click("tr[data-acc='ix-on'] [data-op='check']");
+  await page.waitForSelector(".modal #ac-mc-list, .modal .alert-warn", { timeout: 20000 });
+  await page.waitForTimeout(400);
+  const empty = await page.evaluate(() => ({
+    text: (document.querySelector(".modal") || {}).textContent?.replace(/\s+/g, " ").trim() || "",
+    tests: (window.__mcCalls || []).filter((x) => x.indexOf("test:") === 0).length,
+    masks: document.querySelectorAll(".modal-mask").length }));
+  ck("MC1", "无已开启映射 ⇒ 弹窗如实说「不会发出任何请求」，且真发请求数 = 0（不偷烧额度）",
+     /没有任何/.test(empty.text) && /不会发出任何请求/.test(empty.text) && empty.tests === 0,
+     "tests 调用数=" + empty.tests + " 文案=「" + empty.text.slice(0, 90) + "」");
+  await click(".modal-foot .btn");
+  await page.waitForTimeout(300);
+
+  // 打桩：两条已开启映射，一条可用一条不可用
+  await page.evaluate(() => {
+    window.__mcCalls = [];
+    window.__mcStub = {
+      product: "buddy", name: "ix-on", resource_enabled: true, has_adapter: true, mapped_off: 1,
+      models: [{ vendor_model: "vm-ok", system_model: "sys-ok", resource_id: "res-x" },
+               { vendor_model: "vm-bad", system_model: "sys-bad", resource_id: "res-x" }],
+      tests: { "vm-ok": { ok: true, latency_ms: 123 },
+               "vm-bad": { ok: false, latency_ms: 45, error: "HTTP 401：凭据已失效，请重新登录" } },
+    };
+  });
+  await click("tr[data-acc='ix-on'] [data-op='check']");
+  await page.waitForSelector(".modal .mc-row.mc-fail", { timeout: 20000 });
+  await page.waitForTimeout(400);
+  const st = await page.evaluate(() => {
+    const rows = [...document.querySelectorAll(".modal .mc-row")];
+    const cs = (n) => getComputedStyle(n.querySelector(".mc-ico"));
+    return {
+      n: rows.length,
+      okCls: rows.map((r) => r.className.match(/mc-(run|ok|fail)/)?.[1] || ""),
+      okColor: rows.map((r) => cs(r).color),
+      tok: (() => { const mk = (t) => { const el = document.createElement("span");
+        el.style.color = "var(" + t + ")"; document.body.append(el);
+        const v = getComputedStyle(el).color; el.remove(); return v; };
+        return { cool: mk("--cool"), err: mk("--err"), faint: mk("--text-faint"), warn: mk("--warn") }; })(),
+      txt: rows.map((r) => r.querySelector(".mc-result").textContent.trim()),
+      anim: rows.map((r) => cs(r).animationName),
+      masks: document.querySelectorAll(".modal-mask").length,
+      sum: (document.querySelector(".mc-summary") || {}).textContent?.trim() || "",
+      head: (document.querySelector(".modal .modal-body") || document.body).textContent
+        .replace(/\s+/g, " ").match(/消耗该账号额度/) ? "有" : "无",
+      off: (document.querySelector(".modal") || {}).textContent?.indexOf("不在本次检测范围内") >= 0,
+    };
+  });
+  ck("MC2", "三态各如其分：可用=蓝(--cool) + 「可用 · 123ms」；不可用=红 + 原因原文；无残留「检测中」",
+     st.n === 2 && j(st.okCls) === j(["ok", "fail"])
+     && /可用 · 123ms/.test(st.txt[0]) && /HTTP 401/.test(st.txt[1])
+     && st.okColor[0] === st.tok.cool && st.okColor[1] === st.tok.err,
+     "态=" + j(st.okCls) + " 色=" + j(st.okColor) + "（令牌 cool=" + st.tok.cool
+     + " err=" + st.tok.err + "）文本=" + j(st.txt));
+  ck("MC3", "🔴 单层弹窗（遮罩数 = 1），且弹窗内零账号级动作（不放续期/额度/删除）",
+     st.masks === 1, "modal-mask=" + st.masks);
+  ck("MC4", "汇总计数如实（可用 1 · 不可用 1），并写明关闭态映射不在范围内",
+     /可用 1 · 不可用 1/.test(st.sum) && st.off === true, "汇总=「" + st.sum + "」 范围说明=" + st.off);
+  ck("MC5", "弹窗头部先声明「真实出站，会消耗该账号额度」（不偷偷花用户的量）",
+     st.head === "有", "消耗额度声明=" + st.head);
+  await shot("1440-light-model-check");
+  /* 收尾：先无条件还原 fetch 钩子（哪怕下面关窗抛错也不能留给后续分段一个假计数），
+     再关弹窗——关窗选择器放宽：`.modal-close`（图标钮）优先，`.modal-foot .btn` 兜底。 */
+  await page.evaluate(() => {
+    if (window.__mcPrevFetch) { window.fetch = window.__mcPrevFetch; window.__mcPrevFetch = null; }
+    window.__mcStub = null; window.__mcCalls = [];
+  });
+  const stillOpen = await page.evaluate(() => document.querySelectorAll(".modal").length);
+  if (stillOpen) {
+    await page.evaluate(() => {
+      const b = document.querySelector(".modal .modal-close")
+        || document.querySelector(".modal-foot .btn");
+      if (b) b.click();
+    });
+    await page.waitForTimeout(400);
+  }
+  const restored = await page.evaluate(() => ({
+    masks: document.querySelectorAll(".modal-mask").length,
+    hooked: !window.__mcPrevFetch }));
+  ck("MC6", "段末自清理：弹窗归零 + **fetch 钩子已还原**（不污染后续分段的请求计数）",
+     restored.masks === 0 && restored.hooked === true,
+     "遮罩=" + restored.masks + " 残留打桩=" + (!restored.hooked));
+});
+
+await section("renew", async () => {
+  /* 续期回行内 + 登录态倒计时（2026-10-01 用户裁决三条之两条的界面面）。
+     种子：ix-on = 30 分钟后失效（≤2h 警示）、ix-off = 10 天后失效（正常）、
+     cline/ix-device = 无失效字段（未知）。 */
+  const r0 = await read();
+  ck("C6c", "行内操作列 = 签到/续期/刷新额度/探活/模型检测/删除（全中文文字钮，无图标按钮）"
+     + "（2026-10-02 方案 §5-6 加 quota；同日用户指令再加 check=账号维度模型检测）",
+     r0.rows.every((x) => j(x.ops) === j(["claim", "refresh", "quota", "probe", "check", "delete"])),
+     "buddy ops=" + j(r0.rows.map((x) => x.ops)));
+  ck("C7", "停用账号（ix-off）的续期钮同样在位（续期与启用位正交，§22.6）",
+     rowOf(r0, "ix-off").cls.indexOf("off") >= 0
+     && rowOf(r0, "ix-off").ops.indexOf("refresh") >= 0,
+     "ix-off class=「" + rowOf(r0, "ix-off").cls + "」 ops=" + j(rowOf(r0, "ix-off").ops));
+  const on = rowOf(r0, "ix-on"), off = rowOf(r0, "ix-off");
+  ck("C16", "登录态倒计时三态各如其分：≤2h 出警示 +「将自动续期」/ 远期为普通文本 / 种子无字段的产品说「未知」",
+     on.sub.indexOf("登录态") >= 0 && on.sub.indexOf("将自动续期") >= 0
+     && off.sub.indexOf("登录态") >= 0 && off.sub.indexOf("将自动续期") < 0,
+     "ix-on 副行=「" + on.sub + "」｜ix-off 副行=「" + off.sub + "」");
+  await click(".anchor-item[data-pid='qoder']");
+  await page.waitForTimeout(300);
+  const rq2 = await read();
+  ck("C16b", "可续期但拿不到失效时刻 → 如实写「登录态失效时间未知」（不判定、不猜、不制造倒计时）",
+     (rq2.rows[0].sub || "").indexOf("登录态失效时间未知") >= 0,
+     "qoder 行副行=「" + (rq2.rows[0].sub || "") + "」");
+  await click(".anchor-item[data-pid='cline']");
+  await page.waitForTimeout(300);
+  const rc = await read();
+  ck("C16c", "行内按钮按能力位分化（cline refresh=✓ 有续期钮；loomy refresh=✗ 无，见 E9）",
+     rc.rows.every((x) => x.ops.indexOf("refresh") >= 0),
+     "cline/ix-device ops=" + j(rc.rows[0].ops));
+  ck("C16d", "登录态**已过期**（:8300 实测 raccoon 两号形态）→ 直说「已过期，需重新登录」，"
+     + "不谎称「将自动续期」（终态账号自动续期腿已记 terminal、不再空转）",
+     (rc.rows[0].sub || "").indexOf("登录态已过期") >= 0
+     && (rc.rows[0].sub || "").indexOf("需重新登录") >= 0
+     && (rc.rows[0].sub || "").indexOf("将自动续期") < 0,
+     "cline/ix-device 副行=「" + (rc.rows[0].sub || "") + "」");
+  await click(".anchor-item[data-pid='buddy']");
+  await page.waitForTimeout(300);
+
+  /* 通道级判据（假上游环境）：点击确实打到 refresh / refresh-due 端点各恰好一次 */
+  const reqB = (await reqs()).length;
+  await click("tr[data-acc='ix-on'] [data-op='refresh']");
+  await page.waitForTimeout(1200);
+  const reqA = (await reqs()).slice(reqB);
+  const hits = reqA.filter((x) => x === "POST /admin/api/accounts/buddy/ix-on/refresh");
+  ck("E11", "行内「续期」= 1 击 + 1 请求（POST …/ix-on/refresh 恰好一次；结果由回执说真话）",
+     hits.length === 1, "新增请求=" + j(reqA.slice(0, 6)) + "；refresh 命中=" + hits.length);
+  const reqB2 = (await reqs()).length;
+  await click("#ac-renew");
+  await page.waitForSelector(".modal", { timeout: 15000 });
+  await page.waitForTimeout(400);
+  const reqA2 = (await reqs()).slice(reqB2);
+  const due = reqA2.filter((x) => x === "POST /admin/api/accounts/buddy/refresh-due");
+  const rr = await read();
+  ck("E12", "卡头「批量续期」= 1 击 + 1 请求（POST …/refresh-due），回执走**单层**弹窗（mask==1）",
+     due.length === 1 && rr.modalMaskCount === 1 && rr.modalCount === 1,
+     "refresh-due 命中=" + due.length + " 遮罩=" + rr.modalMaskCount + " modal-root=" + rr.modalCount);
+  ck("E12b", "批量续期回执如实报窗口与计数（续期/失败两类必报，跳过分类按需追加）",
+     (rr.wizardText || "").indexOf("窗口 5 小时内到期的账号") >= 0
+     && /续期 \d+ 个 · 失败 \d+ 个/.test(rr.wizardText || ""),
+     "回执=「" + (rr.wizardText || "").slice(0, 140) + "」");
+  await shot("1440-light-renew-result");
+  await click(".modal-foot .btn");
+  await page.waitForTimeout(300);
+  const rz = await read();
+  ck("E12c", "回执弹窗关闭后 modal-root 归零（不留残层）",
+     rz.modalCount === 0, "modal-root 子节点=" + rz.modalCount);
+});
+
+await section("import-conflict", async () => {
+  /* 🔴 2026-10-01 红线审计新增覆盖：导入弹窗遇 409 设备身份冲突——
+     ① 必须**单层**（就地渲染决策，绝不再开第二层弹窗）；
+     ② 必须**真的触发**（后端 409 附加字段嵌在 `error` 里，此前前端读 `e.data.conflict`
+        恒 undefined → 整条决策路径是死的，靠本段打桩才暴露）。
+     打桩只截 POST /admin/api/zcode/import，其余请求放行；两次都回 409 → 零落库。 */
+  await page.evaluate(() => {
+    const of = window.fetch;
+    window.__impCalls = [];
+    window.fetch = async (u, o) => {
+      const path = String(u).split("?")[0];
+      if (path === "/admin/api/zcode/import" && o && o.method === "POST") {
+        const b = JSON.parse(o.body || "{}");
+        window.__impCalls.push({ source: b.source || "", reuse: b.reuse || null, regen: !!b.regenerate });
+        return { ok: false, status: 409, json: async () => ({ error: {
+          message: "设备身份冲突（判据桩）", conflict: true, account: "ix-conflict-acct",
+          conflict_with: "ix-existing", hint: "桩：同一设备身份已在册" } }) };
+      }
+      return of(u, o);
+    };
+  });
+  await click(".anchor-item[data-pid='zcode']");
+  await page.waitForTimeout(400);
+  await click("#ac-zimport");
+  await page.waitForSelector("#ac-zimp-json", { timeout: 20000 });
+  await page.waitForTimeout(300);
+  await page.evaluate(() => {
+    document.getElementById("ac-zimp-json").value = JSON.stringify({ token: "ix", device_id: "ix" });
+    document.querySelector('[data-z="paste"]').click();
+  });
+  await page.waitForTimeout(1000);
+  const ic = await page.evaluate(() => ({
+    masks: document.querySelectorAll(".modal-mask").length,
+    titles: Array.from(document.querySelectorAll(".modal-head h3")).map((h) => h.textContent.trim()),
+    inline: !!document.querySelector("#ac-zimp-err [data-zcf='reuse']"),
+    body: (document.querySelector("#ac-zimp-err .alert-warn") || {}).textContent || "",
+    btns: Array.from(document.querySelectorAll("#ac-zimp-err button[data-zcf]")).map((b) => b.textContent.trim()),
+  }));
+  ck("IC1", "🔴 409 后仍单层弹窗（遮罩恒 1）且决策就地渲染在导入弹窗错误槽内",
+    ic.masks === 1 && ic.inline && ic.titles.length === 1,
+    "遮罩=" + ic.masks + " 标题=" + j(ic.titles) + " 就地块=" + ic.inline);
+  ck("IC2", "409 形状契约：附加字段嵌在 error 里（读得到 account / conflict_with，路径非死）",
+    ic.body.indexOf("ix-conflict-acct") >= 0 && ic.body.indexOf("ix-existing") >= 0,
+    "就地块含双方账号名=" + (ic.body.indexOf("ix-existing") >= 0));
+  ck("IC3", "三钮齐备且序 = 取消 / 重新生成 / 复用其身份（绝不自动选）",
+    j(ic.btns) === j(["取消", "重新生成", "复用其身份"]), "按钮=" + j(ic.btns));
+  await page.evaluate(() => document.querySelector("#ac-zimp-err [data-zcf='reuse']").click());
+  await page.waitForTimeout(900);
+  const ic2 = await page.evaluate(() => ({
+    calls: window.__impCalls.slice(),
+    masks: document.querySelectorAll(".modal-mask").length,
+  }));
+  ck("IC4", "「复用其身份」= 带 reuse=<既有账号名> 二次提交（仍单层、不静默覆盖）",
+    ic2.calls.length === 2 && ic2.calls[1].reuse === "ix-existing" && ic2.masks === 1,
+    "二次请求=" + j(ic2.calls[1]) + " 遮罩=" + ic2.masks);
+  await page.evaluate(() => {
+    const c = document.querySelector("#ac-zimp-err [data-zcf='cancel']");
+    if (c) c.click();
+    const f = document.querySelector(".modal-foot .btn");
+    if (f) f.click();
+  });
+  await page.waitForTimeout(500);
+  const ic3 = await page.evaluate(() => ({ masks: document.querySelectorAll(".modal-mask").length,
+    inline: !!document.querySelector("#ac-zimp-err [data-zcf='reuse']") }));
+  ck("IC5", "取消收起就地块、关窗归零；全程两次请求都是 409 → **零落库**",
+    ic3.masks === 0 && !ic3.inline, "遮罩=" + ic3.masks + " 残留就地块=" + ic3.inline);
+  await page.evaluate(() => { window.fetch = window.fetch; });
 });
 
 await section("quota-per-product", async () => {
@@ -940,55 +1558,110 @@ await section("quota-per-product", async () => {
      && E.poolStates["qoder/ix-quota-exhausted"] === "unknown",
      "额度=「" + rowOf(rq, "ix-quota-exhausted").quota + "」 color=" + rowOf(rq, "ix-quota-exhausted").quotaColor
      + " warn=" + rq.tokens.warn + "；a.quota.state=" + E.poolStates["qoder/ix-quota-exhausted"]);
-  await click("td[data-exp='ix-quota-exhausted']");
-  await page.waitForSelector("tr[data-rexp='ix-quota-exhausted']", { timeout: 10000 });
   const rq2 = await read();
-  ck("C8", "resource:[]（**真后端**：摘掉物化资源 + 热重载）→「网关资源：无」，绝不写 0",
-     bitOf(rq2, "ix-quota-exhausted", "网关资源").indexOf("网关资源：无") === 0,
-     "后端 resource=" + j(E.emptyResource) + "；实测=「" + bitOf(rq2, "ix-quota-exhausted", "网关资源").slice(0, 70) + "」");
-  await click("td[data-exp='ix-quota-exhausted']");
+  ck("C8", "展开行废除后 resource 三态不再常驻上屏（BD3a 语义仍在接口层，界面不编造）",
+     rq2.expCells === 0 && (rq2.resident || "").indexOf("网关资源") < 0,
+     "expCells=" + rq2.expCells + "；常驻面「网关资源」indexOf=" + (rq2.resident || "").indexOf("网关资源"));
   await page.waitForTimeout(200);
 
   await click(".anchor-item[data-pid='lobsterai']");
   await page.waitForTimeout(300);
   const rl = await read();
-  ck("D1", "四值之「有余量」：runtime.json 快照（BUG-1 修复面，真文件真值）",
-     (rowOf(rl, "ix-quota-avail").quota || "").indexOf("有余量") === 0
+  ck("D1", "结构化套餐余粮：额度格 = 套餐徽章 + 数字 + 量纲 + 查于（runtime.json 真文件真值）",
+     (rowOf(rl, "ix-quota-avail").quota || "").indexOf("LobsterAI 活动包") >= 0
+     && /[0-9]/.test(rowOf(rl, "ix-quota-avail").quota || "")
+     && (rowOf(rl, "ix-quota-avail").quota || "").indexOf("积分") >= 0
+     && (rowOf(rl, "ix-quota-avail").quota || "").indexOf("查于") >= 0
      && E.poolStates["lobsterai/ix-quota-avail"] === "unknown",
      "额度=「" + rowOf(rl, "ix-quota-avail").quota + "」；池摘要=" + E.poolStates["lobsterai/ix-quota-avail"]);
   ck("D4", "「查于 …」附属 = checked_at 前 16 字符（原样投影，不重算时区）",
      rowOf(rl, "ix-quota-avail").quotaSub === "查于 " + E.checkedAtText,
      "实测=「" + rowOf(rl, "ix-quota-avail").quotaSub + "」 期望=「查于 " + E.checkedAtText + "」（源 " + E.checkedAt + "）");
+  ck("D4b", "逐包明细住**本格内就地展开块**（2026-10-02 用户指令推进：旧判据「只许写在本格 title 上」作废——"
+     + "tooltip 不可选不可复制且被截断到 12 行）：展开块含包名与余量，入口写真实条数，常驻面不刷屏",
+     (rowOf(rl, "ix-quota-avail").quotaPacks || "").indexOf("LobsterAI 活动包") >= 0
+     && (rowOf(rl, "ix-quota-avail").quotaPacks || "").indexOf("300") >= 0
+     && /展开 \d+ 个包/.test(rowOf(rl, "ix-quota-avail").packsBtn || "")
+     && (rowOf(rl, "ix-quota-avail").quota || "").indexOf("下面这些行") < 0,
+     "展开块=「" + (rowOf(rl, "ix-quota-avail").quotaPacks || "").slice(0, 80)
+     + "」 入口=「" + (rowOf(rl, "ix-quota-avail").packsBtn || "") + "」");
   await click(".anchor-item[data-pid='qodercn']");
   await page.waitForTimeout(300);
   const rc = await read();
-  ck("C11d", "qodercn/ix-corrupt：状态=「状态未知」且 runtime_ok=false 蕴含 status=unknown",
-     rowOf(rc, "ix-corrupt").state === "状态未知" && E.statuses["qodercn/ix-corrupt"] === "unknown",
-     "状态=「" + rowOf(rc, "ix-corrupt").state + "」 后端 status=" + E.statuses["qodercn/ix-corrupt"]);
-  await click("td[data-exp='ix-corrupt']");
-  await page.waitForSelector("tr[data-rexp='ix-corrupt']", { timeout: 10000 });
-  const rc2 = await read();
-  ck("C11e", "读不动原文进展开行（§5：中性色、不吞异常）",
-     bitOf(rc2, "ix-corrupt", "运行态读取").indexOf("运行态读取") === 0,
-     "实测=「" + bitOf(rc2, "ix-corrupt", "运行态读取").slice(0, 110) + "」");
-  await click("td[data-exp='ix-corrupt']");
+  ck("C11d", "qodercn/ix-corrupt：状态列零文字（switch-only）且 runtime_ok=false 蕴含 status=unknown（数据层）",
+     rowOf(rc, "ix-corrupt").state === "" && E.statuses["qodercn/ix-corrupt"] === "unknown",
+     "状态文字=「" + rowOf(rc, "ix-corrupt").state + "」 后端 status=" + E.statuses["qodercn/ix-corrupt"]);
   await click(".anchor-item[data-pid='trae']");
   await page.waitForTimeout(300);
   const rt = await read();
   ck("D1c", "四值之「未知」：runtime.quota.state=unknown（查了但拿不到 ≠ 还没查）",
      rowOf(rt, "ix-unknown-quota").quota === "未知",
      "trae/ix-unknown-quota 额度格=「" + rowOf(rt, "ix-unknown-quota").quota + "」");
-  await click("td[data-exp='ix-unknown-quota']");
-  await page.waitForSelector("tr[data-rexp='ix-unknown-quota']", { timeout: 15000 });
-  const rt2 = await read();
-  ck("C6d", "有设备身份产品（trae：machine_id + device_id）→ 展开行给设备字段与本账号登记态",
-     bitOf(rt2, "ix-unknown-quota", "设备身份字段").indexOf("设备身份字段：machine_id + device_id") === 0
-     && bitOf(rt2, "ix-unknown-quota", "设备身份字段").indexOf("本账号：machine_id=已登记 + device_id=已登记") >= 0,
-     "实测=「" + bitOf(rt2, "ix-unknown-quota", "设备身份字段") + "」");
-  ck("C6e", "目录出口接线位如实（models_wired=true → 「目录出口已接线」）",
-     bitOf(rt2, "ix-unknown-quota", "模型目录来源").indexOf("目录出口已接线") >= 0,
-     "实测=「" + bitOf(rt2, "ix-unknown-quota", "模型目录来源") + "」");
-  await click("td[data-exp='ix-unknown-quota']");
+  await click(".anchor-item[data-pid='buddy']");
+  await page.waitForTimeout(300);
+});
+
+await section("quota-sweep", async () => {
+  /* 🔴 2026-10-02 方案 §8.2 的额度面全站扫描（逐产品、逐行）。四组判据：
+     · V11 = `balance` 能力位**同相护栏**（行内有「刷新额度」钮 ⟺ capabilities.balance=true）；
+       今天 10/10 全 true ⇒ 这条**只作护栏**，false 形态未构造（台账如实标"未验证：balance=false 档"）。
+     · D6a/D6b = 五档词表（无 items 行）/ 「查于」在位（有 items 行）——与 quota 段同源，扩到全站。
+     · V13/V14/V15/V17 = 「未给出 ≠ 已耗尽」/「无套餐」映射/「重置于」/额度格可见面零裸 epoch。 */
+  const swept = [];
+  for (const pid of E.sweepProducts) {
+    await click(".anchor-item[data-pid='" + pid + "']");
+    await page.waitForTimeout(320);
+    const rs = await read();
+    for (const row of rs.rows) {
+      swept.push({ pid, name: row.name, quota: row.quota, tip: row.quotaTip || "",
+                   ops: row.ops, sub: row.quotaSub || "",
+                   hasItems: !!(E.quotaItems || {})[pid + "/" + row.name],
+                   balance: !!(E.caps[pid] || {}).balance });
+    }
+    if (pid === "zcode") {
+      const np = rowOf(rs, "ix-no-plan"), nr = rowOf(rs, "ix-null-remaining");
+      const qn = rowOf(rs, "ix-quota-net");
+      ck("V14", "「无套餐」= `state=unknown` + `reason=no_plan` 的**前端映射**（裁决③：不扩枚举）"
+         + "——可见文本以「无套餐」开头，tooltip 带两可性原文",
+         (np.quota || "").indexOf("无套餐") === 0 && E.quotaReasons["zcode/ix-no-plan"] === "no_plan"
+         && (np.quota || "").indexOf("已耗尽") < 0 && (np.quotaTip || "").indexOf("entitlement") >= 0,
+         "额度格=「" + (np.quota || "") + "」 state=" + j(E.quotaStates["zcode/ix-no-plan"])
+         + " reason=" + j(E.quotaReasons["zcode/ix-no-plan"]) + "｜tooltip=「" + (np.quotaTip || "") + "」");
+      ck("V13", "「未给出 ≠ 已耗尽」：items 有桶但 remaining=null ⇒ 整号未知，"
+         + "可见面不出「已耗尽」，且**就地展开块**如实写「上游未给可用数」"
+         + "（2026-10-02：核对点从 tooltip 搬到展开块，同一件事不换判据只换读取位置）",
+         (nr.quota || "").indexOf("已耗尽") < 0 && E.quotaRemaining["zcode/ix-null-remaining"] === null
+         && (nr.quotaPacks || "").indexOf("上游未给可用数") >= 0,
+         "额度格=「" + (nr.quota || "") + "」 展开块=「" + (nr.quotaPacks || "").slice(0, 90) + "」"
+         + "｜runtime.remaining=" + j(E.quotaRemaining["zcode/ix-null-remaining"]));
+      ck("V15", "active 且 `expires_at` 为 ISO 形状 ⇒ **必出**「重置于 MM-DD HH:mm」"
+         + "（钩子归一化的界面侧后果；额度腿的真机版由 QL6 再钉一次）",
+         (qn.quota || "").indexOf("重置于") >= 0
+         && /重置于 \d{2}-\d{2} \d{2}:\d{2}/.test(qn.quota || "")
+         && (qn.quota || "").indexOf(E.expiresShort) >= 0,
+         "额度格=「" + (qn.quota || "") + "」 期望含「重置于 " + E.expiresShort + "」"
+         + "｜runtime.expires_at=" + j(E.quotaExpires["zcode/ix-quota-net"]));
+    }
+  }
+  ck("V11", "balance 能力位同相护栏：行内有/无「刷新额度」钮 ⟺ capabilities.balance（全产品逐行）",
+     swept.length > 0 && swept.every((x) => (x.ops.indexOf("quota") >= 0) === x.balance),
+     "扫描行=" + swept.length + "；越界行=" + j(swept.filter((x) => (x.ops.indexOf("quota") >= 0) !== x.balance)
+       .map((x) => x.pid + "/" + x.name)) + "（今天 10/10 全 true ⇒ balance=false 档**未构造**，仅护栏）");
+  ck("D6a", "五档词表全站扫描（无 items 的行，逐字或前缀）",
+     swept.filter((x) => !x.hasItems).every((row) => QUOTA_LIST.some((w) => row.quota === w
+       || (row.quota || "").indexOf(w) === 0)),
+     "无 items 行=" + swept.filter((x) => !x.hasItems).length + "；越界="
+     + j(swept.filter((x) => !x.hasItems && !QUOTA_LIST.some((w) => x.quota === w
+        || (x.quota || "").indexOf(w) === 0)).map((x) => x.pid + "/" + x.name + "=「" + x.quota + "」")));
+  ck("D6b", "结构化行（有 items）全站只钉「查于」，**不要求前缀相等**（旧 D6 与结构化互斥的那一处）",
+     swept.filter((x) => x.hasItems).every((row) => (row.quota || "").indexOf("查于") >= 0),
+     "结构化行=" + swept.filter((x) => x.hasItems).length
+     + "；缺查于=" + j(swept.filter((x) => x.hasItems && (x.quota || "").indexOf("查于") < 0)
+       .map((x) => x.pid + "/" + x.name)));
+  ck("V17", "额度格用户可见面**零裸 epoch**（扫描整格文本，≥9 位连续数字即红）",
+     swept.every((x) => !/\d{9,}/.test((x.quota || "") + " " + (x.sub || ""))),
+     "命中=" + j(swept.filter((x) => /\d{9,}/.test((x.quota || "") + " " + (x.sub || "")))
+       .map((x) => x.pid + "/" + x.name + "=「" + x.quota + "」")));
   await click(".anchor-item[data-pid='buddy']");
   await page.waitForTimeout(300);
 });
@@ -996,6 +1669,17 @@ await section("quota-per-product", async () => {
 await section("keys", async () => {
   await click(".anchor-item[data-pid='buddy']");
   await page.waitForTimeout(200);
+  /* 🔴 基线必须在**键盘动作前一刻**取：前面段落（renew 的视图重取 / 映射弹窗的 catalog）
+     会合法地重建 rail 并冲掉探针、往累计日志里塞请求。本段判据的对象是
+     "键盘导航期间不重建 rail、不发请求"，用全量累计 = 把前段的正常流量算到本段头上（实测假红）。 */
+  await page.evaluate(() => {
+    const rail = document.getElementById("ac-rail");
+    if (rail) {
+      rail.dataset.ixprobe = "1";
+      if (rail.firstElementChild) rail.firstElementChild.dataset.ixrow = "1";
+    }
+  });
+  const reqBase = (await reqs()).length;
   await page.press(".anchor-item[data-pid='zcode']", "Home");
   await page.waitForTimeout(300);
   const home = await read();
@@ -1022,14 +1706,26 @@ await section("keys", async () => {
      && (end.rail.find((x) => x.pid === "buddy") || {}).aria === "false",
      "zcode aria=" + (end.rail.find((x) => x.pid === "zcode") || {}).aria
      + " tabindex=" + (end.rail.find((x) => x.pid === "zcode") || {}).tab);
-  const reqsNow = await reqs();
-  ck("B12", "切产品 0 请求（§4-5「1 击 + 2 class」）：驱动期无新 API 调用",
-     nOf(reqsNow, "/admin/api/accounts") === 0, "驱动期请求=" + j(reqsNow.slice(0, 8)));
-  ck("B12b", "键盘导航只改 class：首行 dataset.ixrow 探针在 4 次移动后仍在（未重建 rail）",
-     end.railBox.rowProbe === "1", "首行探针=" + end.railBox.rowProbe);
-  ck("C3", "0 账号产品面板给出空态两行，且按 login 生成（zcode=设备码授权）",
-     /还没有账号/.test(end.empty || "") && /点右上『接入账号』/.test(end.empty || "")
-     && /设备码授权/.test(end.empty || ""), "「" + (end.empty || "") + "」");
+  const reqsAll = await reqs();
+  const reqsNow = reqsAll.slice(reqBase);
+  ck("B12", "切产品 0 请求（§4-5「1 击 + 2 class」）：键盘驱动期（基线之后）无新 API 调用"
+     + "（topbar 的 /admin/api/status 全局心跳除外）",
+     reqsNow.filter((x) => x.indexOf("/admin/api/status") < 0).length === 0,
+     "基线前=" + reqBase + " 累计=" + reqsAll.length + "；驱动期新增=" + j(reqsNow.slice(0, 8)));
+  ck("B12b", "键盘导航只改 class：容器 + 首行 dataset 探针在 4 次移动后仍在（未重建 rail）",
+     end.railBox.probe === "1" && end.railBox.rowProbe === "1",
+     "容器探针=" + end.railBox.probe + " 首行探针=" + end.railBox.rowProbe);
+  /* 空态产品**按实际计数选**（2026-10-02 起 zcode 有种子账号，不再是 0 号产品；
+     写死 zcode 会让这条判据随种子腐坏。raccoon = qr → 文案「扫码」与 KIND_TEXT 同源）。 */
+  const zeroPid = (E.zeroAccountProducts || [])[0] || "";
+  const zeroKind = (E.emptyKindTexts || {})[zeroPid] || "";
+  await click(".anchor-item[data-pid='" + zeroPid + "']");
+  await page.waitForTimeout(400);
+  const rz = await read();
+  ck("C3", "0 账号产品面板给出空态两行，且按该产品的 login 形态生成（文案与 KIND_TEXT 同源）",
+     !!zeroPid && !!zeroKind && /还没有账号/.test(rz.empty || "")
+     && /点右上『接入账号』/.test(rz.empty || "") && (rz.empty || "").indexOf(zeroKind) >= 0,
+     "产品=" + zeroPid + " 形态=「" + zeroKind + "」｜「" + (rz.empty || "") + "」");
   await shot("1440-light-empty-state");
   await click(".anchor-item[data-pid='buddy']");
   await page.waitForTimeout(300);
@@ -1054,9 +1750,10 @@ await section("ops-switch", async () => {
   const resp = (after.byPath || {})["/admin/api/accounts/buddy/ix-on/disable"];
   ck("E2", "后端真落盘：POST 响应体 {enabled:false, changed:true}（不是前端自 high）",
      !!resp && resp.enabled === false && resp.changed === true, "响应体=" + j(resp));
-  ck("E1b", "行原地 patch：rail 探针仍在（未整页重洗）+ 行文本改「已停用」",
-     after.railBox.probe === "1" && rowOf(after, "ix-on").state === "已停用",
-     "ix-on 状态=「" + rowOf(after, "ix-on").state + "」 ixprobe=" + after.railBox.probe);
+  ck("E1b", "行原地 patch：rail 探针仍在（未整页重洗）+ 行加 .off（状态由样式承担，无状态文字）",
+     after.railBox.probe === "1" && rowOf(after, "ix-on").cls.indexOf("off") >= 0
+     && rowOf(after, "ix-on").state === "",
+     "ix-on class=「" + rowOf(after, "ix-on").cls + "」 状态文字=「" + rowOf(after, "ix-on").state + "」 ixprobe=" + after.railBox.probe);
   ck("E1c", "rail 徽章/标题随真实计数更新（2 个账号（0 已启用））",
      (after.rail.find((x) => x.pid === "buddy") || {}).title === "CodeBuddy · 2 个账号（0 已启用）",
      "rail title=「" + (after.rail.find((x) => x.pid === "buddy") || {}).title + "」");
@@ -1070,55 +1767,85 @@ await section("ops-switch", async () => {
      rowOf(back, "ix-on").swAria.checked === "true"
      && (back.rail.find((x) => x.pid === "buddy") || {}).title === E.railTitles.buddy,
      "rail title=「" + (back.rail.find((x) => x.pid === "buddy") || {}).title + "」");
-  ck("E4", "签到钮按 capabilities.checkin 门控：buddy(✓) 行内 = claim/probe/delete",
-     j(rowOf(back, "ix-on").ops) === j(["claim", "probe", "delete"]),
-     "buddy/ix-on ops=" + j(rowOf(back, "ix-on").ops) + "（checkin=" + j(E.caps.buddy.checkin) + "）");
+  ck("E4", "行内动作按能力位门控：buddy(checkin✓ refresh✓ balance✓) = claim/refresh/quota/probe/check/delete"
+     + "（2026-10-01 续期回行内；2026-10-02 新增 quota；同日新增 check=账号维度模型检测，"
+     + "它**不挂能力位**——只依赖「有没有已开启的映射」，空范围时弹窗自己说「不会发出任何请求」（MC1 钉）",
+     j(rowOf(back, "ix-on").ops) === j(["claim", "refresh", "quota", "probe", "check", "delete"]),
+     "buddy/ix-on ops=" + j(rowOf(back, "ix-on").ops)
+     + "（checkin=" + j(E.caps.buddy.checkin) + " refresh=" + j(E.caps.buddy.refresh)
+     + " balance=" + j(E.caps.buddy.balance) + "）");
   await click(".anchor-item[data-pid='cline']");
   await page.waitForTimeout(300);
   const rc = await read();
-  ck("E4b", "cline（checkin=✗）行内只有 探活 + 删除，**无签到死钮**",
-     j(rc.rows[0].ops) === j(["probe", "delete"]), "实测 ops=" + j(rc.rows[0].ops));
-  ck("E5", "行内动作 ≤3 颗（§3）",
-     rc.rows.every((x) => x.ops.length <= 3) && back.rows.every((x) => x.ops.length <= 3),
+  ck("E4b", "cline（checkin=✗ refresh=✓ balance=✓）行内 = 续期/刷新额度/探活/模型检测/删除，**无签到死钮**",
+     j(rc.rows[0].ops) === j(["refresh", "quota", "probe", "check", "delete"]),
+     "实测 ops=" + j(rc.rows[0].ops));
+  ck("E5", "行内动作 ≤6 颗（§3 上限随同日新增的「模型检测」推进：能力位全开时 签到+续期+刷新额度+探活+模型检测+删除）",
+     rc.rows.every((x) => x.ops.length <= 6) && back.rows.every((x) => x.ops.length <= 6),
      "cline=" + rc.rows[0].ops.length + " 颗；buddy 最多=" + Math.max.apply(null, back.rows.map((x) => x.ops.length)) + " 颗");
   await click(".anchor-item[data-pid='loomy']");
   await page.waitForTimeout(300);
-  await click("td[data-exp='ix-norefresh']");
-  await page.waitForSelector("tr[data-rexp='ix-norefresh']", { timeout: 10000 });
+  const rl0 = await read();
+  ck("E9", "能力位 refresh=false（loomy）→ **行内**不渲染续期钮（= claim/quota/probe/check/delete）；"
+     + "映射弹窗内本就零账号级动作（C6 已钉，此处不再重复断言空集）",
+     j(rl0.rows.map((x) => x.ops)[0] || []) === j(["claim", "quota", "probe", "check", "delete"]),
+     "loomy ops=" + j(rl0.rows.map((x) => x.ops)) + "（capabilities.refresh=" + j(E.caps.loomy.refresh)
+     + " balance=" + j(E.caps.loomy.balance) + "）");
+  ck("E9b", "能力位 onboarding=true 但 BD7 端点未落地 → 新手任务钮不渲染（行内与弹窗都无，不「点了必然失败」）",
+     rl0.rows.every((x) => x.ops.indexOf("onboarding") < 0)
+     && rl0.modalMopRows.every((x) => x.indexOf(":onboarding") < 0),
+     "行内 ops 汇总=" + j(rl0.rows.map((x) => x.ops)));
+  /* 弹窗侧再开一次，验「零账号级动作」在 loomy 上同样成立（顺带覆盖 C6 的另一产品） */
+  await click("#ac-map");
+  /* 🔴 这里**不能**等 [data-mop]（映射弹窗内已无任何账号级动作，恒无 → 超时 → 弹窗滞留
+     → 后续全段被滞留遮罩连锁打崩，实测教训）——等弹窗内容就绪即可 */
+  await page.waitForSelector(".modal .list-card", { timeout: 10000 });
+  await page.waitForTimeout(300);
   const rl = await read();
-  const d = rl.details.find((x) => x.name === "ix-norefresh") || { ops: [], bits: [] };
-  ck("E9", "能力位 refresh=false（loomy）→ 展开行**不渲染**续期钮；目录钮（models_wired）仍在",
-     (d.ops || []).indexOf("refresh") < 0 && (d.ops || []).indexOf("models") >= 0,
-     "展开行 ops=" + j(d.ops) + "（capabilities.refresh=" + j(E.caps.loomy.refresh) + "）");
-  ck("E9b", "能力位 onboarding=true 但 BD7 端点未落地 → 新手任务不渲染（不「点了必然失败」）",
-     (d.ops || []).indexOf("onboarding") < 0, "展开行 ops=" + j(d.ops));
-  ck("E9c", "能力位行如实写「续期 不支持」",
-     bitOf(rl, "ix-norefresh", "能力位").indexOf("续期 不支持") >= 0,
-     "实测=「" + bitOf(rl, "ix-norefresh", "能力位") + "」");
+  ck("E9c", "loomy 映射弹窗同样零账号级动作 + 单层遮罩",
+     rl.modalMopRows.length === 0 && rl.modalMaskCount === 1,
+     "弹窗动作=" + j(rl.modalMopRows) + " 遮罩=" + rl.modalMaskCount);
+  await click(".modal-foot .btn");          // 取消，不落库
+  await page.waitForTimeout(300);
 });
 
-await section("models-dialog", async () => {
-  await click("tr[data-rexp='ix-norefresh'] [data-op='models']");
-  await page.waitForSelector(".modal .alert-warn, .modal [data-mdl]", { timeout: 25000 });
+await section("map-fusion", async () => {
+  /* 🔴 2026-10-01 用户定版：模型目录**二级弹窗废除**（弹窗套弹窗明令禁止，frontend-spec §7.11 红线）——
+     目录字段（上下文/输出/推理/图片/工具）直接融合进映射行；本段钉新契约。 */
+  await click(".anchor-item[data-pid='loomy']");
   await page.waitForTimeout(300);
-  const rm = await read();
-  const rows = await page.evaluate(() => Array.from(document.querySelectorAll(".modal [data-mdl]"))
-    .map((n) => n.getAttribute("data-mdl")));
-  ck("E10", "模型目录弹窗：state=ok 时逐条列出（含 data-mdl 锚点），并标注来源",
-     (rm.modalTitle || "").indexOf("模型目录 · Loomy / ix-norefresh") === 0 && rows.length > 0
-     && (rm.wizardText || "").indexOf("来源：") >= 0,
-     "标题=「" + rm.modalTitle + "」 条目=" + rows.length + " 条；来源行=「"
-     + ((rm.wizardText || "").match(/来源：[^·]*（[^）]*）/) || ["（无）"])[0] + "」");
-  ck("E10c", "弹窗与接口一致：条目数 == GET …/models 的 models 数；来源标注 == 注册表 models_source",
-     rows.length === E.loomyModels.count && rm.tokens.surface !== ""
-     && (rm.wizardText || "").indexOf("来源：" + E.loomyModels.sourceLabel) >= 0,
-     "UI 条目=" + rows.length + " / API models=" + E.loomyModels.count + "（state=" + E.loomyModels.state
-     + "）；来源标注=「" + E.loomyModels.sourceLabel + "」=注册表值，**不含实际取数路径**（→ 缺陷 D-3）");
-  await shot("1440-light-models-list");
+  await click("#ac-map");
+  await page.waitForSelector(".modal .list-card", { timeout: 25000 });
+  await page.waitForTimeout(400);
+  const rf = await read();
+  /* UI 行 == API 目录：行数一致，且「带目录字段的行数」== API 里 context_window 非空条数（不编造口径） */
+  const api = await page.evaluate(async () => {
+    const r = await fetch("/admin/api/accounts/loomy/catalog").then((x) => x.json());
+    return { n: (r.models || []).length,
+             withFacts: (r.models || []).filter((m) => m.context_window != null || m.max_output != null
+               || m.reasoning === true || m.image_input === true || m.tool_call === true).length,
+             source: (r.source || {}).detail || "" };
+  });
+  ck("E10", "目录字段融合进行内：映射行数 == /catalog 条数，且带辅助信息的行数 == API 非空字段条数",
+     rf.mapRows.length === api.n
+     && rf.mapRows.filter((x) => x.sub.indexOf("上下文") >= 0 || x.sub.indexOf("输出") >= 0
+        || x.sub.indexOf("推理") >= 0 || x.sub.indexOf("图片") >= 0 || x.sub.indexOf("工具") >= 0).length === api.withFacts,
+     "UI 行=" + rf.mapRows.length + " / API models=" + api.n
+     + "；带目录字段行=" + rf.mapRows.filter((x) => x.sub.indexOf("上下文") >= 0).length + " / API=" + api.withFacts
+     + "（来源=「" + api.source + "」）");
+  ck("E10b", "🔴 单层弹窗契约：打开映射弹窗后 .modal-mask 计数恒为 1（嵌套弹窗零容忍）",
+     rf.modalMaskCount === 1, "遮罩数=" + rf.modalMaskCount);
+  ck("E10c", "二级弹窗入口已删：全弹窗无 [data-mop='models']，文本无「模型目录」钮",
+     rf.modalMopRows.indexOf(":models") < 0 && (rf.wizardText || "").indexOf("模型目录") < 0,
+     "弹窗动作=" + j(rf.modalMopRows));
+  ck("E10d", "映射行为宽版版式：modal 800px + 行内目标下拉在位（前两行抽查）",
+     rf.modalW === 800 && rf.mapRows.length > 0 && rf.mapRows.slice(0, 2).every((x) => x.hasSel),
+     "modal 宽=" + rf.modalW + "px；前两行下拉=" + j(rf.mapRows.slice(0, 2).map((x) => x.hasSel)));
+  await shot("1440-light-map-modal-fusion");
   await click(".modal-foot .btn");
   await page.waitForTimeout(300);
   const closed = await read();
-  ck("E10b", "目录弹窗关闭后 #modal-root 回到基线（0 子节点）",
+  ck("E10e", "映射弹窗关闭后 #modal-root 回到基线（0 子节点）",
      closed.modalCount === 0, "modal-root 子节点=" + closed.modalCount);
 });
 
@@ -1133,9 +1860,12 @@ await section("wizard-device", async () => {
   ck("F0", "向导打开：modal-root 子节点 0→1，标题带产品名",
      base.modalCount === 0 && w0.modalCount === 1 && /^接入账号 · Cline$/.test(w0.modalTitle || ""),
      "modal " + base.modalCount + "→" + w0.modalCount + " 标题=「" + w0.modalTitle + "」");
+  /* 存在性用 page.evaluate 查（ego-browser **没有** `page.$`——旧写法整段抛
+     TypeError: page.$ is not a function，把本段其余判据一起带走；2026-10-01 修） */
+  const hasNameField = await page.evaluate(() => !!document.querySelector("#ac-wz-name"));
   ck("F0b", "参数段：无账号名输入（M7-E 免填标识）+ 「开始登录」；会话未建时页脚只有「关闭」",
-     w0.wizardBtns.join(",") === "cancel:关闭" && (await page.$("#ac-wz-name")) === null,
-     "页脚=" + j(w0.wizardBtns) + " #ac-wz-name=" + ((await page.$("#ac-wz-name")) === null ? "缺（正确）" : "仍在（回归）"));
+     w0.wizardBtns.join(",") === "cancel:关闭" && !hasNameField,
+     "页脚=" + j(w0.wizardBtns) + " #ac-wz-name=" + (hasNameField ? "仍在（回归）" : "缺（正确）"));
   await click("[data-wz='start']");
   await page.waitForSelector("[data-wz='cancel']", { timeout: 25000 });
   await page.waitForTimeout(400);
@@ -1393,10 +2123,6 @@ await section("themes", async () => {
      && dot(light, "workbuddy") !== dot(dark, "workbuddy"),
      "light=" + dot(light, "workbuddy") + "(" + light.tokens.dotOff + ") dark=" + dot(dark, "workbuddy") + "(" + dark.tokens.dotOff + ")");
   await shot("1440-dark");
-  await click("td[data-exp='ix-on']");
-  await page.waitForTimeout(400);
-  await shot("1440-dark-expanded");
-  await click("td[data-exp='ix-on']");
   await setViewport(375, 800);
   await page.waitForTimeout(400);
   await shot("375-dark");
@@ -1428,16 +2154,11 @@ await section("injection", async () => {
   ck("I0", "注入代理可达：页面在代理源上渲染出 10 行 rail 与 buddy 的账号表",
      pre.rail === 10 && pre.rows.indexOf("ix-on") >= 0,
      "href=" + pre.href + " rail=" + pre.rail + " rows=" + j(pre.rows) + " 面板=「" + pre.panel + "」");
-  await click("td[data-exp='ix-on']");
-  await page.waitForSelector("tr[data-rexp='ix-on']", { timeout: 15000 });
-  await page.waitForTimeout(300);
   const rn = await read();
-  const line = bitOf(rn, "ix-on", "网关资源");
-  ck("C9", "resource:null（配置读不动）→「网关资源：未知（…不推断成 0）」",
-     line.indexOf("网关资源：未知") === 0 && line.indexOf("不推断成 0") >= 0,
-     "注入形态=" + E.injectResourceNull + "；实测=「" + line.slice(0, 70) + "」");
-  await click("td[data-exp='ix-on']");
-  await page.waitForTimeout(300);
+  ck("C9", "resource:null（配置读不动）注入：界面零编造——展开行已废、resource 不再常驻展示，行照常渲染",
+     rn.expCells === 0 && (rn.resident || "").indexOf("网关资源") < 0 && rn.rows.length >= 1,
+     "注入形态=" + E.injectResourceNull + "；expCells=" + rn.expCells + " 常驻面「网关资源」indexOf="
+     + (rn.resident || "").indexOf("网关资源"));
 
   /* §5 读失败：视图端点 502 + 一次**行操作**触发重取（POST 成功、GET 失败），再一次面板级重绘 */
   fs.writeFileSync(PAYLOAD.modeFile, "error");
@@ -1472,24 +2193,8 @@ await section("injection", async () => {
   await page.waitForTimeout(600);
   await click("tr[data-acc='ix-on'] [role=switch]");
   await page.waitForTimeout(1500);
-
-  /* 目录「取不动」出口：注入 state=unknown → UI 只给原因、零条目 */
-  fs.writeFileSync(PAYLOAD.modeFile, "models-unknown");
-  await click(".anchor-item[data-pid='loomy']");
-  await page.waitForTimeout(500);
-  await click("td[data-exp='ix-norefresh']");
-  await page.waitForSelector("tr[data-rexp='ix-norefresh']", { timeout: 15000 });
-  await click("tr[data-rexp='ix-norefresh'] [data-op='models']");
-  await page.waitForSelector(".modal .alert-warn", { timeout: 25000 });
-  await page.waitForTimeout(400);
-  const ru = await read();
-  const rowsU = await page.evaluate(() => document.querySelectorAll(".modal [data-mdl]").length);
-  ck("E10d", "目录 state=unknown → 只展示原因 + **零条目**（不编造，与「未知不当零」同尺）",
-     (ru.wizardText || "").indexOf("目录取不动") >= 0 && rowsU === 0
-     && (ru.wizardText || "").indexOf("IX 注入：上游目录端点不可用") >= 0,
-     "正文=「" + (ru.wizardText || "").slice(0, 140) + "」 条目=" + rowsU);
-  await shot("1440-light-models-unknown");
-  await click(".modal-foot .btn");
+  /* （目录 state=unknown 注入段随「模型目录二级弹窗废除」一起移除：
+     界面不再调用 GET /models，/catalog 的取不动出口由 openModelMap 的 catch 走 alert-err。） */
   fs.writeFileSync(PAYLOAD.modeFile, "");
   await page.goto(PAYLOAD.url + "#/accounts");
   await page.waitForSelector(".anchor-item", { timeout: 20000 });
@@ -1504,10 +2209,14 @@ await section("deletes", async () => {
   await page.waitForSelector(".modal .modal-foot .btn", { timeout: 15000 });
   await page.waitForTimeout(300);
   const dm = await read();
-  ck("E6", "删除二次确认：文案如实承诺「关联资源置停用并保留 + 彻底删除去模型资源页」",
+  ck("E6", "删除二次确认：文案如实承诺「资源置停用并保留 + 该行不在供应商资源页显示 + 彻底清除走配置文件」"
+     + "（2026-10-02 用户裁决两类资源不得互串后推进：旧判据钉的是「彻底删除请到「接入模型资源」页」，"
+     + "而派生资源已从那一页整体移出，旧指路成了死路 —— 判据随设计推进，不退回）",
      /^确定删除 Loomy 的账号「ix-norefresh」？/.test(dm.confirmText || "")
      && (dm.confirmText || "").indexOf("关联资源会被置为停用并保留") >= 0
-     && (dm.confirmText || "").indexOf("彻底删除请到「接入模型资源」页") >= 0,
+     && (dm.confirmText || "").indexOf("不在「接入模型资源」页显示") >= 0
+     && (dm.confirmText || "").indexOf("resources[]") >= 0
+     && (dm.confirmText || "").indexOf("彻底删除请到「接入模型资源」页") < 0,
      "确认文案=「" + (dm.confirmText || "") + "」");
   ck("E6b", "确认弹窗二段钮（取消 / 确定）+ 破坏性在后",
      j(dm.confirmBtns) === j(["取消", "确定"]), "按钮=" + j(dm.confirmBtns));
@@ -1572,6 +2281,8 @@ def run_browser(payload: dict, run_dir: Path, rep: Report, tag: str, absorb: boo
     pfile = run_dir / f"payload-{tag}.json"
     ofile = run_dir / f"browser-results-{tag}.json"
     jfile = run_dir / f"browser-{tag}.js"
+    # 🔴 页标签按"进程 + 分段"唯一（见 JS 顶注：并行会话抢同一标签会把整段读数打成一团）
+    payload = {**payload, "pageLabel": f"p{os.getpid()}-{tag}"}
     pfile.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     jfile.write_text(JS.replace("__PAYLOAD__", str(pfile)).replace("__OUT__", str(ofile)),
                      encoding="utf-8")
@@ -1609,6 +2320,9 @@ def build_expect(view: dict, port: int = 0) -> dict:
                    f"（{sum(1 for a in p['accounts'] if a['enabled'])} 已启用）"
                    for p in view["products"]}
     resource_ids, pool_states, statuses, caps = {}, {}, {}, {}
+    # 🔴 额度面的**数据侧**期望（判据不许从界面文案反推）：state/reason/items/remaining/expires_at
+    #    全部直接取 `GET /admin/api/accounts` 的 `a.runtime.quota`（真后端读盘的结果）。
+    quota_states, quota_reasons, quota_items, quota_remaining, quota_expires = {}, {}, {}, {}, {}
     for p in view["products"]:
         caps[p["id"]] = p["capabilities"]
         for a in p["accounts"]:
@@ -1617,6 +2331,14 @@ def build_expect(view: dict, port: int = 0) -> dict:
                 resource_ids[f"{p['id']}/{a['name']}"] = res[0]["id"]
             pool_states[f"{p['id']}/{a['name']}"] = a["quota"]["state"]
             statuses[f"{p['id']}/{a['name']}"] = a["status"]
+            rq = (a.get("runtime") or {}).get("quota") or {}
+            key = f"{p['id']}/{a['name']}"
+            quota_states[key] = rq.get("state")
+            quota_reasons[key] = rq.get("reason")
+            items = rq.get("items") or []
+            quota_items[key] = bool(items)
+            quota_remaining[key] = rq.get("remaining")
+            quota_expires[key] = (items[0] or {}).get("expires_at") if items else ""
     qoder = next((p for p in view["products"] if p["id"] == "qoder"), {"accounts": []})
     source_label = {"remote": "远端目录", "cache": "磁盘缓存", "static": "本地静态表"}
     loomy = next((p for p in view["products"] if p["id"] == "loomy"), {"models_source": "remote"})
@@ -1634,10 +2356,20 @@ def build_expect(view: dict, port: int = 0) -> dict:
                                     f"{sum(1 for a in p['accounts'] if a['enabled'])} 已启用"
                            for p in view["products"]},
         "zeroAccountProducts": [pid for pid in PRODUCT_IDS if rail_counts.get(pid) == 0],
+        # accounts.js:99 KIND_TEXT 的 Python 镜像（空态文案判据的数据源；改了那边不改这里 → C3 红）
+        "emptyKindTexts": {p["id"]: KIND_TEXT.get(p.get("login") or "", p.get("login") or "")
+                           for p in view["products"]},
+        "sweepProducts": [p["id"] for p in view["products"] if p["accounts"]],
         "resourceIds": resource_ids,
         "poolStates": pool_states,
         "statuses": statuses,
         "caps": caps,
+        "quotaStates": quota_states,
+        "quotaReasons": quota_reasons,
+        "quotaItems": quota_items,
+        "quotaRemaining": quota_remaining,
+        "quotaExpires": quota_expires,
+        "expiresShort": EXPIRES_ISO.replace("T", " ")[:16][5:],
         "checkedAt": CHECKED_AT,
         "checkedAtText": CHECKED_AT.replace("T", " ")[:16],
         "loomyModels": ms,
@@ -1650,6 +2382,330 @@ def api_view(port: int) -> dict:
     return http("GET", f"http://127.0.0.1:{port}/admin/api/accounts")[1]
 
 
+# ==================== 额度联网腿分段（方案 §6 九格 · 真机可及面） ====================
+#
+# 🔴 **窗口纪律**（方案 §8.2 明写，最容易自我蒙混的一处）：额度腿与探活腿打的是**同一个**
+#    `GET /billing/balance`（`product.PROBE_PATH` 与 `billing.BALANCE_PATH` 同值），
+#    混在一个窗口里就是"被探活喂绿"。⇒ 每条腿跑在**独立实例**上（各自的 `MGW_FAKE_TRACE`），
+#    窗口时间戳由页面给出（与轨迹同一台机器的墙钟），Python 侧按窗口切轨迹算 Δtrace。
+#    假上游把每条轨迹落 `ts` + `X-Device-Mid` + 回体种类（ok / empty-plans），
+#    所以"哪一号打了几次"是可核对的，不是推断的。
+
+#: 时间戳归属的容差 = **0**。窗口是首尾相接的（上一窗口的 `t1` 就是下一窗口的 `t0` 之前一刻，
+#: 页面两次取值之间才发生点击与出站），浏览器 `Date.now()` 与轨迹 `time.time()` 同源一台机器。
+#: 曾给过 300ms 容差，实测把下一窗口的第一条请求算进上一窗口（Δtrace 2≠1、4≠3，红得没有道理）
+#: ⇒ 容差在这里是**有害的**；窗口是否切干净由 QL0 的"总轨迹 == 各窗口之和"自证。
+TS_GUARD_MS = 0.0
+
+
+def read_json_file(path: Path):
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 — 读数失败返回 None，由判据如实说"读不到"
+        return None
+
+
+def quota_of(cfg: Path, product: str, name: str) -> dict:
+    return (read_json_file(account_dir(cfg, product, name) / "runtime.json") or {}).get("quota") or {}
+
+
+def quota_fingerprint(quota: dict) -> str:
+    """`runtime.json.quota` 的**字节指纹**（QN2「一个字节都不动」的载体；键序无关）。"""
+    blob = json.dumps(quota, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()[:16] + f"/{len(blob)}B"
+
+
+def trace_entries(run_dir: Path) -> list[dict]:
+    path = Path(run_dir) / "fake-trace.jsonl"
+    if not path.exists():
+        return []
+    out = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            out.append({"_unparsed": line[:80]})
+    return out
+
+
+def balance_events(entries: list[dict]) -> list[dict]:
+    return [x for x in entries if str(x.get("path", "")).endswith("/billing/balance")
+            and str(x.get("method", "")).upper() == "GET"]
+
+
+def in_window(events: list[dict], win) -> list[dict]:
+    t0, t1 = win
+    lo, hi = t0 - TS_GUARD_MS, t1 + TS_GUARD_MS
+    return [x for x in events if lo <= float(x.get("ts", 0)) * 1000 <= hi]
+
+
+def quota_leg_criterion(delta: int, fired_receipt: int) -> bool:
+    """🔴 额度腿的**唯一判据式**：`Δtrace(GET /billing/balance) == 回执 N`。
+
+    正向腿与反向撤证**共用这一个函数** —— 撤证才有靶：把这里的 `==` 改成 `>= 0`（恒真）
+    后，反向撤证那条必须变红（交付前反向实验②钉的就是这件事）。
+    """
+    return delta == fired_receipt
+
+
+def circuit_file(cfg: Path) -> Path:
+    """熔断状态文件 = `store.accounts_root().parent / "circuit.json"`（`quota.py::circuit_path()`
+    同一口径；本门的数据根就是 `MG_CONFIG` 的目录，见 `account_dir()`）。"""
+    return cfg.parent / "upstream" / "zcode" / "circuit.json"
+
+
+def start_leg(tag: str, base: Path, port: int, interval: int):
+    """起一台**只装 zcode 三行种子**的独立实例（自己的数据根 + 自己的 `MGW_FAKE_TRACE`）。"""
+    run = base / f"leg-{tag}"
+    run.mkdir(parents=True, exist_ok=True)
+    cfg = write_config(run, port, interval=interval)
+    seed_accounts(cfg, run, ROOT, spec=ZCODE_SEED)
+    proc, out_h = start_gateway(cfg, run, ROOT, log_name="gw")
+    ok, health = wait_health(port, proc)
+    if not ok:
+        log((run / "gw.log").read_text(encoding="utf-8")[-2000:])
+        raise RuntimeError(f"额度腿分段「{tag}」实例起不来：{health}")
+    time.sleep(1.2)
+    return run, cfg, proc, out_h, health
+
+
+def leg_browser(run: Path, cfg: Path, port: int, shots: Path, rep: Report, tag: str,
+                variant: str, account: str = "ix-quota-net") -> dict:
+    expect = {"leg": {"variant": variant, "product": "zcode", "account": account}}
+    payload = {"mode": "quota-leg", "url": f"http://127.0.0.1:{port}/",
+               "shotsDir": str(shots), "expect": expect,
+               "shotName": f"quota-leg-{tag}"}
+    return run_browser(payload, run, rep, f"leg-{tag}")
+
+
+def leg_windows(extra: dict) -> dict:
+    return {w["name"]: (w["t0"], w["t1"]) for w in ((extra or {}).get("leg") or {}).get("windows", [])}
+
+
+def row_of_rows(rows, name: str) -> dict:
+    return next((x for x in (rows or []) if x.get("name") == name), {})
+
+
+def run_legs_guarded(rep: Report, base: Path, shots: Path) -> None:
+    """分段装配级失败 = **判据红**，不是整门崩（独立实例起不来时，主实例的读数仍然有意义）。"""
+    try:
+        run_quota_legs(rep, base, shots)
+    except Exception as e:  # noqa: BLE001
+        # 🔴 带**调用点**行号：只报 `ValueError: too many values to unpack` 等于没报
+        #    （装配级失败会让整段额度腿静默不跑，其余格子全变"红得没道理"）
+        tb = traceback.extract_tb(e.__traceback__)[-1]
+        emit(rep, "QL-FATAL", "额度联网腿分段可装配（四台独立实例 + 假上游都起得来）", False,
+             f"{type(e).__name__}: {e} @ {Path(tb.filename).name}:{tb.lineno}｜{tb.line}")
+
+
+def run_quota_legs(rep: Report, base: Path, shots: Path) -> None:
+    """四段：干净窗口（强制腿 + 产品级 + V16）/ 预写熔断 / 探活同窗口撤证 / cron+`quota_net=false`。"""
+    # ---------------- 段①：干净窗口 ----------------
+    port1, why1 = pick_port(0)
+    run1, cfg1, proc1, out1, health1 = start_leg("clean", base, port1, interval=0)
+    emit(rep, "QL-A", f"额度腿段①独立实例在跑且**与 :8300 无关**（端口 {port1}｜{why1}；"
+         + "interval=0 ⇒ 无 cron 干扰窗口；数据根在本段的 run 目录里）",
+         port1 != 8300 and "leg-clean" in str(health1.get("config", {}).get("path", "")),
+         f"port={port1} config={j0(health1.get('config', {}).get('path'))}")
+    before = {s["name"]: quota_of(cfg1, "zcode", s["name"]) for s in ZCODE_SEED}
+    data1 = leg_browser(run1, cfg1, port1, shots, rep, "clean", "clean")
+    stop(proc1, out1)
+    events1 = balance_events(trace_entries(run1))
+    win1 = leg_windows(data1.get("extra"))
+    leg1 = (data1.get("extra") or {}).get("leg") or {}
+    bodies = leg1.get("bodies") or {}
+    one_p = "/admin/api/accounts/zcode/ix-quota-net/quota"
+    all_p = "/admin/api/accounts/zcode/quota-all"
+    rep1 = (bodies.get(one_p) or {}).get("report") or {}
+    n1 = (len(rep1.get("success") or []) + len(rep1.get("already_done") or [])
+          + len(rep1.get("inactive") or []) + len(rep1.get("failed") or []))
+    # 🔴 每批回执**当场取走**（`byPath` 只留最后一次），Δtrace 与回执才是同一批的账。
+    receipt = (leg1.get("receiptW2") or {}).get("receipt") or {}
+    receipt3 = (leg1.get("receiptW3") or {}).get("receipt") or {}
+    d1 = in_window(events1, win1.get("account-quota", (0, 0)))
+    d2 = in_window(events1, win1.get("quota-all", (0, 0)))
+    d3 = in_window(events1, win1.get("v16-quota-all", (0, 0)))
+    covered = len(d1) + len(d2) + len(d3)
+    emit(rep, "QL0", "窗口记账自证：实例轨迹里的 /billing/balance **全部**落在声明窗口内"
+         + "（窗口外 0 条 ⇒ 不存在「窗口外的请求替窗口内交账」；各窗口首尾相接、零容差）",
+         covered == len(events1) and len(d1) >= 1,
+         f"总={len(events1)} 声明窗口覆盖={covered}（W1={len(d1)} W2={len(d2)} W3={len(d3)}）"
+         f"；窗口名={j0(sorted(win1))}")
+    emit(rep, "QL1", "强制腿（点行内「刷新额度」）Δtrace == 回执 N：单次点击 ⇒ 恰好 1 条上游 GET",
+         quota_leg_criterion(len(d1), n1) and len(d1) == 1 and n1 == 1
+         and {x.get("mid") for x in d1} == {ZCODE_MID_NET},
+         f"Δtrace={len(d1)} 回执参与数={n1} category={j0((bodies.get(one_p) or {}).get('category'))}"
+         f" reason={j0((bodies.get(one_p) or {}).get('reason'))} 命中 mid={j0(sorted({str(x.get('mid')) for x in d1}))}")
+    emit(rep, "QL2", "产品级「刷新额度」（quota-all）Δtrace == 回执 N=refreshed"
+         + "（3 个号都真打了上游，且没有一号被熔断/开关挡在门外）",
+         quota_leg_criterion(len(d2), int(receipt.get("refreshed", -1))) and len(d2) == 3,
+         f"Δtrace={len(d2)} 回执={j0({k: receipt.get(k) for k in ('refreshed', 'failed', 'not_fired', 'not_participating')})}"
+         f" by_reason={j0(receipt.get('by_reason'))}")
+    emit(rep, "QL2b", "V16 窗口内那一次 quota-all 同样 Δtrace == 回执 N（迟到回执不是「只画了个槽」）",
+         quota_leg_criterion(len(d3), int(receipt3.get("refreshed", -1))) and len(d3) == 3,
+         f"Δtrace={len(d3)} 回执={j0({k: receipt3.get(k) for k in ('refreshed', 'failed', 'not_fired')})}")
+    after = {s["name"]: quota_of(cfg1, "zcode", s["name"]) for s in ZCODE_SEED}
+    bq, aq = before["ix-quota-net"], after["ix-quota-net"]
+    emit(rep, "QL3", "强制腿写盘两个时刻**都前进**：`checked_at`（写盘时刻）与 `data_at`（上游 server_time 的 ISO）"
+         + "—— 缺一半就是「改了盘没联网」或「联网了没改时刻」（方案 §4-6 两态）",
+         bool(aq.get("checked_at")) and aq["checked_at"] > bq.get("checked_at", "")
+         and bool(aq.get("data_at")) and aq["data_at"] > bq.get("data_at", "")
+         and aq.get("state") == "available" and aq.get("source") == "zcode-billing"
+         and aq.get("plan_key") == "upl_2105792494636244992",
+         f"checked_at {bq.get('checked_at')} → {aq.get('checked_at')}；"
+         f"data_at {bq.get('data_at')} → {aq.get('data_at')}；state={j0(aq.get('state'))}"
+         f" source={j0(aq.get('source'))} plan_key={j0(aq.get('plan_key'))}")
+    np_before, np_after = before["ix-no-plan"], after["ix-no-plan"]
+    emit(rep, "QL4", "「无套餐」的**真机产出**：空 plans 路由 ⇒ 盘上 reason=no_plan + state=unknown"
+         + " + items==[]（整键覆盖，不是种子摆出来的）",
+         np_after.get("reason") == "no_plan" and np_after.get("state") == "unknown"
+         and np_after.get("items") == [] and np_after.get("source") == "zcode-billing",
+         f"reason={j0(np_after.get('reason'))} state={j0(np_after.get('state'))}"
+         f" items={j0(np_after.get('items'))} 种子上一次={j0(np_before.get('reason'))}"
+         f"；empty-plans 轨迹={len([x for x in d2 if x.get('kind') == 'empty-plans'])} 条")
+    rows_after = ((data1.get("extra") or {}).get("leg") or {}).get("rowsAfter") or []
+    np_row = row_of_rows(rows_after, "ix-no-plan")
+    qn_row = row_of_rows(rows_after, "ix-quota-net")
+    emit(rep, "QL4b", "界面侧「无套餐」：真机联网后的那一行可见文本仍以「无套餐」开头"
+         + "（反向实验①：把空 plans 路由改回 503 ⇒ 本条 + QL4 必须红）",
+         str(np_row.get("quota", "")).startswith("无套餐"),
+         f"额度格=「{np_row.get('quota')}」")
+    emit(rep, "QL6", "联网后的额度格 = 数值 + 「查于」 + 「重置于 MM-DD HH:mm」，且**零裸 epoch**"
+         + "（钩子把上游 epoch 归一成 ISO 的界面后果，方案 §3-5 连带登记的 expiresSoon 首次真会命中）",
+         re.search(r"重置于 \d{2}-\d{2} \d{2}:\d{2}", qn_row.get("quota", "") or "") is not None
+         and "查于" in (qn_row.get("quota") or "")
+         and not re.search(r"\d{9,}", (qn_row.get("quota") or "") + (qn_row.get("sub") or "")),
+         f"额度格=「{qn_row.get('quota')}」 附属=「{qn_row.get('sub')}」"
+         f" 盘上 items[0].expires_at={j0((aq.get('items') or [{}])[0].get('expires_at'))}")
+
+    # ---------------- 段②：预写熔断 ----------------
+    port2, _why2 = pick_port(0)
+    cpath = None
+    try:
+        run2, cfg2, proc2, out2 = None, None, None, None
+        # 先起实例拿数据根，再**预写** circuit.json（钩子每次判定都按 mtime 回读 ⇒ 顺序无所谓，
+        # 但必须在点击之前落盘；这里先写文件再启动，避免与启动期的领取腿抢窗口）
+        run2 = base / "leg-circuit"
+        run2.mkdir(parents=True, exist_ok=True)
+        cfg2 = write_config(run2, port2, interval=0)
+        seed_accounts(cfg2, run2, ROOT, spec=ZCODE_SEED)
+        cpath = circuit_file(cfg2)
+        cpath.parent.mkdir(parents=True, exist_ok=True)
+        now_ms = time.time() * 1000
+        cpath.write_text(json.dumps({"until_ms": now_ms + 30 * 60 * 1000,
+                                     "reason": "IX 门预写：模拟 3012 全局风控",
+                                     "last_call_ms": now_ms}, ensure_ascii=False),
+                         encoding="utf-8")
+        proc2, out2 = start_gateway(cfg2, run2, ROOT, log_name="gw")
+        ok2, health2 = wait_health(port2, proc2)
+        if not ok2:
+            raise RuntimeError(f"熔断腿实例起不来：{health2}")
+        time.sleep(1.2)
+        before2 = quota_of(cfg2, "zcode", "ix-quota-net")
+        data2 = leg_browser(run2, cfg2, port2, shots, rep, "circuit", "circuit")
+        stop(proc2, out2)
+        events2 = balance_events(trace_entries(run2))
+        win2 = leg_windows(data2.get("extra"))
+        d_c = in_window(events2, win2.get("circuit", (0, 0)))
+        after2 = quota_of(cfg2, "zcode", "ix-quota-net")
+        emit(rep, "QC1", "熔断腿（门侧预写 circuit.json）Δtrace == 0：钩子在「发起前判定」就拒跑，"
+             + "一次上游请求都不发",
+             len(d_c) == 0 and len(events2) == 0,
+             f"窗口内={len(d_c)} 实例全部 /billing/balance={len(events2)}"
+             f"（熔断文件={cpath.name} 已预写）")
+        emit(rep, "QC2", "熔断腿落档 reason=circuit + source=zcode-circuit（不是 unreachable）",
+             after2.get("reason") == "circuit" and after2.get("source") == "zcode-circuit",
+             f"reason={j0(after2.get('reason'))} source={j0(after2.get('source'))}"
+             f" detail={j0((after2.get('detail') or '')[:70])}")
+        emit(rep, "QC3", "熔断腿时间面：**`data_at` 不前进**（上游这一轮没说话）而 `checked_at` 前进"
+             + "（方案 §4-6 两态；把两者混成一个就是「伪装刷新」）",
+             after2.get("data_at") == before2.get("data_at")
+             and bool(after2.get("checked_at")) and after2["checked_at"] > before2.get("checked_at", ""),
+             f"data_at {before2.get('data_at')} → {after2.get('data_at')}；"
+             f"checked_at {before2.get('checked_at')} → {after2.get('checked_at')}")
+        kept = all(after2.get(k) == before2.get(k) for k in
+                   ("items", "plan", "remaining", "data_at", "plan_key"))
+        emit(rep, "QC4", "熔断腿**合并写**保住五个数值键（items/plan/remaining/data_at/plan_key 逐字不变）"
+             + "—— 一次熔断不得把上一轮的真实余量洗成空",
+             kept and bool(after2.get("items")),
+             f"保住={j0({k: (k in after2 and after2[k] == before2.get(k)) for k in ('items', 'plan', 'remaining', 'data_at', 'plan_key')})}"
+             f"；items 数={len(after2.get('items') or [])}")
+        cpath.unlink()                       # 门侧收尾：跑完删除，不留熔断给后续段/实盘
+        emit(rep, "QC5", "门侧收尾：跑完**删除** circuit.json（不留熔断给后续段/实盘）",
+             not cpath.exists(), f"path={cpath} 删除后存在={cpath.exists()}")
+    finally:
+        if cpath and cpath.exists():
+            cpath.unlink()
+        if proc2 is not None:
+            stop(proc2, out2)
+
+    # ---------------- 段③：反向撤证（探活与额度同窗口） ----------------
+    port3, _why3 = pick_port(0)
+    run3, cfg3, proc3, out3, _h3 = start_leg("probe", base, port3, interval=0)
+    data3 = leg_browser(run3, cfg3, port3, shots, rep, "probe", "probe-window")
+    stop(proc3, out3)
+    events3 = balance_events(trace_entries(run3))
+    win3 = leg_windows(data3.get("extra"))
+    d3w = in_window(events3, win3.get("probe-then-quota", (0, 0)))
+    bodies3 = ((data3.get("extra") or {}).get("leg") or {}).get("bodies") or {}
+    rep3 = (bodies3.get(one_p) or {}).get("report") or {}
+    n3 = (len(rep3.get("success") or []) + len(rep3.get("already_done") or [])
+          + len(rep3.get("inactive") or []) + len(rep3.get("failed") or []))
+    same_path = {str(x.get("path")) for x in d3w}
+    emit(rep, "QR1", "🔴 反向撤证成立：同一窗口里先点「探活」再点「刷新额度」⇒ 额度腿判据必须红"
+         + "（不写这条 = 额度腿可以被探活喂绿）",
+         len(d3w) == 2 and n3 == 1 and (not quota_leg_criterion(len(d3w), n3))
+         and len(same_path) == 1,
+         f"窗口内 /billing/balance={len(d3w)} 回执 N={n3}"
+         f" ⇒ quota_leg_criterion(Δ,N)={quota_leg_criterion(len(d3w), n3)}（期望 False）"
+         f"；两条同一 path={j0(sorted(same_path))}")
+    emit(rep, "QR2", "同 path 事实登记（撤证的前提，不是假设）：探活腿与额度腿打的是同一个只读 GET",
+         all(str(x.get("path", "")).endswith("/billing/balance") for x in d3w)
+         and {x.get("mid") for x in d3w} == {ZCODE_MID_NET},
+         f"两条轨迹 mid={j0(sorted({str(x.get('mid')) for x in d3w}))} kinds={j0([x.get('kind') for x in d3w])}")
+
+    # ---------------- 段④：cron 腿 + `quota_net=false`（方案 §6 第 8 格） ----------------
+    port4, _why4 = pick_port(0)
+    run4, cfg4, proc4, out4, _h4 = start_leg("cron", base, port4, interval=5)
+    before4 = {s["name"]: quota_of(cfg4, "zcode", s["name"]) for s in ZCODE_SEED}
+    fp_before = {k: quota_fingerprint(v) for k, v in before4.items()}
+    deadline = time.time() + 60.0
+    balance_rounds: list[dict] = []
+    while time.time() < deadline and len(balance_rounds) < 2:
+        time.sleep(2.0)
+        rounds = []
+        for fp in sorted((cfg4.parent / "usage").glob("ops-results-*.jsonl")):
+            for line in fp.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                why = row.get("inactive_reasons") or {}
+                if any("额度联网腿未启用" in str(v) for v in why.values()):
+                    rounds.append(row)
+        balance_rounds = rounds
+    stop(proc4, out4)
+    events4 = balance_events(trace_entries(run4))
+    after4 = {s["name"]: quota_of(cfg4, "zcode", s["name"]) for s in ZCODE_SEED}
+    fp_after = {k: quota_fingerprint(v) for k, v in after4.items()}
+    emit(rep, "QN0", f"cron 段装配：`quota_net: false` + interval=5 的实例真跑了 ≥2 轮额度腿"
+         + "（先证明「腿在跑」，下面的 0 发起才有意义 —— 否则「盘没动」可能只是根本没跑）",
+         len(balance_rounds) >= 2, f"额度腿轮次={len(balance_rounds)}")
+    emit(rep, "QN1", "方案 §6 第 8 格（`quota_net=false` + `via='cron'`）：Δtrace == 0 ⇒ cron 腿不发起",
+         len(events4) == 0, f"实例全程 /billing/balance={len(events4)} 条；轨迹总条数={len(trace_entries(run4))}"
+         f"（领取腿照常在跑，见 gw.log 与 jsonl）")
+    emit(rep, "QN2", "同格另一半：`runtime.json.quota` **一个字节都不动**（三个号逐一比指纹）",
+         fp_after == fp_before and all(v for v in fp_after.values()),
+         f"指纹前后={j0({'before': fp_before, 'after': fp_after})}")
+    emit(rep, "QN3", "对照腿（方案 §5-1 的 `via='user'`）：同一份 `quota_net=false` 配置下，"
+         + "手动腿照样发起并写盘（段①已证 ⇒ 本条把两格钉在同一实例语义上）",
+         len(d1) == 1 and aq.get("source") == "zcode-billing",
+         f"手动腿 Δtrace={len(d1)}；cron 腿 Δtrace={len(events4)}；"
+         f"jsonl 里的短退文案={j0(sorted({str(v) for r in balance_rounds[:1] for v in (r.get('inactive_reasons') or {}).values()})[:1])}")
+
+
 # ==================== 主流程 ====================
 
 def main() -> int:
@@ -1660,6 +2716,8 @@ def main() -> int:
     ap.add_argument("--retract", type=int, choices=[1, 2, 3], default=0, help="成对撤证模式")
     ap.add_argument("--keep", action="store_true", help="保留临时目录")
     ap.add_argument("--no-proxy", action="store_true", help="跳过注入段（resource:null / 读失败）")
+    ap.add_argument("--skip-legs", action="store_true",
+                    help="跳过额度联网腿的四段独立实例（调试主实例判据用；正式交付必须跑全）")
     args = ap.parse_args()
 
     if args.retract:
@@ -1706,7 +2764,8 @@ def main() -> int:
     emit(rep, "A3b", "热重载后 resource 三态之 [] 由**真后端**给出（不是注入）",
          expect["emptyResource"] == [], f"qoder/ix-quota-exhausted resource={j0(expect['emptyResource'])}")
     raw = json.dumps(view, ensure_ascii=False)
-    leaks = [t for t in ("IXFAKE", "ix_fake_token", "credentials") if t in raw]
+    # 2026-10-02：种子新增 zcode 假 jwt（额度联网腿的前提）→ 外泄词表同步把它的**前缀**也钉上
+    leaks = [t for t in ("IXFAKE", "ix_fake_token", "credentials", "IX-SEED-JWT") if t in raw]
     emit(rep, "A3c", "账号视图载荷零凭据（IXFAKE / ix_fake_token / credentials 均不外泄）",
          not leaks, f"命中={j0(leaks)}；载荷字节={len(raw.encode())}")
 
@@ -1768,6 +2827,14 @@ def main() -> int:
             srv.shutdown()
             srv.server_close()
         stop(proc, out)
+
+    # 🔴 额度**联网腿**分段（主实例已停 ⇒ 不与上面的窗口共用轨迹）。每段一台独立实例 +
+    #    独立 `MGW_FAKE_TRACE`；装配级失败按判据如实记红，不冒泡成"整轮没读数"。
+    if args.skip_legs:
+        emit(rep, "QL-SKIP", "额度联网腿分段按 --skip-legs 跳过（**调试开关，不得用于交付**）",
+             True, "四段判据本轮未跑；正式交付判据 = 不带该开关的全量跑")
+    else:
+        run_legs_guarded(rep, run_dir, shots)
 
     trace = run_dir / "fake-trace.jsonl"
     lines = [json.loads(x) for x in trace.read_text(encoding="utf-8").splitlines() if x.strip()] \

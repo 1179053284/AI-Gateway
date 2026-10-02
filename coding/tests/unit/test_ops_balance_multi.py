@@ -140,3 +140,20 @@ async def test_cache_write_failure_is_failed_not_success(monkeypatch):
     res = await query_balance.query_balance("acct-1", runtime=RT)
     assert res.category == "failed"
     assert "缓存写入失败" in res.detail and "OSError" in res.detail
+
+
+async def test_quota_cache_persists_plan_and_items(monkeypatch):
+    """2026-10-01 加字段：快照的 `plan`/`items` 原样落 `runtime.json`（账号页套餐余粮列的数据源）。"""
+    _seed("buddy", "acct-items")
+    RT, _mgr = _runtime([])
+    _install_quota(monkeypatch, QuotaSnapshot(
+        state="available", source="buddy-billing", detail="d", plan="CodeBuddy个人体验版",
+        items=({"name": "CodeBuddy个人体验版", "unit": "credits", "remaining": 5,
+                "total": 10, "used": 5, "active": True, "expires_at": ""},)))
+    res = await query_balance.query_balance("acct-items", runtime=RT)
+    assert res.category == "success"
+    cache = accounts_store.read_runtime("buddy", "acct-items")["quota"]
+    assert cache["plan"] == "CodeBuddy个人体验版"
+    assert cache["items"] == [{"name": "CodeBuddy个人体验版", "unit": "credits",
+                               "remaining": 5, "total": 10, "used": 5,
+                               "active": True, "expires_at": ""}]

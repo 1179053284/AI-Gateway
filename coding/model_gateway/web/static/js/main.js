@@ -107,16 +107,23 @@ route();
 {
   const dot = document.getElementById("ops-dot");
   const dotText = document.getElementById("ops-dot-text");
+  const banner = document.getElementById("instance-banner");
   const poll = async () => {
-    if (!dot || document.visibilityState === "hidden") return;
+    if (document.visibilityState === "hidden") return;
     try {
       const s = await GET("/admin/api/status");
       const n = Number(s.ops_failed_unread || 0);
-      if (n > 0) {
-        dotText.textContent = `运营失败 ${n}`;
-        dot.hidden = false;
-      } else {
-        dot.hidden = true;
+      if (dot && dotText) {
+        if (n > 0) { dotText.textContent = `运营失败 ${n}`; dot.hidden = false; }
+        else { dot.hidden = true; }
+      }
+      /* 实例身份：非默认数据根 ⇒ 每页顶部一条自证横幅（文案后端单源，前端只显示）。 */
+      if (banner) {
+        const inst = s.instance || {};
+        const show = inst.kind && inst.kind !== "default" && inst.note;
+        banner.textContent = show ? String(inst.note) : "";
+        banner.hidden = !show;
+        banner.classList.toggle("is-fake", inst.kind === "fake-upstream");
       }
     } catch { /* 网关离线（如停机中）忽略 */ }
   };

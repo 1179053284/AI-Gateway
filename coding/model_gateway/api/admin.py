@@ -223,6 +223,10 @@ async def status(request: Request):
         # 🔴 数据源是 `data/usage/ops-results-<date>.jsonl`（+ 已确认水位），**不是进程内计数器**：
         # 否则 CLI 独立进程写下的失败永远点不亮红点，网关重启还会把未读清零（验收 S-5）。
         "ops_failed_unread": ops_runner_unread(runtime.usage_dir),
+        # 🔴 实例身份（2026-10-02 用户实拍立项）：验收门/临时副本的界面与 :8300 逐像素一致，
+        #    唯一能区分真假的线索原先只有地址栏端口 —— 现在由顶栏横幅在每个页面自证。
+        #    复用既有 5s 轮询，不新建端点、不新建轮询通道。
+        "instance": runtime.instance_label(),
     }
 
 
@@ -410,9 +414,23 @@ async def resource_test(request: Request):
                                 content={"error": {"message": "资源不存在"}})
         adapter = runtime.adapters.get(rid)
         key = runtime.key_values.get(rid, "")
-        if adapter is None or not key:
+        # 🔴 两类接入的凭据位置不同（§22.5-2 互斥契约）：`product` 非空 = 账号体系供给的资源，
+        #    `api_key` **恒为空串**、凭据由适配器自解（§22.3）—— 原先无条件要求 key，
+        #    使账号侧资源的检测**永远**回「无可用出站适配器或 Key」（审计 P2 的死路径）。
+        if adapter is None:
+            gap = ""
+            try:
+                gap = str((getattr(runtime, "_adapter_errors", None) or {}).get(rid) or "")
+            except Exception:  # noqa: BLE001 — 诊断不得反过来打死检测
+                pass
+            return JSONResponse(status_code=400, content={"error": {"message":
+                "该资源没有可用的出站适配器"
+                + (f"（构造失败：{gap}）" if gap else
+                   ("（产品出站前提未注入，如签名器/验证码求解器）" if (r.product or "").strip()
+                    else "（Key 缺失）"))}})
+        if not key and not (r.product or "").strip():
             return JSONResponse(status_code=400,
-                                content={"error": {"message": "该资源无可用出站适配器或 Key"}})
+                                content={"error": {"message": "该资源无可用 Key（按量 API 资源必须配 Key）"}})
     else:
         # v2.0 §18.2 ②：健康测试同样按协议分支（v1.6 无条件 OpenAIOutAdapter）
         adapter = build_adapter(protocol, base_url)
@@ -443,7 +461,14 @@ async def zcode_quota(request: Request):
     🔴 **不做对外端点** —— 与 §16.1「运营接口不是 OpenAI 兼容 API 的组成部分」一致。
     消费者 = 二期「账号授权」页的「用量」面板（`templates/template-vendor-accounts.html`）。
 
-    数据源优先级（§17）：**客户端日志**（绕开签名风控）→ 该账号旧快照 → 联网兜底。
+    数据源（2026-10-02 §17 改述后的定位）：本端点是**离线聚合面** —— 读
+    `zq.read_account_snapshot()` 的**客户端日志**快照（本机实况：账号根内没有任何 `.log`，
+    16/16 号恒 `ok=False`）。额度的**实时源**不在这里，而是联网腿
+    （管理端「刷新额度」按钮 = `POST /admin/api/accounts/zcode/{name}/quota`，
+    自动腿由 `gateway.zcode.quota_net` 授权，默认关）。
+    旧注释的「客户端日志 → 旧快照 → 联网兜底」优先级已被实测推翻：那句"绕开签名风控"
+    的前提是联网取数需要 `X-Client-Sig/Nonce/Pow`，而一条 `Bearer + X-Device-Mid` 的只读
+    GET 就取到了数值（【探针台账】§2，**仅测这条 GET**）。
     """
     from model_gateway.upstream.zcode import quota as zq
     from model_gateway.upstream.zcode import store as zstore

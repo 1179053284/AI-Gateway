@@ -82,6 +82,7 @@ import logging
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
+from model_gateway.accounts import credexp
 from model_gateway.accounts import login
 from model_gateway.accounts import registry as account_registry
 from model_gateway.accounts import store
@@ -100,7 +101,8 @@ from model_gateway.config.schemas import ModelResource, SystemModel
 from model_gateway.ops import runner as ops_runner
 from model_gateway.ops.base import OpReport, OpResult
 from model_gateway.ops.bridge import outcome_to_op_result
-from model_gateway.ops.builtin import OPERATIONS, product_claim as product_claim_op
+from model_gateway.ops.builtin import OPERATIONS, auto_renew, product_claim as product_claim_op
+from model_gateway.ops.builtin import query_balance as query_balance_op
 
 logger = logging.getLogger("model_gateway.api.accounts")
 
@@ -124,6 +126,9 @@ _PRECHECK: dict[str, bool] = account_registry.PRE_CHECK_PRODUCTS
 #: ① 全局腿的参与面声明（`supported_products` → 枚举与过滤都按它推导）；
 #: ② `run_once` 的 operation 参数（能力声明过滤的唯一事实源）。
 _CLAIM_OP = OPERATIONS[product_claim_op.OPERATION_ID]
+#: 额度动作（同一张注册表；两个新端点的 `run_once(operation=…)` 用它做参与方过滤，
+#: 与 cron 腿逐字同一条链 —— 不在端点里自带第二套产品名单）
+_BALANCE_OP = OPERATIONS[query_balance_op.OPERATION_ID]
 
 
 # ---------- 统一错误出口（§22.7）----------
@@ -349,7 +354,7 @@ def cron_enabled_of(account: str) -> bool:
         return False
 
 
-async def _set_enabled(product: str, name: str, enabled: bool) -> dict:
+async def _set_enabled(request: Request, product: str, name: str, enabled: bool) -> dict:
     """写账号 meta 的 `enabled` 位（§22.6：运营跳过停用 / 状态查询含停用 / 续期不看）。
 
     落盘经唯一入口 `store.commit_login` 的**异步版**（A-1 接线：本函数只被异步端点调用，
@@ -363,10 +368,35 @@ async def _set_enabled(product: str, name: str, enabled: bool) -> dict:
     if _enabled_of(meta) == enabled:
         return {"status": "ok", "product": product, "account": name,
                 "enabled": enabled, "changed": False}
+    # 🔴 顺序与回滚（2026-10-02 裁决「一个开关一个主人」）：先同步派生资源的启用位，
+    #    再写账号 meta —— 资源位写失败 ⇒ meta 未动，两把位不会分叉；
+    #    meta 写失败 ⇒ 把资源位拨回原值（否则出现"账号启用着但资源被停用"的隐性不可服务）。
+    from model_gateway.accounts.materialize import (MaterializeError,
+                                                    set_resource_enabled)
+    runtime = getattr(request.app.state, "runtime", None)
+    cfg_path = getattr(runtime, "config_path", None)   # 与映射/物化同一份配置，不另找
+    if cfg_path is None:
+        raise _ApiError(503, "运行态不可用（无配置路径），启停会只写一半，拒绝执行")
+    try:
+        synced = set_resource_enabled(product, name, enabled, config_path=cfg_path)
+    except MaterializeError as e:
+        raise _ApiError(500, f"账号 {product}/{name} 的启停未生效：其派生资源的启用位写不动"
+                             f"（配置校验失败，不覆盖坏配置）：{e}") from None
     meta["enabled"] = enabled
-    await store.commit_login_async(product, name,
-                                   store.load_credentials(product, name, root=root), meta,
-                                   root=root, via="admin")
+    try:
+        await store.commit_login_async(product, name,
+                                       store.load_credentials(product, name, root=root), meta,
+                                       root=root, via="admin")
+    except Exception:
+        if synced:
+            try:      # 回滚尽力而为；失败只记日志（meta 未写 ⇒ 资源位与账号态分叉，必须留痕）
+                set_resource_enabled(product, name, not enabled, config_path=cfg_path)
+            except Exception as back:  # noqa: BLE001
+                logger.error("账号 %s/%s 启停回滚失败（资源启用位已与账号态分叉，需手工核对配置）：%s",
+                             product, name, back)
+        raise
+    # 响应键集**不扩**（`changed=False` 那条腿的字典被测试逐键钉住，多一个键就是契约漂移）；
+    # 同步条数只进日志，界面看账号行与资源态即可，不需要第三个数。
     return {"status": "ok", "product": product, "account": name,
             "enabled": enabled, "changed": True}
 
@@ -495,11 +525,13 @@ def _quota_summary_or_unknown(runtime, product: str, name: str) -> dict:
 
 
 def _account_entry(product: str, name: str, *, root, runtime) -> dict:
-    """单个账号的视图条目（设备字段 / 运行态摘要 / 额度缓存摘要 / 资源关联；**无凭据**）。
+    """单个账号的视图条目（设备字段 / 运行态摘要 / 额度缓存摘要 / 资源关联；**无凭据本体**）。
 
     🔴 载荷白名单就是本 `return` 的键本身：`resource` 只出 `{id, enabled}`
     （BD3a，见 `_resource_projection`），`display` 走 `_META_DISPLAY_KEYS` 白名单，
-    `runtime` 是额度/冷却快照 —— `credentials.json` 与任何 `api_key` 都不在本函数的读面里。
+    `runtime` 是额度/冷却快照 —— `credentials.json` 的**令牌本体/任何 api_key 都不出**；
+    2026-10-01 起本函数会读凭据文件，但只经 `credexp` 提炼出**一个失效时刻**
+    （`credential_expires_at`，续期按钮与 2h 自动续期的判据），其余字段一概不外带。
     """
     meta = store.load_meta(root, name)
     enabled = _enabled_of(meta)
@@ -511,6 +543,14 @@ def _account_entry(product: str, name: str, *, root, runtime) -> dict:
     except store.RuntimeUnreadable as e:
         # §22.8-5 fail closed：状态文件读不动**不得**呈现为健康（status → unknown）
         runtime_ok, runtime_error = False, str(e)
+    # 登录态失效时刻（读不动 / 解析不出 = 空串 = 界面写"未知"，不判定、不猜）
+    try:
+        cred_expiry = credexp.credential_expires_at_iso(
+            store.load_credentials(product, name, root=root))
+    except Exception as e:  # noqa: BLE001 — 视图面 fail-closed：读凭据失败不冒穿整页
+        logger.warning("登录态失效时刻读不动（%s/%s → 按未知呈现）：%s: %s",
+                       product, name, type(e).__name__, e)
+        cred_expiry = ""
     spec = account_registry.get(product).device
     device = {f: meta[f] for f in spec.fields
               if isinstance(meta.get(f), str) and meta.get(f)}
@@ -523,6 +563,8 @@ def _account_entry(product: str, name: str, *, root, runtime) -> dict:
         "runtime": snapshot,
         "runtime_ok": runtime_ok,
         "runtime_error": runtime_error,
+        # 登录态失效时刻（ISO 文本；"" = 未知）——行内续期钮的倒计时数据源
+        "credential_expires_at": cred_expiry,
         "quota": _quota_summary_or_unknown(runtime, product, name),
         # BD3a（设计书 §6 硬前置）：该账号已物化成的资源（`[{id, enabled}]`；
         # None = 配置读不动 = 未知，[] = 确实没有）。界面据此说"已物化 N 个资源 · 启用/停用"。
@@ -918,6 +960,151 @@ async def account_refresh(request: Request, product: str, name: str):
             "message": "凭据已续期并落盘"}
 
 
+@router.post("/admin/api/accounts/{product}/refresh-due")
+@_endpoint
+async def accounts_refresh_due(request: Request, product: str):
+    """批量续期（2026-10-01 用户裁决）：续期该产品下登录态将在 `within_hours`
+    （缺省 5 小时）内失效的账号。
+
+    - **能力位前置拒绝**：`refresh=False` → 400（与 `claim-all` 同一纪律，界面本就不渲染钮）；
+    - **不看启用位**：批量续期与单账号续期同一条 §22.6 正交语义（停用账号也可续）；
+    - **失效时刻取不到 = 不续**（回执里 `skipped_no_expiry` 如实计数，不猜）；
+    - 逐账号结果原样回传（`auto_renew.refresh_due` 不抛，单账号失败不影响其余）。
+    """
+    meta = _product_meta(product)
+    if not meta.capabilities.refresh:
+        raise _ApiError(400, f"{product} 不可续期（能力位 refresh=False，无凭据刷新端点）")
+    body = await _body(request)
+    raw = body.get("within_hours")
+    try:
+        within_h = float(raw) if raw is not None else auto_renew.BATCH_RENEW_WITHIN_S / 3600
+    except (TypeError, ValueError):
+        raise _ApiError(400, "within_hours 不是数") from None
+    if not 0 < within_h <= 720:
+        raise _ApiError(400, "within_hours 超出合理范围（0~720 小时）")
+    results = await auto_renew.refresh_due(
+        within_s=int(within_h * 3600), product=product)
+    renewed = [r for r in results if r["ok"] and not r.get("skipped")]
+    failed = [r for r in results if not r["ok"]]
+    skipped = {"no-expiry": 0, "cooldown": 0, "terminal": 0}
+    for r in results:
+        key = r.get("skipped")
+        if key in skipped:
+            skipped[key] += 1
+    return {"product": product, "within_hours": within_h,
+            "renewed": len(renewed), "failed": len(failed), "skipped": skipped,
+            "results": results}
+
+
+@router.post("/admin/api/accounts/{product}/{name}/quota")
+@_endpoint
+async def account_quota(request: Request, product: str, name: str):
+    """**账号级刷新额度**（2026-10-02 用户指令「每个产品下都必须有账号维度刷新额度」）。
+
+    与 cron 腿**同一个执行体** `query_balance.run_for`（§16.6：ops 决定"什么时候调"，
+    `upstream/` 决定"怎么调"）—— 本层只加"绑 product + 收集 reason + 落报告"这层外壳。
+
+    - 🔴 `via="user"`：这是**用户当场点的那一颗按钮**，因此**不受** `quota_net` 开关影响
+      （开关只管 cron 腿；工程 r6 B-R6-2 实测 `manual` 在本仓零调用 ⇒ 挂 `manual`
+      会让"默认 false"时连手动刷新都被一起挡掉，界面就成了"点了但没刷"）；
+    - **能力位前置拒绝**：`balance=False` → 400，不发起任何动作（§22.6「能力矩阵是判据
+      不是标签」；界面本就不渲染这颗钮）；
+    - **停用账号照样刷**：额度是**只读视图**，与 §22.6「运营执行跳过停用」正交
+      —— 停用的号也要看得见还剩多少，否则"为什么停用它"就失去依据（回执里如实标注来源）；
+    - 结果出口 = ops 四类 + `ops-results-*.jsonl` 落盘（顶栏红点同源，§16.2）。
+    """
+    meta = _product_meta(product)
+    _require_account(product, name)
+    if not meta.capabilities.balance:
+        raise _ApiError(400, f"{meta.title} 无可查额度通道（能力位 balance=False），未发起查询")
+    runtime = getattr(request.app.state, "runtime", None)
+    reasons: dict[str, str] = {}
+
+    async def _claim_once(account: str, *, manual: bool = False, runtime=None) -> OpResult:
+        del manual
+        return await query_balance_op.run_for(product, account, runtime=runtime,
+                                             via="user", reasons_out=reasons)
+
+    report = await ops_runner.run_once(
+        accounts=[name], claim=_claim_once, operation=_BALANCE_OP, runtime=runtime,
+        delay_s=0.0, jitter=False)
+    written = ops_runner.write_report(report, getattr(runtime, "usage_dir", None))
+    category, detail = _single_category(report, name)
+    if not detail and name in reasons:
+        detail = ""
+    return {"product": product, "account": name, "category": category, "detail": detail,
+            "reason": reasons.get(name, ""), "report": report.to_dict(),
+            "written": written is not None}
+
+
+@router.post("/admin/api/accounts/{product}/quota-all")
+@_endpoint
+async def accounts_quota_all(request: Request, product: str):
+    """**产品级刷新额度**（同上指令）：刷新该产品下**全部**账号的额度。
+
+    - 🔴 **产品级 = 该产品下全部账号**，不做"全站跨产品"那个 `product|null` 形态
+      （PM r3 4.2：`null` 在界面上没有任何触发点 = 一个能被调用却没人能点到的 API 面）；
+    - **能力位前置拒绝**（`balance=False` → 400，与单账号腿同一判据）；
+    - `via="user"` ⇒ **不受** `quota_net` 开关影响（同上）；
+    - 节奏 = **`delay_s=1.2, jitter=True`**（不抄 `claim-all` 的 `0.0/False`）：
+      16 个号挤在 ≈1.6s 内 = ≈1 req/0.1s，**低于官方客户端自身观测到的最小 1s 间隔**
+      （工程 r5 N-R5-5；cron 腿本来就是 1.2s + 抖动，手动腿没有理由更激进）；
+    - 回执三段计数 = `刷新 N · 失败 K · 未发起 J`，**按机器可读 `reason` 分档**
+      （见 `_quota_receipt`），不做中文文案匹配；停用账号**不跳过**（只读视图，同上）。
+    """
+    meta = _product_meta(product)
+    if not meta.capabilities.balance:
+        raise _ApiError(400, f"{meta.title} 无可查额度通道（能力位 balance=False），未发起任何查询")
+    runtime = getattr(request.app.state, "runtime", None)
+    accounts = store.list_accounts(product, root=store.product_root(product))
+    reasons: dict[str, str] = {}
+
+    async def _claim_once(account: str, *, manual: bool = False, runtime=None) -> OpResult:
+        del manual
+        return await query_balance_op.run_for(product, account, runtime=runtime,
+                                             via="user", reasons_out=reasons)
+
+    report = await ops_runner.run_once(
+        accounts=accounts, claim=_claim_once, operation=_BALANCE_OP, runtime=runtime)
+    written = ops_runner.write_report(report, getattr(runtime, "usage_dir", None))
+    receipt = _quota_receipt(report, reasons, candidates=len(accounts))
+    return {"product": product, "participants": list(accounts), "receipt": receipt,
+            "report": report.to_dict(), "written": written is not None}
+
+
+def _quota_receipt(report: OpReport, reasons: dict[str, str], *, candidates: int) -> dict:
+    """把 ops 报告折成界面回执三段计数（**按 `reason` 码分档，不做中文串匹配**）。
+
+    🔴 口径（方案 §5-3，**实施期补了一格**）：
+    - `refreshed N` = `success` + 那些"**上游明确说了**但说的是没有"的 `inactive`
+      （`no_plan` / `expired`）—— 用户关心的"刷新到了没有"里，"确认无套餐/凭据已死"
+      属于**取到了事实**，算 N；
+    - `failed K` = `failed`（含落盘失败、`circuit-untrusted`）；
+    - `not_fired J` = **其余全部** `inactive`：`circuit` / `unreachable` / `no_credentials` /
+      `no_identity` + 开关关闭的哨兵 `quota_net_off` + **`reason=""` 的"查了但上游没给可量化余量"**；
+    - `not_participating` = 候选数 − 实际产出过 `reason` 的号数（账号锁没拿到 / 该产品下没有
+      账号），**与 J 分家**（PM N-R4-2：「未发起」和「未参与」是两件事，混在一起用户就去查错东西）。
+      🔴 **停用的账号不属于"未参与"**：额度是只读视图，两条腿都不传 `enabled_of`
+      （`runner.py:408/423` 只有传了才跳过停用，§22.6 那条只管领取腿），停用的号也要看得见
+      还剩多少 —— 否则"为什么停用它"失去依据。判据 =
+      `tests/integration/test_admin_accounts.py::TestQuotaEndpoints::test_quota_all_receipt_mixes_all_four_buckets`。
+
+    ⚠️ 为什么 J 必须收 `reason=""` 那一档（方案 §5-3 的枚举漏了它，本轮在实现期补）：
+    9 个非 zcode 产品的失败腿**本轮不产 `reason`**（只有 zcode 填）⇒ 它们是
+    `inactive + reason=""`。按方案字面的"N=success+{no_plan,expired}、J=表内四档"两不管，
+    产品级刷新那两个号就会回执「刷新 0 · 失败 0 · 未发起 0」——三段全 0 而行为什么都发生了，
+    正是指令 2 要治的"点了但没人知道结果"。改法选**穷举**（`N + K + J == 参与者数`）而不是
+    新增第四段：段数与界面文案保持不变，`by_reason` 里 `""` 原样留着供逐号说明。
+    """
+    said = sum(1 for a in report.inactive if reasons.get(a, "") in {"no_plan", "expired"})
+    refreshed = len(report.success) + said
+    not_fired = len(report.inactive) - said
+    failed = len(report.failed)
+    return {"refreshed": refreshed, "failed": failed, "not_fired": not_fired,
+            "not_participating": max(0, candidates - len(reasons)),
+            "by_reason": {k: v for k, v in sorted(reasons.items())}}
+
+
 @router.post("/admin/api/accounts/{product}/{name}/probe")
 @_endpoint
 async def account_probe(request: Request, product: str, name: str):
@@ -1022,6 +1209,25 @@ def _mapped_to(cfg, product_rids: set[str], mid: str) -> list[str]:
         if any(e.resource in product_rids and e.model == mid for e in m.resources):
             out.append(m.name)
     return out
+
+
+def _map_enabled(cfg, product_rids: set[str], mid: str):
+    """该目录条目的**映射级开关**状态：`None` = 未映射；`True` = 组内至少一条进池；
+    `False` = 已映射但整组都关着（不参与资源池、不出现在 `/v1/models`）。
+
+    🔴 与 `mapped_to` 分开成两个字段，因为"挂过"与"在生效"是两件事：
+    关掉的映射仍然 `mapped_to=["glm-5.3"]`（否则用户会以为映射丢了），
+    但 `map_enabled=false` 才决定它能不能被调用到。判据与 `servable_models`
+    /`ResourceManager.rebuild` 读的同一个位（`ModelResource.enabled`）。
+    """
+    seen = False
+    for m in getattr(cfg, "models", None) or []:
+        for e in m.resources:
+            if e.resource in product_rids and e.model == mid:
+                seen = True
+                if e.enabled:
+                    return True
+    return False if seen else None
 
 
 def _catalog_accounts(runtime, product: str) -> list[dict]:
@@ -1131,6 +1337,7 @@ async def account_catalog(request: Request, product: str):
         mid = str(item.get("id") or "")
         item["suggest"] = _enum_suggest(pool, cfg_names, mid)
         item["mapped_to"] = _mapped_to(cfg, product_rids, mid)
+        item["map_enabled"] = _map_enabled(cfg, product_rids, mid)   # None = 未映射
         entries.append(item)
     payload = {"product": product, "title": meta.title,
                "checkin": meta.capabilities.checkin,
@@ -1176,15 +1383,17 @@ def _create_system_model(config, pool, name: str) -> SystemModel:
 
 
 def _mapping_holder(config, rid: str, mid: str):
-    """`(resource=rid, model=mid)` 组合当前挂在哪个系统模型上（无 → `None`）。
+    """`(resource=rid, model=mid)` 组合当前挂在哪个系统模型上 → `(模型, 条目)`，无 → `None`。
 
     判据扫**全部**系统模型：同一组合挂两处会让调度按模型复制资源、统计口径打架，
     所以"已在别处"是拒绝理由（进 `skipped`）而不是幂等命中（幂等命中 = **已在目标模型**上）。
+    🔴 一并返回**条目本体**：映射级开关（`ModelResource.enabled`）要写的就是这一条，
+    只回模型会让调用方再扫一遍数组（两处扫描迟早分叉，与 §22.5-2 join 谓词同一条教训）。
     """
     for m in config.models:
         for e in m.resources:
             if e.resource == rid and e.model == mid:
-                return m
+                return m, e
     return None
 
 
@@ -1222,18 +1431,24 @@ async def account_mappings(request: Request):
     items = body.get("items")
     if not isinstance(items, list) or not items:
         raise _ApiError(400, "缺少映射项：items 须为非空数组（[{model, target}, ...]）")
-    parsed: list[tuple[str, str]] = []
+    parsed: list[tuple[str, str, bool]] = []
     for i, raw in enumerate(items):
         if not isinstance(raw, dict):
-            raise _ApiError(400, f"items[{i}] 必须是对象（{{model, target}}）")
+            raise _ApiError(400, f"items[{i}] 必须是对象（{{model, target, enabled?}}）")
         mid = str(raw.get("model") or "").strip()
         if not mid:
             raise _ApiError(400, f"items[{i}] 缺少 model（厂商侧模型 id）")
         target = raw.get("target") or ""
         if not isinstance(target, str):
             raise _ApiError(400, f"items[{i}].target 必须是字符串（空串 = 跳过该条）")
-        parsed.append((mid, target.strip()))
-    if not any(t for _, t in parsed):
+        # `enabled` = 映射级开关（缺省 true = 既有行为）：非布尔直接拒，不让 "yes"/1 被
+        # Pydantic 宽松转换成开关位（与 `ModelResource.enabled` 的 strict 同一把尺）
+        enabled = raw.get("enabled", True)
+        if not isinstance(enabled, bool):
+            raise _ApiError(400, f"items[{i}].enabled 必须是布尔（开 = 进资源池可对外调用；"
+                                 "关 = 不参与资源池、不出现在 /v1/models）")
+        parsed.append((mid, target.strip(), enabled))
+    if not any(t for _, t, _ in parsed):
         raise _ApiError(400, "没有需要建立的映射（全部 target 为空）—— 请至少选择一条目录条目")
 
     runtime = getattr(request.app.state, "runtime", None)
@@ -1246,7 +1461,7 @@ async def account_mappings(request: Request):
     # 全部通过后才开始物化写盘（"先拒后动"：坏输入不得留下任何半成品）。
     snapshot = _load_config_for_write(path)
     existing = {m.name for m in snapshot.models}
-    for _, target in parsed:
+    for _, target, _ in parsed:
         if target and target not in existing and pool.get(target) is None:
             raise _ApiError(400, f"系统模型 {target!r} 不存在，且不是统一名枚举池条目："
                                  "请先在「网关模型管理」页创建它，或改用枚举池里的名字"
@@ -1275,9 +1490,9 @@ async def account_mappings(request: Request):
     # 阶段 3：读**写后**磁盘快照（含刚物化的资源行）→ 建/找目标模型 → 追加映射 → 保存 → 重载。
     config = _load_config_for_write(path)
     created: list[str] = []
-    added = already = 0
+    added = already = turned_on = turned_off = 0
     skipped: list[dict] = []
-    for mid, target in parsed:
+    for mid, target, enabled in parsed:
         if not target:
             continue
         model = next((m for m in config.models if m.name == target), None)
@@ -1286,17 +1501,32 @@ async def account_mappings(request: Request):
             created.append(target)
         for name in names:
             rid = rids[name]
-            holder = _mapping_holder(config, rid, mid)
-            if holder is not None:
-                if holder.name == target:
-                    already += 1
-                else:
+            found = _mapping_holder(config, rid, mid)
+            if found is not None:
+                holder, entry = found
+                if holder.name != target:
                     skipped.append({
                         "model": mid, "target": target,
                         "reason": f"账号 {name} 的资源 {rid} 与厂商模型 {mid} 已挂在系统模型 "
                                   f"{holder.name}（同一组合不重复挂载）"})
+                    continue
+                if entry.enabled == enabled:
+                    already += 1                  # 幂等命中：目标与开关都没变
+                elif enabled:
+                    entry.enabled = True
+                    turned_on += 1                # 关 → 开：重新进池、重新对外声明
+                else:
+                    entry.enabled = False
+                    turned_off += 1               # 开 → 关：条目留在配置里（保运行态），但不进池
                 continue
-            model.resources.append(ModelResource(resource=rid, model=mid, reasoning=None))
+            if not enabled:
+                skipped.append({
+                    "model": mid, "target": target,
+                    "reason": f"账号 {name} 的 {mid} 尚未建立映射，无需关闭"
+                              "（先选目标系统模型建立映射，才谈得上开关）"})
+                continue
+            model.resources.append(ModelResource(resource=rid, model=mid,
+                                                  reasoning=None, enabled=True))
             added += 1
     try:
         save_config(config, path)
@@ -1304,26 +1534,70 @@ async def account_mappings(request: Request):
         raise _ApiError(500, f"配置写入失败：{e}") from None
     ok, errors = await runtime.reload_from_file()
     payload = {"product": product, "created_models": created, "accounts": accounts_out,
-               "added": added, "already": already, "skipped": skipped, "reload": ok}
+               "added": added, "already": already, "skipped": skipped, "reload": ok,
+               "turned_on": turned_on, "turned_off": turned_off}
     if not ok:
         payload["reload_errors"] = errors
     return payload
 
 
+@router.get("/admin/api/accounts/{product}/{name}/check-models")
+@_endpoint
+async def account_check_models(request: Request, product: str, name: str):
+    """该账号**可检测**的模型清单 = 「模型映射里已开启」的那些（2026-10-02 用户指令）。
+
+    取法（三条都必须是**同一份配置**，不得各读一处）：
+    - 资源 = `_matched_resources(config, product, name)`（§22.5-2 的单一 join 谓词）；
+    - 映射 = `config.models[].resources[]` 中 `resource ∈ 上述资源 id` 且 **`enabled=true`**
+      的条目（映射级开关关掉的那些**不参与检测**，与调度/对外声明同一判据）；
+    - 输出 = `{vendor_model（发给上游的模型 id）, system_model（网关对外名）, resource_id}`。
+
+    另带两个"能不能真发请求"的事实位，供界面如实说明（不制造点了没反应的按钮）：
+    - `resource_enabled`：该账号的物化资源是否启用（停用 ⇒ 不参与调度，检测也无意义）；
+    - `has_adapter`：运行时是否已有该资源的出站适配器（产品出站前提未注入时为 false，
+      检测会逐条回可读原因，而不是静默）。
+    """
+    _product_meta(product)
+    _require_account(product, name)             # 400/404 的单一判据点，不在这里再写一份弱版
+    clean = name
+    runtime = getattr(request.app.state, "runtime", None)
+    cfg = getattr(runtime, "config", None) if runtime is not None else None
+    if cfg is None:
+        raise _ApiError(503, "运行态不可用（无配置快照），无法列出可检测模型")
+    resources = _matched_resources(cfg, product, clean)
+    rids = {r.id for r in resources}
+    items = []
+    for m in cfg.models:
+        for ref in m.resources:
+            if ref.resource in rids and ref.enabled:
+                items.append({"vendor_model": ref.model, "system_model": m.name,
+                              "resource_id": ref.resource})
+    adapters = getattr(runtime, "adapters", {}) or {}
+    return {
+        "product": product, "name": clean,
+        "models": items,
+        "resource_enabled": any(r.enabled for r in resources) if resources else False,
+        "has_adapter": any(adapters.get(rid) is not None for rid in rids),
+        "mapped_off": sum(1 for m in cfg.models for ref in m.resources
+                          if ref.resource in rids and not ref.enabled),
+    }
+
+
 @router.post("/admin/api/accounts/{product}/{name}/enable")
 @_endpoint
-async def account_enable(product: str, name: str):
-    """启用账号（写 meta `enabled=true`）。"""
+async def account_enable(request: Request, product: str, name: str):
+    """启用账号：写 meta `enabled=true` **并同步其派生资源的启用位**（2026-10-02 裁决）。"""
     _product_meta(product)
-    return await _set_enabled(product, name, True)
+    return await _set_enabled(request, product, name, True)
 
 
 @router.post("/admin/api/accounts/{product}/{name}/disable")
 @_endpoint
-async def account_disable(product: str, name: str):
-    """停用账号（写 meta `enabled=false`）：运营执行跳过、状态查询仍列出、续期照常。"""
+async def account_disable(request: Request, product: str, name: str):
+    """停用账号：写 meta `enabled=false`（运营执行跳过、状态查询仍列出、续期照常），
+    并同步其派生资源的启用位 ⇒ 该账号同时退出调度（一个开关一个主人）。"""
     _product_meta(product)
-    return await _set_enabled(product, name, False)
+    return await _set_enabled(request, product, name, False)
 
 
 def _disable_linked_resources(product: str, name: str) -> bool:

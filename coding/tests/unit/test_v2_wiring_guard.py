@@ -577,7 +577,11 @@ def test_plan_named_symbols_are_wired_into_their_declared_caller():
     """
     expectations = {
         "bench_all_zcode": "ops/builtin/zcode_claim.py",
-        "apply_snapshot_to_runtime": "ops/builtin/query_balance.py",
+        # 2026-10-02 联网额度腿落地后：ops 腿与离线面**共用**同一个实现
+        # `apply_remaining_to_runtime`（§17「余量 0 → 回写资源状态」义务的单一实现，
+        # 见 `upstream/zcode/quota.py` 该函数的 docstring）。旧名 `apply_snapshot_to_runtime`
+        # 降级为离线面的薄适配器（`refresh_runtime_quotas` 用它），不再由 ops 腿调用。
+        "apply_remaining_to_runtime": "ops/builtin/query_balance.py",
         "refresh_runtime_quotas": "main.py",                    # 启动 + tick + 管理端点
         "get_circuit": "ops/builtin/zcode_claim.py",
         "apply_to_resource": "upstream/zcode/quota.py",

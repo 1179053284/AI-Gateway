@@ -245,8 +245,18 @@ def _rendered_last_error(entries: list["ResourceState"], status: str,
 #: 原先「接入模型资源」/「网关模型管理」这类页名在 `main.config_warnings()` 与
 #: `cli_setup._CAUSE_HINTS` 各写一份 —— 两处漂移时前端门照样全绿（它只验"文案原样透传"）。
 ROUTE_POOL_PAGE = "「网关模型管理」页"      # 模型 ↔ 资源的映射、档位、优先级
-RESOURCE_PAGE = "「接入模型资源」页"        # 资源启用开关、Key
+RESOURCE_PAGE = "「接入模型资源」页"        # 供应商侧资源的启用开关、Key
+ACCOUNT_RESOURCE_PAGE = "「接入账号资源」页"  # 🔴 产品账号供给的资源（`product` 非空）只在这里管
 OVERVIEW_HEALTH_PAGE = "「总览」页的资源健康表"   # 「最近错误」/「冷却剩余」两列在这里
+
+#: 🔴 两类接入分流后的指路补语（2026-10-02 用户裁决：派生资源**完全不出现在**
+#: 「接入模型资源」与「网关模型管理 › 资源池设置」两页，只由账号页的模型映射自动进
+#: `/v1/models`）。原先这些提示统一说"到「接入模型资源」页"，对 `product` 非空的资源是
+#: **死路**（那一页已经看不见它了）—— 指错页面等于把 503 的排障线索咽回去。
+#: 判据与视图同源：`Resource.product` 非空（§22.5-2 互斥契约），前端 `api.js::isDerivedResource`。
+PRODUCT_ROUTE_NOTE = (f"；由产品账号供给的资源不在该页显示——"
+                      f"请到{ACCOUNT_RESOURCE_PAGE}对该账号重新登录或启用")
+
 
 
 class ResourceRegistry(dict):
@@ -300,6 +310,8 @@ def servable_models(config: AppConfig, registry: dict | None = None) -> set[str]
         if not m.enabled:
             continue
         for ref in m.resources:
+            if not ref.enabled:
+                continue          # 🔴 映射级开关关闭 ⇒ 这条映射不对外声明（/v1/models 与 setup 都不出）
             r = by_id.get(ref.resource)
             if r is None or not r.enabled:
                 continue
@@ -405,7 +417,9 @@ class ResourceManager:
             pool: list[ResourceState] = []
             for ref in m.resources:
                 rid = (ref.resource, ref.model)
-                referenced.add(rid)
+                referenced.add(rid)      # 仍算"被引用"：关掉的映射不回收状态，打开即恢复
+                if not ref.enabled:
+                    continue             # 🔴 映射级开关关闭 ⇒ **不进资源池**（调度取不到它）
                 state = self.registry.get(rid)
                 r = res_index[ref.resource]
                 fp = _conn_fingerprint(r, self._credential_fp(r))

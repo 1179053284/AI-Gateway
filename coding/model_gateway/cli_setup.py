@@ -17,6 +17,7 @@ from model_gateway.core.capabilities import build_caps_block, build_model_caps
 from model_gateway.core import local_admin
 from model_gateway.core.resources import (
     OVERVIEW_HEALTH_PAGE,
+    PRODUCT_ROUTE_NOTE,
     RESOURCE_PAGE,
     servable_models,
 )
@@ -71,8 +72,8 @@ def build_cli_models(config, enum_pool, dialects, base_url: str, api_key: str,
 _CAUSE_HINTS = {
     # 🔴 「添加映射」的控件（`#rv-addmap`）长在「接入模型资源」页，「网关模型管理」页只有
     #    档位/优先级/移除映射 —— 指错了用户会在那一屏找不到"添加"（第十一轮 PM B-11-1）。
-    "no_mapping": f"到{RESOURCE_PAGE}为该模型添加资源映射",
-    "resource_disabled": f"到{RESOURCE_PAGE}打开对应资源的启用开关",
+    "no_mapping": f"到{RESOURCE_PAGE}为该模型添加资源映射{PRODUCT_ROUTE_NOTE}",
+    "resource_disabled": f"到{RESOURCE_PAGE}打开对应资源的启用开关{PRODUCT_ROUTE_NOTE}",
     # 🔴 「最近错误」这一列在**总览**的资源健康表上，不在「接入模型资源」页
     #    （实测 `grep -c 最近错误 pages/resources.js` → 0；面板 S-17 指错页面）
     "runtime_dead": f"到{OVERVIEW_HEALTH_PAGE}看该资源的「最近错误」"

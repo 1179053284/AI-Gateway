@@ -19,6 +19,8 @@
 
 from __future__ import annotations
 
+import datetime
+
 import httpx
 
 from model_gateway.accounts import net
@@ -29,15 +31,19 @@ from model_gateway.upstream.trae import const, protocol
 class BalanceResult:
     """余额查询结果（`ok=False` = 查不动，**不得**当 0 处理）。"""
 
-    __slots__ = ("ok", "total", "pack_count", "detail")
+    __slots__ = ("ok", "total", "pack_count", "detail", "packages")
 
     def __init__(self, *, ok: bool, total: float = 0.0, pack_count: int = 0,
-                 detail: str = "") -> None:
+                 detail: str = "", packages: list[dict] | None = None) -> None:
         self.ok = ok
         self.total = total
         #: 计入总额的有效包数量（`credits_limit > 0`）。
         self.pack_count = pack_count
         self.detail = detail
+        #: 逐包结构（2026-10-01 加字段）：`{name, unit, remaining, total, used,
+        #: active, expires_at}`——`display_desc` 即套餐表达（「每月登录赠送」等），
+        #: `expire_time` 是**秒级** Unix（`trae-credits.ts:352-360`，须归一化成 ISO）。
+        self.packages = packages or []
 
 
 async def fetch_balance(cred: dict, uid: str) -> BalanceResult:
@@ -75,6 +81,7 @@ async def fetch_balance(cred: dict, uid: str) -> BalanceResult:
         return BalanceResult(ok=False, detail="响应缺少 user_entitlement_pack_list（结构变更？）")
     total = 0.0
     counted = 0
+    packages: list[dict] = []
     for item in pack_list:
         if not isinstance(item, dict):
             continue
@@ -87,9 +94,22 @@ async def fetch_balance(cred: dict, uid: str) -> BalanceResult:
             continue
         usage = item.get("usage")
         used = protocol.read_num(usage, "credits_amount") if isinstance(usage, dict) else None
-        total += credits_limit - (used or 0.0)
+        remaining = credits_limit - (used or 0.0)
+        total += remaining
         counted += 1
-    return BalanceResult(ok=True, total=total, pack_count=counted,
+        desc = base.get("display_desc") if isinstance(base, dict) else ""
+        expire_s = protocol.read_num(item, "expire_time") if isinstance(item, dict) else None
+        packages.append({
+            "name": str(desc or "资源包"),
+            "unit": const.BALANCE_UNIT,
+            "remaining": remaining,
+            "total": credits_limit,
+            "used": used,
+            "active": True,
+            "expires_at": (datetime.datetime.fromtimestamp(expire_s)
+                           .isoformat(timespec="seconds") if expire_s else ""),
+        })
+    return BalanceResult(ok=True, total=total, pack_count=counted, packages=packages,
                          detail=f"资源包 {counted} 个（共 {len(pack_list)} 条）")
 
 
@@ -108,7 +128,9 @@ async def quota(cred: dict, meta: dict) -> QuotaSnapshot:
     if balance.total > 0:
         return QuotaSnapshot(
             state="available", source=source,
-            detail=f"有效资源包 {balance.pack_count} 个，剩余 {balance.total:g} {const.BALANCE_UNIT}")
+            detail=f"有效资源包 {balance.pack_count} 个，剩余 {balance.total:g} {const.BALANCE_UNIT}",
+            plan=(balance.packages[0]["name"] if balance.packages else ""),
+            items=tuple(balance.packages))
     return QuotaSnapshot(
         state="exhausted", source=source,
         detail=f"资源包不含可用额度（有效包 0 个，{balance.detail}）")

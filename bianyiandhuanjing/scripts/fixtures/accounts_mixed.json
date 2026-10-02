@@ -35,8 +35,42 @@
           "runtime": {
             "quota": {
               "state": "available",
-              "source": "upstream balance",
-              "detail": "剩余 300 次请求",
+              "source": "buddy-billing",
+              "detail": "有效包 2 个，本周期剩余 1300 credits；另有 1 个失效包（0，不可扣费）",
+              "plan": "CodeBuddy个人体验版",
+              "items": [
+                {
+                  "name": "CodeBuddy个人体验版",
+                  "unit": "credits",
+                  "remaining": 300,
+                  "total": 300,
+                  "used": 0,
+                  "active": true,
+                  "expires_at": ""
+                },
+                {
+                  "name": "Bonus Pack",
+                  "unit": "credits",
+                  "remaining": 1000,
+                  "total": 1000,
+                  "used": 0,
+                  "active": true,
+                  "expires_at": "2026-10-10T00:00:00"
+                },
+                {
+                  "name": "Free Plan Subscription",
+                  "unit": "credits",
+                  "remaining": 0,
+                  "total": 500,
+                  "used": 500,
+                  "active": false,
+                  "expires_at": ""
+                }
+              ],
+              "remaining": null,
+              "reason": "",
+              "data_at": "",
+              "plan_key": "",
               "checked_at": "2026-09-30T09:12:03"
             },
             "watermark": "wm-1"
@@ -50,7 +84,8 @@
             "resources": [],
             "per_resource": {}
           },
-          "resource": []
+          "resource": [],
+          "credential_expires_at": "2026-12-31T10:00:00"
         },
         {
           "name": "buddy-second",
@@ -63,11 +98,18 @@
               "state": "exhausted",
               "source": "upstream balance",
               "detail": "当日额度已耗尽",
+              "plan": "",
+              "items": [],
+              "remaining": null,
+              "reason": "",
+              "data_at": "",
+              "plan_key": "",
               "checked_at": "2026-09-30T09:12:03"
             }
           },
           "runtime_ok": true,
           "runtime_error": "",
+          "credential_expires_at": "",
           "quota": {
             "state": "exhausted",
             "remaining": 0,
@@ -98,6 +140,7 @@
           "runtime": {},
           "runtime_ok": true,
           "runtime_error": "",
+          "credential_expires_at": "",
           "quota": {
             "state": "unknown",
             "remaining": null,
@@ -141,11 +184,18 @@
               "state": "available",
               "source": "upstream balance",
               "detail": "remaining 80 calls",
+              "plan": "",
+              "items": [],
+              "remaining": null,
+              "reason": "",
+              "data_at": "",
+              "plan_key": "",
               "checked_at": "2026-09-30T09:12:03"
             }
           },
           "runtime_ok": true,
           "runtime_error": "",
+          "credential_expires_at": "",
           "quota": {
             "state": "available",
             "remaining": 80,
@@ -178,11 +228,18 @@
               "state": "unknown",
               "source": "unknown",
               "detail": "上游 5xx 未取到",
+              "plan": "",
+              "items": [],
+              "remaining": null,
+              "reason": "",
+              "data_at": "",
+              "plan_key": "",
               "checked_at": "2026-09-30T09:12:03"
             }
           },
           "runtime_ok": true,
           "runtime_error": "",
+          "credential_expires_at": "",
           "quota": {
             "state": "unknown",
             "remaining": null,
@@ -230,11 +287,18 @@
               "state": "exhausted",
               "source": "upstream balance",
               "detail": "今日积分已领完",
+              "plan": "",
+              "items": [],
+              "remaining": null,
+              "reason": "",
+              "data_at": "",
+              "plan_key": "",
               "checked_at": "2026-09-30T09:12:03"
             }
           },
           "runtime_ok": true,
           "runtime_error": "",
+          "credential_expires_at": "",
           "quota": {
             "state": "exhausted",
             "remaining": 0,
@@ -271,11 +335,18 @@
               "state": "available",
               "source": "upstream balance",
               "detail": "剩余 45 次",
+              "plan": "",
+              "items": [],
+              "remaining": null,
+              "reason": "",
+              "data_at": "",
+              "plan_key": "",
               "checked_at": "2026-09-30T09:12:03"
             }
           },
           "runtime_ok": true,
           "runtime_error": "",
+          "credential_expires_at": "",
           "quota": {
             "state": "unknown",
             "remaining": null,
@@ -323,11 +394,18 @@
               "state": "unknown",
               "source": "upstream balance",
               "detail": "额度端点未落盘（未知不当零）",
+              "plan": "",
+              "items": [],
+              "remaining": null,
+              "reason": "",
+              "data_at": "",
+              "plan_key": "",
               "checked_at": "2026-09-30T09:12:03"
             }
           },
           "runtime_ok": true,
           "runtime_error": "",
+          "credential_expires_at": "",
           "quota": {
             "state": "available",
             "remaining": 500,
@@ -360,6 +438,7 @@
           "runtime": {},
           "runtime_ok": true,
           "runtime_error": "",
+          "credential_expires_at": "",
           "quota": {
             "state": "unknown",
             "remaining": null,
@@ -405,6 +484,7 @@
           "runtime": {},
           "runtime_ok": true,
           "runtime_error": "",
+          "credential_expires_at": "",
           "quota": {
             "state": "unknown",
             "remaining": null,
@@ -457,11 +537,18 @@
               "state": "available",
               "source": "upstream balance",
               "detail": "积分 2600",
+              "plan": "",
+              "items": [],
+              "remaining": null,
+              "reason": "",
+              "data_at": "",
+              "plan_key": "",
               "checked_at": "2026-09-30T09:12:03"
             }
           },
           "runtime_ok": true,
           "runtime_error": "",
+          "credential_expires_at": "",
           "quota": {
             "state": "available",
             "remaining": 2600,
@@ -506,11 +593,18 @@
               "state": "exhausted",
               "source": "upstream balance",
               "detail": "积分 0",
+              "plan": "",
+              "items": [],
+              "remaining": null,
+              "reason": "",
+              "data_at": "",
+              "plan_key": "",
               "checked_at": "2026-09-30T09:12:03"
             }
           },
           "runtime_ok": true,
           "runtime_error": "",
+          "credential_expires_at": "",
           "quota": {
             "state": "unknown",
             "remaining": null,
@@ -532,6 +626,7 @@
           "runtime": {},
           "runtime_ok": true,
           "runtime_error": "",
+          "credential_expires_at": "",
           "quota": {
             "state": "unknown",
             "remaining": null,
@@ -575,11 +670,18 @@
               "state": "available",
               "source": "upstream balance",
               "detail": "剩余 30 次",
+              "plan": "",
+              "items": [],
+              "remaining": null,
+              "reason": "",
+              "data_at": "",
+              "plan_key": "",
               "checked_at": "2026-09-30T09:12:03"
             }
           },
           "runtime_ok": true,
           "runtime_error": "",
+          "credential_expires_at": "",
           "quota": {
             "state": "unknown",
             "remaining": null,
@@ -598,6 +700,7 @@
           "runtime": {},
           "runtime_ok": true,
           "runtime_error": "",
+          "credential_expires_at": "",
           "quota": {
             "state": "unknown",
             "remaining": null,
@@ -645,11 +748,18 @@
               "state": "available",
               "source": "upstream balance",
               "detail": "daily 剩余 300 / permanent 剩余 1200",
+              "plan": "",
+              "items": [],
+              "remaining": null,
+              "reason": "",
+              "data_at": "",
+              "plan_key": "",
               "checked_at": "2026-09-30T09:12:03"
             }
           },
           "runtime_ok": true,
           "runtime_error": "",
+          "credential_expires_at": "",
           "quota": {
             "state": "unknown",
             "remaining": null,
@@ -670,6 +780,7 @@
           "runtime": {},
           "runtime_ok": true,
           "runtime_error": "",
+          "credential_expires_at": "",
           "quota": {
             "state": "unknown",
             "remaining": null,
@@ -719,11 +830,18 @@
               "state": "available",
               "source": "upstream balance",
               "detail": "积分 900",
+              "plan": "",
+              "items": [],
+              "remaining": null,
+              "reason": "",
+              "data_at": "",
+              "plan_key": "",
               "checked_at": "2026-09-30T09:12:03"
             }
           },
           "runtime_ok": true,
           "runtime_error": "",
+          "credential_expires_at": "",
           "quota": {
             "state": "available",
             "remaining": 900,
@@ -758,11 +876,18 @@
               "state": "unknown",
               "source": "upstream balance",
               "detail": "上游回 401，未能取到额度",
+              "plan": "",
+              "items": [],
+              "remaining": null,
+              "reason": "",
+              "data_at": "",
+              "plan_key": "",
               "checked_at": "2026-09-30T09:12:03"
             }
           },
           "runtime_ok": true,
           "runtime_error": "",
+          "credential_expires_at": "",
           "quota": {
             "state": "unknown",
             "remaining": null,
@@ -810,11 +935,18 @@
               "state": "exhausted",
               "source": "upstream balance",
               "detail": "Plan 额度已耗尽",
+              "plan": "",
+              "items": [],
+              "remaining": null,
+              "reason": "",
+              "data_at": "",
+              "plan_key": "",
               "checked_at": "2026-09-30T09:12:03"
             }
           },
           "runtime_ok": true,
           "runtime_error": "",
+          "credential_expires_at": "",
           "quota": {
             "state": "exhausted",
             "remaining": 0,
@@ -835,14 +967,457 @@
               "enabled": true
             }
           ]
+        },
+        {
+          "name": "ix-quota-net",
+          "enabled": true,
+          "status": "active",
+          "device": {
+            "device_mid": "dm-ix-ix-quota-net"
+          },
+          "display": {},
+          "runtime": {
+            "quota": {
+              "state": "available",
+              "source": "zcode-billing",
+              "detail": "上游给出 2 个资源包（token 量纲），period_end 已归一为 ISO",
+              "plan": "Pro 月付",
+              "items": [
+                {
+                  "name": "Pro 月付",
+                  "unit": "token",
+                  "remaining": 1800000,
+                  "total": 2000000,
+                  "used": 200000,
+                  "active": true,
+                  "expires_at": "2026-10-03T00:00:00"
+                },
+                {
+                  "name": "每日包",
+                  "unit": "token",
+                  "remaining": 200000,
+                  "total": 500000,
+                  "used": 300000,
+                  "active": true,
+                  "expires_at": "2026-10-02T23:59:59"
+                }
+              ],
+              "remaining": 2000000,
+              "reason": "",
+              "data_at": "2026-10-02T09:12:05",
+              "plan_key": "upl_2105792494636244992",
+              "checked_at": "2026-10-02T09:40:11"
+            }
+          },
+          "runtime_ok": true,
+          "runtime_error": "",
+          "credential_expires_at": "",
+          "quota": {
+            "state": "unknown",
+            "remaining": 0,
+            "reserved": 0,
+            "resources": [],
+            "per_resource": {}
+          },
+          "resource": []
+        },
+        {
+          "name": "ix-no-plan",
+          "enabled": true,
+          "status": "active",
+          "device": {
+            "device_mid": "dm-ix-ix-no-plan"
+          },
+          "display": {},
+          "runtime": {
+            "quota": {
+              "state": "unknown",
+              "source": "zcode-billing",
+              "detail": "200 且 code=0：plans=[] 且 balances=[]（确实无套餐 vs 身份无 entitlement，两可未判定）",
+              "plan": "",
+              "items": [],
+              "remaining": null,
+              "reason": "no_plan",
+              "data_at": "2026-10-02T09:12:05",
+              "plan_key": "",
+              "checked_at": "2026-10-02T09:40:11"
+            }
+          },
+          "runtime_ok": true,
+          "runtime_error": "",
+          "credential_expires_at": "",
+          "quota": {
+            "state": "unknown",
+            "remaining": 0,
+            "reserved": 0,
+            "resources": [],
+            "per_resource": {}
+          },
+          "resource": []
+        },
+        {
+          "name": "ix-noplan-items",
+          "enabled": true,
+          "status": "active",
+          "device": {
+            "device_mid": "dm-ix-ix-noplan-items"
+          },
+          "display": {},
+          "runtime": {
+            "quota": {
+              "state": "unknown",
+              "source": "zcode-billing",
+              "detail": "门内判别样本：非可产出形状，只打分支顺序（V14）——真实 no_plan 轮 items 恒空",
+              "plan": "Pro 月付",
+              "items": [
+                {
+                  "name": "Pro 月付",
+                  "unit": "token",
+                  "remaining": 1200000,
+                  "total": 2000000,
+                  "used": 800000,
+                  "active": true,
+                  "expires_at": "2026-10-03T00:00:00"
+                }
+              ],
+              "remaining": 1200000,
+              "reason": "no_plan",
+              "data_at": "2026-10-02T09:12:05",
+              "plan_key": "upl_2105792494636244992",
+              "checked_at": "2026-10-02T09:40:11"
+            }
+          },
+          "runtime_ok": true,
+          "runtime_error": "",
+          "credential_expires_at": "",
+          "quota": {
+            "state": "unknown",
+            "remaining": 0,
+            "reserved": 0,
+            "resources": [],
+            "per_resource": {}
+          },
+          "resource": []
+        },
+        {
+          "name": "ix-null-remaining",
+          "enabled": true,
+          "status": "active",
+          "device": {
+            "device_mid": "dm-ix-ix-null-remaining"
+          },
+          "display": {},
+          "runtime": {
+            "quota": {
+              "state": "available",
+              "source": "zcode-billing",
+              "detail": "上游给了额度桶但 available 缺失 ⇒ 整号未知（不拿 total 或第二个字段猜）",
+              "plan": "",
+              "items": [
+                {
+                  "name": "每日资源包",
+                  "unit": "",
+                  "remaining": null,
+                  "total": 500000,
+                  "used": 0,
+                  "active": true,
+                  "expires_at": ""
+                }
+              ],
+              "remaining": null,
+              "reason": "",
+              "data_at": "",
+              "plan_key": "",
+              "checked_at": "2026-10-02T09:40:11"
+            }
+          },
+          "runtime_ok": true,
+          "runtime_error": "",
+          "credential_expires_at": "",
+          "quota": {
+            "state": "unknown",
+            "remaining": 0,
+            "reserved": 0,
+            "resources": [],
+            "per_resource": {}
+          },
+          "resource": []
+        },
+        {
+          "name": "ix-zero-remaining",
+          "enabled": true,
+          "status": "active",
+          "device": {
+            "device_mid": "dm-ix-ix-zero-remaining"
+          },
+          "display": {},
+          "runtime": {
+            "quota": {
+              "state": "exhausted",
+              "source": "zcode-billing",
+              "detail": "本周期 token 已用尽",
+              "plan": "",
+              "items": [
+                {
+                  "name": "Token 包",
+                  "unit": "token",
+                  "remaining": 0,
+                  "total": 2000000,
+                  "used": 2000000,
+                  "active": true,
+                  "expires_at": "2026-10-03T00:00:00"
+                }
+              ],
+              "remaining": 0,
+              "reason": "",
+              "data_at": "2026-10-02T09:12:05",
+              "plan_key": "",
+              "checked_at": "2026-10-02T09:40:11"
+            }
+          },
+          "runtime_ok": true,
+          "runtime_error": "",
+          "credential_expires_at": "",
+          "quota": {
+            "state": "unknown",
+            "remaining": 0,
+            "reserved": 0,
+            "resources": [],
+            "per_resource": {}
+          },
+          "resource": []
+        },
+        {
+          "name": "ix-epoch",
+          "enabled": true,
+          "status": "active",
+          "device": {
+            "device_mid": "dm-ix-ix-epoch"
+          },
+          "display": {},
+          "runtime": {
+            "quota": {
+              "state": "available",
+              "source": "zcode-log",
+              "detail": "离线日志面残留：上游时间字段未归一（页面不得把脏值印给用户）",
+              "plan": "",
+              "items": [
+                {
+                  "name": "裸时刻包",
+                  "unit": "token",
+                  "remaining": 1500000,
+                  "total": 2000000,
+                  "used": 500000,
+                  "active": true,
+                  "expires_at": "1790956800"
+                }
+              ],
+              "remaining": 1500000,
+              "reason": "",
+              "data_at": "",
+              "plan_key": "",
+              "checked_at": "2026-10-02T09:40:11"
+            }
+          },
+          "runtime_ok": true,
+          "runtime_error": "",
+          "credential_expires_at": "",
+          "quota": {
+            "state": "unknown",
+            "remaining": 0,
+            "reserved": 0,
+            "resources": [],
+            "per_resource": {}
+          },
+          "resource": []
+        },
+        {
+          "name": "ix-circuit",
+          "enabled": true,
+          "status": "active",
+          "device": {
+            "device_mid": "dm-ix-ix-circuit"
+          },
+          "display": {},
+          "runtime": {
+            "quota": {
+              "state": "available",
+              "source": "zcode-billing",
+              "detail": "上游 3012 风控，已进入全局熔断（数值沿用上一轮）",
+              "plan": "Pro 月付",
+              "items": [
+                {
+                  "name": "Pro 月付",
+                  "unit": "token",
+                  "remaining": 900000,
+                  "total": 2000000,
+                  "used": 1100000,
+                  "active": true,
+                  "expires_at": "2026-10-05T00:00:00"
+                }
+              ],
+              "remaining": 900000,
+              "reason": "circuit",
+              "data_at": "2026-10-01T08:40:00",
+              "plan_key": "upl_2105792494636244992",
+              "checked_at": "2026-10-02T09:44:00"
+            }
+          },
+          "runtime_ok": true,
+          "runtime_error": "",
+          "credential_expires_at": "",
+          "quota": {
+            "state": "unknown",
+            "remaining": 0,
+            "reserved": 0,
+            "resources": [],
+            "per_resource": {}
+          },
+          "resource": []
+        },
+        {
+          "name": "ix-untrusted",
+          "enabled": true,
+          "status": "active",
+          "device": {
+            "device_mid": "dm-ix-ix-untrusted"
+          },
+          "display": {},
+          "runtime": {
+            "quota": {
+              "state": "unknown",
+              "source": "unknown",
+              "detail": "熔断状态文件读不动（RuntimeUnreadable）：不建熔断、不发起，fail closed",
+              "plan": "",
+              "items": [],
+              "remaining": null,
+              "reason": "circuit-untrusted",
+              "data_at": "",
+              "plan_key": "",
+              "checked_at": "2026-10-02T09:40:11"
+            }
+          },
+          "runtime_ok": true,
+          "runtime_error": "",
+          "credential_expires_at": "",
+          "quota": {
+            "state": "unknown",
+            "remaining": 0,
+            "reserved": 0,
+            "resources": [],
+            "per_resource": {}
+          },
+          "resource": []
+        },
+        {
+          "name": "ix-unreachable",
+          "enabled": true,
+          "status": "active",
+          "device": {
+            "device_mid": "dm-ix-ix-unreachable"
+          },
+          "display": {},
+          "runtime": {
+            "quota": {
+              "state": "unknown",
+              "source": "unknown",
+              "detail": "ConnectError：上游不可达（本轮不覆盖上一轮数值）",
+              "plan": "",
+              "items": [],
+              "remaining": null,
+              "reason": "unreachable",
+              "data_at": "",
+              "plan_key": "",
+              "checked_at": "2026-10-02T09:40:11"
+            }
+          },
+          "runtime_ok": true,
+          "runtime_error": "",
+          "credential_expires_at": "",
+          "quota": {
+            "state": "unknown",
+            "remaining": 0,
+            "reserved": 0,
+            "resources": [],
+            "per_resource": {}
+          },
+          "resource": []
+        },
+        {
+          "name": "ix-no-cred",
+          "enabled": false,
+          "status": "disabled",
+          "device": {
+            "device_mid": "dm-ix-ix-no-cred"
+          },
+          "display": {},
+          "runtime": {
+            "quota": {
+              "state": "unknown",
+              "source": "unknown",
+              "detail": "缺 jwt：不发起上游请求（§3 流程图第一支）",
+              "plan": "",
+              "items": [],
+              "remaining": null,
+              "reason": "no_credentials",
+              "data_at": "",
+              "plan_key": "",
+              "checked_at": "2026-10-02T09:40:11"
+            }
+          },
+          "runtime_ok": true,
+          "runtime_error": "",
+          "credential_expires_at": "",
+          "quota": {
+            "state": "unknown",
+            "remaining": 0,
+            "reserved": 0,
+            "resources": [],
+            "per_resource": {}
+          },
+          "resource": []
+        },
+        {
+          "name": "ix-no-identity",
+          "enabled": true,
+          "status": "active",
+          "device": {
+            "device_mid": "dm-ix-ix-no-identity"
+          },
+          "display": {},
+          "runtime": {
+            "quota": {
+              "state": "unknown",
+              "source": "unknown",
+              "detail": "缺账号名 / 身份读不动（§6 第 9 格，与 no_credentials 同文案）",
+              "plan": "",
+              "items": [],
+              "remaining": null,
+              "reason": "no_identity",
+              "data_at": "",
+              "plan_key": "",
+              "checked_at": "2026-10-02T09:40:11"
+            }
+          },
+          "runtime_ok": true,
+          "runtime_error": "",
+          "credential_expires_at": "",
+          "quota": {
+            "state": "unknown",
+            "remaining": 0,
+            "reserved": 0,
+            "resources": [],
+            "per_resource": {}
+          },
+          "resource": []
         }
       ]
     }
   ],
   "counts": {
     "products": 10,
-    "accounts": 20,
-    "enabled": 13,
-    "disabled": 7
+    "accounts": 31,
+    "enabled": 23,
+    "disabled": 8
   }
 }

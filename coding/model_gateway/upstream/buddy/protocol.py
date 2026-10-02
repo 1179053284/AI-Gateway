@@ -1071,8 +1071,26 @@ def parse_package(entry: dict) -> dict:
         "name": name,
         "unit": read_str(entry, "CapacityUnit") or read_str(entry, "OriginUnit"),
         "remaining": _read_precise_number(entry, "CycleCapacityRemain"),
+        # 本周期总额（CycleCapacitySize 的精确值；余量/总额同口径，`credits.ts:455-482`）
+        "total": _read_precise_number(entry, "CycleCapacitySize"),
+        # 扣费截止（毫秒）——「这批积分何时作废」的权威字段（CycleEndTime 会把月度套餐误判）
+        "deduction_end": deduction_end,
         "active": active,
     }
+
+
+def balance_packages(body: object) -> list[dict]:
+    """`get-user-resource` 响应 → 逐包列表（`parse_package` 的薄遍历；结构变更返回 `[]`）。"""
+    if code_of(body) != CODE_OK:
+        return []
+    outer = data_of(body)
+    response = outer.get("Response") if isinstance(outer, dict) else None
+    inner = response.get("Data") if isinstance(response, dict) else None
+    accounts = inner.get("Accounts") if isinstance(inner, dict) else None
+    if not isinstance(accounts, list):
+        return []
+    return [pkg for item in accounts
+            if isinstance(item, dict) and (pkg := parse_package(item))]
 
 
 def summarize_balance(body: object) -> BalanceSummary | None:

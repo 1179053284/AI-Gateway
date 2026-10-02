@@ -108,11 +108,19 @@ def test_normalize_remote_maps_balances_to_buckets():
 
 
 def test_normalize_remote_never_treats_total_as_available():
-    """🔴 `available_units` 缺省时**绝不能拿总量当可用**（`18` §④）。"""
+    """🔴 `available_units` 缺省 = **未给出**，一律 `None`（方案 §4-3 口径，`18` §④ 的严格化）。
+
+    🔴 本用例的**期望值被本轮推翻**（旧断言是 `== 2_000_000`，注释逐字写"= total - used"）：
+    v3 之前 `_bucket_from_balance` 的兜底 `max(0, total - used)` 与 `quota.py:158` 自己那行注释
+    （「绝不能拿总量当可用」）**互相打脸**，而旧断言钉的正是那个自相矛盾的兜底。
+    现在"上游没给可用数"就是 `None`（→ 整号 unknown），既不猜 total、也不猜 total-used。
+    """
     rec = json.loads(_log_record(available=None))
     snap = quota.normalize_remote(rec)
 
-    assert snap.buckets[0].available == 2_000_000     # = total - used，不是 3_000_000
+    assert snap.buckets[0].available is None          # 未给出 ≠ 2_000_000，也 ≠ 0
+    # 反向钉：总量/已用照原样带出（"没给可用数"不等于"什么都没给"，展示层仍要能算总额）
+    assert (snap.buckets[0].total, snap.buckets[0].used) == (3_000_000, 1_000_000)
 
 
 def test_normalize_remote_non_dict_is_not_ok():
@@ -125,7 +133,9 @@ def test_normalize_remote_field_alias_tolerance():
     snap = quota.normalize_remote({"data": {"balances": [
         {"showName": "X", "total_units": 10, "used_units": 4}]}})
     assert snap.buckets[0].show_name == "X"
-    assert snap.buckets[0].available == 6
+    # 🔴 同上：缺 `available_units` 就是 `None`（旧期望 `== 6` 钉的是被推翻的 total-used 兜底）。
+    #    别名防御只覆盖**键名**（showName/show_name），不覆盖**值**——值不许second-guess。
+    assert snap.buckets[0].available is None
 
 
 # ---------- 跨账号聚合 ----------

@@ -3122,7 +3122,13 @@ const MUTATIONS = [
   { why: "红点计数 >0 也不去掉 hidden", file: "main", from: "dot.hidden = false;",
     to: "dot.hidden = true;", kills: ["I1", "F6"] },
   { why: "有失败时也把红点藏起来（文案恒空）", file: "main",
-    from: "        dotText.textContent = `运营失败 ${n}`;", to: "", kills: ["I1"] },
+    // 🔴 2026-10-02 16:0x 更新：原锚 `        dotText.textContent = \`运营失败 ${n}\`;`（八空格独占一行）
+    //    在「实例身份横幅」那次改动里被折进了 `if (n > 0) { … }` 的单行形态
+    //    （`web/static/js/main.js:117`），于是命中数归 0、`--mutation` 里这一条报「锚点已过期」，
+    //    连带 `test_int_v2_frontend_gate.py::test_frontend_assertions_can_actually_go_red` 判红。
+    //    语义不变：把文案赋值整段摘掉，只剩"隐藏位不变"，I1 必须红。
+    from: "        if (n > 0) { dotText.textContent = `运营失败 ${n}`; dot.hidden = false; }",
+    to: "        if (n > 0) { dot.hidden = false; }", kills: ["I1"] },
   { why: "轮询打错端点", file: "main", from: 'await GET("/admin/api/status")',
     to: 'await GET("/admin/api/stat")', kills: ["I3"] },
   { why: "轮询间隔 30s", file: "main", from: "setInterval(poll, 5000)",
@@ -3215,11 +3221,18 @@ const MUTATIONS = [
     to: '<a href="#/operations" style="color:var(--cool);font-weight:700">查看日志</a>',
     kills: ["K4"] },
   { why: "🔴 第八轮 B-3：坏页名写在告警装配地 `main.py`（原先不在扫描面里）", file: "mainPy",
-    from: "个系统模型未配置任何资源，", to: "个系统模型未配置任何资源（去「模型映射」页处理），",
+    // 2026-10-02 重锚：装配地的文案被别的轮次改写过
+    // （「N 个系统模型未配置任何资源，」→「N 个系统模型没有任何生效的资源映射，」，`main.py:694`），
+    // 旧字面命中 0 次 ⇒ 这条变异空转。判据原意不变：在**告警装配地**插一个坏页名，J2 必须响。
+    from: "个系统模型没有任何生效的资源映射，",
+    to: "个系统模型没有任何生效的资源映射（去「模型映射」页处理），",
     kills: ["J2"] },
   { why: "🔴 第八轮 B-4：可见文案落在**模板字符串里以 `//` 开头的一行**（旧剥离器当注释删）",
     file: "models",
-    from: "无资源（调用将无可用资源 503）——到「接入模型资源」页编辑资源添加映射",
+    // 2026-10-02 重锚：那句指路文案加了"供应商侧 / 账号侧"分流（`models.js:407`），
+    // 旧字面（只到「添加映射」）命中 0 次。判据原意不变：把坏页名放进模板串里以 `//`
+    // 开头的那一行，剥注释若按"行首 `//` 即注释"判，用户看得见的指路就从扫描面消失。
+    from: "无资源（调用将无可用资源 503）——供应商侧到「接入模型资源」页添加映射，账号侧到「接入账号资源」页做「模型映射」",
     to: "无资源（调用将无可用资源 503）——\n      // 到「运维面板」页编辑资源添加映射",
     kills: ["J2"] },
   { why: "🔴 第八轮 B-7：不带括号的页名（旧正则只认「」/『』）", file: "cliSetup",

@@ -63,6 +63,18 @@ class ZcodeUpstreamConfig(BaseModel):
     #: 是否对 `zcode.z.ai` 启用 **TLS 指纹伪装**（§17 / P1-8）。
     #: 前置 ESA WAF 会按 ClientHello 识别机器程序；curl_cffi 不可用时自动降级并告警（§19 T5a/T5b）
     fingerprint: bool = False
+    #: 🔴 额度**自动**联网腿总开关（方案 §6 第 8 格 / §12 U-8）。**默认 `false`** 是有意的：
+    #: 打开它 = 授权网关在用户不在场时、按 cron 节奏对 15 个上游身份持续发起只读出站
+    #: （实测推算 ≈192 次/小时 ≈ 4,600 次/天，单身份 ≈1 次/5 分钟）。
+    #: 客体是**用户的账号资产**，所以授权方向只能是"用户点头后才打开"，而不是"默认开着等否决"。
+    #:
+    #: - `false`：cron 腿**不发起**、不改写 `runtime.json`（界面沿用上一轮数值）；
+    #:   **手动腿不受影响**（`via="user"` 照常联网）⇒ 「账号级/产品级刷新额度」始终可用。
+    #: - `true`：cron 每轮对全部 zcode 号联网查额度；出现任一次风控 ⇒ 按 §10-6 回落本值并记台账。
+    #:
+    #: 判据：`tests/unit/test_zcode_billing.py` 的第 8 格两条对照（cron 不发起 / 手动的确发起）
+    #: ＋ `test_quota_net_defaults_to_off_in_the_schema`（默认值本身）。
+    quota_net: bool = False
 
     def effective_proxy(self) -> str:
         """生效的代理地址：配置项优先，其次环境变量。"""
@@ -194,11 +206,21 @@ class Resource(BaseModel):
 
 
 class ModelResource(BaseModel):
-    """系统模型资源引用：resource（资源 id）+ 厂商侧模型 + 资源级推理默认。"""
+    """系统模型资源引用：resource（资源 id）+ 厂商侧模型 + 资源级推理默认 + **映射级开关**。
+
+    🔴 `enabled` 是**这条映射**参不参与调度，与 `Resource.enabled`（那颗资源开关）是两把位：
+      - 映射关 ⇒ 该 `(resource, model)` **不进资源池**（`ResourceManager.rebuild` 跳过）、
+        **不对外声明**（`servable_models` 跳过 ⇒ 不出现在 `/v1/models`、不被 `mgw setup` 下发），
+        但条目**留在配置里**并保留运行态（冷却/判死历史），再打开即恢复；
+      - 资源关 ⇒ 该资源的全部映射都不参与（既有语义，不变）。
+    界面入口：「接入账号资源」页的「模型映射」弹窗逐行开关（产品 × 模型维度）。
+    strict 同 `SystemModel.enabled`（UT-25 ①：非 bool 值拒绝而不是被宽松转换）。
+    """
 
     resource: str = Field(min_length=1)
     model: str = Field(min_length=1)  # 厂商侧模型 ID
     reasoning: ReasoningDefault | None = None
+    enabled: bool = Field(default=True, strict=True)
 
 
 # 已知参数键的取值范围（Q24）：模块级常量（类内带注解会被 Pydantic 当私有属性）。

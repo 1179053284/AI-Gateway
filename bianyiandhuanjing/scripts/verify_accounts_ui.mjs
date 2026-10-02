@@ -3,8 +3,9 @@
  * M7-UI 判据门 · 「账号接入」页 v2 结构（design-accounts-list-v2.md §8 判据 1）
  *
  * 干什么：把 `model_gateway/web/static/js/pages/accounts.js` 的**真源码**编进 vm，
- * 喂三份 fixture（0 账号 / 单产品 6 账号 / 10 产品 20 账号）执行页面的渲染入口
- * `renderAccounts(root)`，对产出的假 DOM 断言设计书 §8 的 8 条判据（V1–V8）+ 三条
+ * 喂三份 fixture（0 账号 / 单产品 7 账号 / 10 产品 31 账号）执行页面的渲染入口
+ * `renderAccounts(root)`，对产出的假 DOM 断言设计书 §8 的判据（V1–V17，含 2026-10-02
+ * 额度五档改版的 V4'/V7'/V10'/V13/V14/V14b/V15/V17）+ 三条
  * **反转的 M6-IX 判据**（L-A6 / L-A8 / L-A10 —— 原断言见
  * `docs/changes/e2e-records/m6-accounts-assertions.json`，本版把它们逐条反转而不是删除）。
  *
@@ -15,7 +16,7 @@
  * 用法：
  *   node scripts/verify_accounts_ui.mjs                 # 实测（人读）
  *   node scripts/verify_accounts_ui.mjs --json          # 机器读（最后一行 JSON，退出码 0）
- *   node scripts/verify_accounts_ui.mjs --mutation      # 变异自证（8 行表，见下）
+ *   node scripts/verify_accounts_ui.mjs --mutation      # 变异自证（MUTATIONS 每条一行表，见下）
  *   node scripts/verify_accounts_ui.mjs --help          # 用法
  *   可覆盖：MGW_AC_PAGE=<path> / `--page <path>`（被实测的页面副本，变异模式用）
  *           MGW_AC_FIXDIR=<dir>（fixture 目录，默认 bianyiandhuanjing/scripts/fixtures）
@@ -26,6 +27,10 @@
  *   → 八条 V 判据全绿（R0 亦绿），只剩 L-A6/L-A8/L-A10 三条红——因为最小 fix 没去动
  *   族标题文字、rail title 与头卡副行，正是实施轮剩下的三件事。
  *   这条同时证明 V 段没有「永远红」的死判据（每条都实测过绿态）。
+ *   ⚠️ 上面那句是 **2026-09-30 那一批的历史记录**（当时的 fix 组含 TABLE/QUOTA/WORDS 等 6 组）。
+ *   2026-10-02 五档改版后 fix 组已变（`QUOTA_FIX` 退役、V4/V7/V10/V13/V14/V14b/V15/V17 改走
+ *   `expectGreen`），本轮的可绿性证据 = 页面已实现 ⇒ **基线 22 项全绿** + `--mutation` 19/19 可红
+ *   （原始输出见 `docs/changes/e2e-records/gate-static-20261002.md`），不要再拿上面那句当现状读。
  *
  * 退出码：0 = 全绿；1 = 有失败；2 = 结构级错误（页面渲染不出来 / fixture 不合契约 /
  *   门自身抽取失败）——「渲染不出来」在本门是**判据**（R0），不是被吞掉的异常。
@@ -50,6 +55,11 @@
  *   · 向导段驱动到「参数段 → 开始登录 → 展示物（含短信 tab 切换）」；行内操作
  *     （探活/续期/签到/删除）与模型目录弹窗**不在本门面内**（它们要 POST 桩与真实
  *     落库语义，归 pytest / 真机断言）。
+ *   · 🔴 2026-10-02（方案 §8.2 V10'-④ / QA N-7）：V10' 的「总额一致性」需要**页面自己的**
+ *     缩写函数 `fmtQuotaNumber` 来算期望串 —— 门内重写第二份 = 判据自证（两份实现一起错就永远绿）。
+ *     实现姿势 = `DRIVER` 多收一份 probe（每号 `[Σactive remaining, unit]`，由 `buildRuns` 从
+ *     fixture 算好送进 realm），realm 调页面函数算出缩写串回传 `qfmt`；页面若删掉那个函数，
+ *     V10' 直接报「realm 取不到 fmtQuotaNumber」而不是悄悄换算法。此项属**门改动**须入台账。
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -77,11 +87,34 @@ const DEPS = {
 const FIXDIR = process.env.MGW_AC_FIXDIR || join(ROOT, "bianyiandhuanjing/scripts/fixtures");
 const FIXTURES = ["accounts_zero.json", "accounts_one_product.json", "accounts_mixed.json"];
 
-/** 设计书 §3 的额度四值口径（V7 的唯一词表）与 §3 的措辞禁用表（V8 的词表）。 */
-const QUOTA_WORDS = ["有余量", "已耗尽", "未知", "尚未刷新"];
+/**
+ * 额度列词表与映射表（方案 §4-7 · 2026-10-02 五档定版，推翻旧「四档」口径）。
+ * · QUOTA_WORDS = 五档唯一词表（V7 的合法性检查 + 「不得越界」硬约束，QA N-9）；
+ * · WANT_BY_STATE = **状态决定文案**的映射（V7' 的映射断言用它——只查词表合法性 = 需求没做也绿，
+ *   评审实测：页面完全没实现「无套餐」映射、fixture 塞一行 no_plan 数据，门照样全绿）；
+ *   「无套餐」= `state==="unknown" && reason==="no_plan"` 的**前端映射**（裁决③：不动 `QuotaState` 枚举）；
+ * · QUOTA_NOTE_MAP = 附属标注五档（方案 §8.2 X-R5-9：这五档**不是第六档**，是注记，
+ *   V7 的 exactly-one 靠这个区分成立；`no_identity` 与 `no_credentials` 同文案、两行都要在）。
+ * QUOTA_NONCE 与「detail 必含上游原话」的对表：中文原话含「可用/剩余」只进 title（属性），
+ * 而本门 `visibleText` 不读属性 ⇒ 可见面不会撞词表（对表结论见交付报告）。
+ */
+const QUOTA_WORDS = ["有余量", "已耗尽", "无套餐", "未知", "尚未刷新"];
+const WANT_BY_STATE = {
+  available: "有余量", exhausted: "已耗尽", unknown: "未知",
+};
+/** `reason === "no_plan"` 优先于状态映射（裁决③ 的唯一前端映射）。 */
+const NO_PLAN_WORD = "无套餐";
+/** 附属标注映射（V15）：`reason` → 必须出现的注记串。 */
+const QUOTA_NOTE_MAP = {
+  circuit: "（冷却中）",
+  "circuit-untrusted": "（熔断状态不可读）",
+  unreachable: "（读取失败）",
+  no_credentials: "（未发起）",
+  no_identity: "（未发起）",
+};
 const QUOTA_NONCE = ["剩余", "可用", "undefined", "NaN"];
 const BANNED = ["正常", "在服务", "健康", "在线", "已取消"];
-/** §3「移出常驻面」的信息：只许出现在展开详情行 `.req-detail` 里（L-A10）。 */
+/** 展开详情行已废除（2026-10-01）：这些实现词汇在页面上**零出现**（L-A10）。 */
 const DETAIL_ONLY = ["设备身份", "模型目录来源", "协议", "OpenAI 兼容", "Anthropic 兼容", "产品专属出站塑形"];
 
 /* ==================== 页面源码 → realm 可执行体 ==================== */
@@ -329,6 +362,18 @@ globalThis.__drive = async (payloadJson) => {
     errs.push("renderAccounts 抛错 " + (e && e.name) + ": " + String(e && e.message).slice(0, 200));
   }
   stages.push({ kind: "page", tree: __tree(root) });
+  /* 🔴 V10'-④：额度总额的**缩写串**必须由**页面自己的** fmtQuotaNumber 算（realm 内直调），
+     门内不得重写第二份缩写算法（两份一起错就永远绿）。probe 是门外从 fixture 算好的
+     [Σactive remaining, unit] 对，回传一一对齐的字符串数组；页面没有那个函数 → hasFmt=false，
+     V10' 报"取不到页面缩写函数"而不是换算法。（本段在本门源码里，注释不得用反引号。） */
+  let qfmt = null;
+  let hasFmt = false;
+  try {
+    hasFmt = typeof fmtQuotaNumber === "function";
+    if (hasFmt) qfmt = (P.probes || []).map((x) => fmtQuotaNumber(x.sum, x.unit));
+  } catch (e) {
+    errs.push("realm 调页面 fmtQuotaNumber 抛错 " + (e && e.name) + ": " + String(e && e.message).slice(0, 160));
+  }
   /* 向导段：点页面唯一的接入入口 → 开始登录 → 有短信备选形态就切过去（V8 的「已取消」面在这里） */
   const mroot = __els["modal-root"];
   let wizard = "跳过（页面未渲染出接入入口按钮）";
@@ -359,6 +404,7 @@ globalThis.__drive = async (payloadJson) => {
   if (cancel && typeof cancel.onclick === "function") cancel.onclick();
   return JSON.stringify({
     errs, stages, wizard,
+    hasFmt, qfmt,
     timers: { intervals: __timers.intervals, timeouts: __timers.timeouts, cleared: __timers.cleared },
     opened: __opened.slice(),
   });
@@ -473,13 +519,51 @@ const quotaCellOf = (tbl, tdRow) => {
   return { err: `列数与表头不符（th=${tbl.ths.length} td=${tdRow.length}，无法按列定位额度格）` };
 };
 
+/* ---------- 额度格读数辅助（2026-10-02 五档改版新增） ----------
+ * 🔴 三条纪律都落在这里，不是散在各判据里：
+ *  · `cellTextExcept`：**按 DOM 结构**剥离 `.qchk`（「查于 …」那一行），替代旧
+ *    「查于」+ 非数字通配 的旧正则 —— 旧正则会把时间戳旁边**别的数字**一起剥掉（V10'-① 去自我豁免）；
+ *  · `tipOf`：递归收 tooltip（title 属性）文本 —— 方案 §4-7「量纲保留（**可见或 tooltip**）」
+ *    要求同时读两处（旧子句只读 visibleText ⇒ 永远读不到 tooltip，评审 X-R5-2 的误红根因）；
+ *  · 缩写串**不在门内算**：由 realm 调页面 `fmtQuotaNumber` 回传（`r.qfmt`），见 V10'-④。 */
+const cellTextExcept = (n, skipClass) => {
+  if (has(n, skipClass)) return "";
+  let t = n.x || "";
+  for (const c of n.k) { const s = cellTextExcept(c, skipClass); if (s) t += (t ? " " : "") + s; }
+  return t;
+};
+/** 多类剥离版：`cellTextExcept` 只能剥一类，而「常驻面」要同时剥掉
+ *  「查于 …」（`.qchk`）与**折叠着的逐包明细**（`.qpacks-detail`）——
+ *  明细块里恒写着「合计剩余 N Token」，任何"量纲在不在"的子串判据拿它当尺子都会
+ *  把"常驻面把量纲摘掉"的坏实现一并判绿（本轮实测到：摘掉可见量纲后门仍 23/0 全绿）。 */
+const cellTextExceptAll = (n, skipClasses) => {
+  if (skipClasses.some((c) => has(n, c))) return "";
+  let t = n.x || "";
+  for (const c of n.k) { const s = cellTextExceptAll(c, skipClasses); if (s) t += (t ? " " : "") + s; }
+  return t;
+};
+const tipOf = (n) => [String((n.a && n.a.title) || ""), ...n.k.map(tipOf)].join(" | ");
+/** `expires_at` 的 ISO 形状谓词（与页面 `ISO_RE` 同口径：`^\d{4}-\d{2}-\d{2}`）。 */
+const isISOShape = (v) => /^\d{4}-\d{2}-\d{2}/.test(String(v === null || v === undefined ? "" : v));
+/** 把缩写串当**完整 token** 钉（禁 `300 ⊂ 1300` 那种子串侥幸，V10'-②）。 */
+const tokenRe = (s) => new RegExp(`(^|[^0-9.])${String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^0-9.]|$)`);
+/** 「查于 / 数值」里不得出现的裸 10 位秒级 epoch（V17）。 */
+const EPOCH_RE = /\b\d{10}\b/;
+
 /* ==================== 数据面：fixture 读取 + 契约校验 + 轮换 ==================== */
 
-/** fixture ↔ `api/admin_accounts.py` 的真实出口形状（键序即 :487-500 的 return）。 */
+/** fixture ↔ `api/admin_accounts.py` 的真实出口形状（键序即 `_account_entry` 的 return，
+ *  2026-10-01 起含 `credential_expires_at`；行号引用同步为 `admin_accounts.py:532-547`）。 */
 const ACCOUNT_KEYS = ["name", "enabled", "status", "device", "display", "runtime",
-  "runtime_ok", "runtime_error", "quota", "resource"];
+  "runtime_ok", "runtime_error", "credential_expires_at", "quota", "resource"];
 const PRODUCT_KEYS = ["id", "title", "login", "protocol", "base_url", "device",
   "capabilities", "models_source", "login_alt", "models_wired"];
+/** 🔴 落盘 `runtime.quota` 的键集（方案 §4-1/§4-2：`QuotaSnapshot` 9 字段 ∪ 缓存层 `checked_at`）。
+ *  这是**视图契约同步**（补覆盖），不是新增判据：`loadFixtures` 只查"fixture 缺键"，
+ *  从不与后端 return 比对（QA r3 N-7 定性，r3-eng N-3 同）—— fixture 与真出口脱节时，
+ *  额度判据读的是想象中的形状，页面接错键也照绿。 */
+const SNAP_KEYS = ["state", "source", "detail", "plan", "items", "remaining",
+  "reason", "data_at", "plan_key", "checked_at"];
 
 function loadFixtures(errors) {
   const out = [];
@@ -515,6 +599,17 @@ function loadFixtures(errors) {
         }
         if (!["active", "disabled", "unknown"].includes(a.status)) {
           errors.push(`fixture ${f} 的 ${p.id}/${a.name} status=${a.status} 不在 active/disabled/unknown`);
+        }
+        // 视图契约同步：`runtime.quota` 存在就必须带齐快照 10 键（缺键 = fixture 落后于
+        // `QuotaSnapshot`，判据读的是想象中的形状；多键不查，同 ACCOUNT_KEYS 的下界语义）
+        const snap = (a.runtime || {}).quota;
+        if (snap && typeof snap === "object") {
+          for (const k of SNAP_KEYS) {
+            if (!(k in snap)) {
+              errors.push(`fixture ${f} 的 ${p.id}/${a.name} runtime.quota 缺键 ${k}`
+                + `（_write_quota_cache 落盘键集 = SNAP_FIELDS ∪ {checked_at}，方案 §4-1/§4-2）`);
+            }
+          }
         }
       }
     }
@@ -554,6 +649,26 @@ const loginStart = (p, kind) => ({
   },
 });
 
+/** 额度总额的 probe（V10'-②/④ 的数据源）：`[Σactive remaining, unit]`，只算**结构化行**。
+ *  Σ 的口径照方案 §4-3/§6 表：失效包（`active === false`）不计入展示总额；
+ *  `remaining` 非数值按 0 参与求和**是不允许的**（那正是 V14b 要禁的谎），所以这里
+ *  只把数值项加起来 —— 全非数值的行 `sum` 为 0，由 `hasNum` 谓词在判据侧区分。 */
+function quotaProbes(selected) {
+  const probes = [];
+  for (const a of selected.accounts) {
+    const rq = a.runtime && a.runtime.quota;
+    const items = rq && Array.isArray(rq.items) ? rq.items.filter((it) => it && it.name) : [];
+    if (!items.length) continue;
+    const act = items.filter((it) => it.active !== false);
+    probes.push({
+      key: `${selected.id}/${a.name}`,
+      sum: act.reduce((s, it) => s + (typeof it.remaining === "number" ? it.remaining : 0), 0),
+      unit: items[0].unit || "",
+    });
+  }
+  return probes;
+}
+
 async function buildRuns(fixtures, pageSrc) {
   const runs = [];
   for (const fx of fixtures) {
@@ -564,7 +679,12 @@ async function buildRuns(fixtures, pageSrc) {
       const view = { ...fx.view, products };
       const selected = products[0];
       const kinds = [selected.login, ...(selected.login_alt || [])];
-      const out = await renderRun(pageSrc, { view, caps: fx.caps, loginStart: loginStart(selected, kinds[0]) });
+      const probes = quotaProbes(selected);
+      const out = await renderRun(pageSrc, {
+        view, caps: fx.caps, loginStart: loginStart(selected, kinds[0]), probes,
+      });
+      const qfmt = {};
+      (out.qfmt || []).forEach((v, k) => { if (probes[k]) qfmt[probes[k].key] = v; });
       const emptyTree = () => ({ tree: { t: "div", a: {}, x: "", k: [] } });
       const page = out.stages.find((s) => s.kind === "page") || emptyTree();
       const wiz = out.stages.find((s) => s.kind === "wizard") || emptyTree();
@@ -576,6 +696,8 @@ async function buildRuns(fixtures, pageSrc) {
         // 主形态展示物（切短信 tab 之前）：W1 的读取面
         challengeNodes: flatten(chal.tree, null, []),
         wizardNote: out.wizard, errs: out.errs, timers: out.timers,
+        // V10'-④ 的数据面：页面缩写函数算出的每号总额串（键 = `<pid>/<账号名>`）
+        qfmt, hasFmt: !!out.hasFmt,
       });
     }
   }
@@ -672,29 +794,41 @@ async function runChecks() {
   check("V3", "③ 接入入口恰好 1 处，且在卡头（与所作用产品同框；rail 底与空态都不放按钮）",
     eBad.length === 0, () => eBad.length ? `${eBad.length}/${runs.length} 轮不符：${[...new Set(eBad)].slice(0, 2).join(" | ")}` : "各轮 head=1 他处=0");
 
-  /* ---------- V4 · §0-4 BUG-1：额度格必须接 a.runtime.quota（设计书 §8-④） ---------- */
+  /* ---------- V4' · §0-4 BUG-1：额度格必须接 a.runtime.quota（方案 §8.2 ① = QA X-R5-1 原文） ------ */
   const bug1 = [];
+  let v4Rows = 0;
   for (const r of runs) {
     if (!r.selected.accounts.length) continue;
     const tbl = tableInfo(r.pageNodes);
     if (!tbl.has) continue;
     for (const a of r.selected.accounts) {
       const rq = (a.runtime && a.runtime.quota) || null;
-      // 判别样本：运行态快照已知（available/exhausted）而池摘要 unknown —— 只读 a.quota 必然接错
-      if (!rq || !["available", "exhausted"].includes(rq.state)) continue;
-      if (a.quota && a.quota.state !== "unknown") continue;
+      // V4'（方案 §8.2 ①/X-R5-1）：**白名单放开** —— unknown / no_plan 一样要有运行态快照。
+      // 🔴 只保留「额度格有没有取到运行态快照」这一件事；带 items 的行归 V10' 的总额一致性管
+      //    （否则正确实现必红：结构化行的合法文案是「套餐徽章 + 总额」，五档档位词从不进它）。
+      if (!rq) continue;
+      if (a.quota && a.quota.state !== "unknown") continue;   // 判别样本前提（QA r4 N-1）
       const row = tbl.rows.filter((tr) => text(tr).indexOf(a.name) >= 0)[0];
       if (!row) { bug1.push(`${r.fixture}/${r.selected.id}/${a.name}: 找不到账号行`); continue; }
       const q = quotaCellOf(tbl, row.k.filter((c) => c.t === "td"));
       const got = q.cell ? cut(visibleText(q.cell), 40) : `（${q.err}）`;
-      const want = rq.state === "available" ? "有余量" : "已耗尽";
-      if (got !== want && !(got.indexOf(want) >= 0 && got.indexOf("未知") < 0)) {
-        bug1.push(`${r.fixture}/${r.selected.id}/${a.name}: 额度格「${cut(got, 24)}」≠「${want}」（BUG-1：quotaCell 只读 a.quota，从不读 runtime.quota）`);
+      const itX = Array.isArray(rq.items) ? rq.items.filter((x) => x && x.name) : [];
+      const want = rq.reason === "no_plan" ? NO_PLAN_WORD : (WANT_BY_STATE[rq.state] || null);
+      // 🔴 旧形 `got.indexOf("未知") < 0` 这半边**必须删**（它对 BUG-1 不损失判别力：接错到池摘要
+      //    时渲染的是 —/空/尚未刷新，`want` 一定不在串里），而留着它 + 白名单放开 = `state=unknown`
+      //    行的**恒假判据**（X-R5-1）；`|| /[0-9]/.test(got)` 逃生口同样**必须删**——时间戳
+      //    「查于 2026-10-02 09:12」就能把它糊过去（QA r5 X-R5-1 / r4 E3 实测 17/0）。
+      const okText = !want || itX.length > 0 || got.indexOf(want) >= 0;
+      if (!okText) {
+        bug1.push(`${r.fixture}/${r.selected.id}/${a.name}: 额度格「${cut(got, 24)}」未取到运行态快照的值（want=「${want}」 state=${rq.state} reason=${rq.reason || "∅"}；BUG-1：quotaCell 只读 a.quota，从不读 runtime.quota）`);
       }
+      if (want && itX.length === 0) v4Rows += 1;
     }
   }
-  check("V4", "④ 带 runtime.quota 的行额度格文本 ≠「未知」，且取到运行态快照的值（钉 BUG-1）",
-    bug1.length === 0, () => bug1.length ? `${bug1.length} 处：${[...new Set(bug1)].slice(0, 3).join(" | ")}` : "全部判别样本都取到 runtime.quota");
+  // 🔴 死判据防护：判别样本不在场（fixture 被改坏/被删）时本条等于没断言
+  if (v4Rows < 6) bug1.push(`V4 的判别样本只剩 ${v4Rows} 行（无 items 且池摘要 unknown 的运行态快照行必须成批在场，否则本条恒真）`);
+  check("V4", "④' 额度格取到运行态快照：无 items 的行必须出现 state/reason → 档位词（白名单放开到 unknown/no_plan，钉 BUG-1）",
+    bug1.length === 0, () => bug1.length ? `${bug1.length} 处：${[...new Set(bug1)].slice(0, 3).join(" | ")}` : `全部判别样本（${v4Rows} 行）都取到 runtime.quota 的档位词`);
 
   /* ---------- V5 · §2/§8-⑤ 圆点不当动作目标 ----------
    * 判据收窄口径（设计书 §8-⑤ v2.1 更正 + v2.1 自纠表第 3 行）：
@@ -715,7 +849,7 @@ async function runChecks() {
     dotInSwitch === 0 && dotOnly.length === 0,
     `[role=switch] 内 .dot=${dotInSwitch}（必须 0）; 圆点为唯一语义载荷的按钮=${dotOnly.length}${dotOnly.length ? `（${dotOnly.slice(0, 2).join(" / ")}）` : ""}`);
 
-  /* ---------- V6 · §3 四列固定列集（设计书 §8-⑥） ---------- */
+  /* ---------- V6 · 表头逐字（2026-10-01 改版：展开列已废，4 列固定列集） ---------- */
   const HEAD_EXACT = ["账号", "状态", "额度", "操作"];
   const headBad = [];
   for (const r of runs) {
@@ -724,17 +858,26 @@ async function runChecks() {
     if (!tbl.has) { headBad.push(`${r.fixture}/${r.selected.id}: 有账号却没渲染表格`); continue; }
     const texts = tbl.ths.map((t) => t.text);
     const legacy = texts.filter((t) => t === "参与运营" || t === "最近结果");
-    if (legacy.length) headBad.push(`${r.fixture}/${r.selected.id}: 残留列「${legacy.join("、")}」（§3 已删）`);
-    const rest = tbl.ths.slice(tbl.ths[0] && tbl.ths[0].exp ? 1 : 0).map((t) => t.text);
-    if (!tbl.ths[0] || !tbl.ths[0].exp) headBad.push(`${r.fixture}/${r.selected.id}: 缺首列 .exp 空表头（§3 展开指示格）`);
-    else if (rest.join("/") !== HEAD_EXACT.join("/")) headBad.push(`${r.fixture}/${r.selected.id}: 列集 ${JSON.stringify(rest)} ≠ ${JSON.stringify(HEAD_EXACT)}`);
+    if (legacy.length) headBad.push(`${r.fixture}/${r.selected.id}: 残留列「${legacy.join("、")}」（已删）`);
+    if (texts.some((t, i) => t !== HEAD_EXACT[i]) || tbl.ths.length !== HEAD_EXACT.length) {
+      headBad.push(`${r.fixture}/${r.selected.id}: 列集 ${JSON.stringify(texts)} ≠ ${JSON.stringify(HEAD_EXACT)}`);
+    }
+    if (tbl.ths.some((t) => t.exp)) headBad.push(`${r.fixture}/${r.selected.id}: 残留 .exp 展开指示列（2026-10-01 已废除展开行）`);
   }
-  check("V6", "⑥ 表头逐字 =（.exp 空格）+ 账号 / 状态 / 额度 / 操作，且无「参与运营」「最近结果」列",
+  check("V6", "⑥ 表头逐字 = 账号 / 状态 / 额度 / 操作（4 列，无展开指示列），且无「参与运营」「最近结果」列",
     headBad.length === 0, () => headBad.length ? `${headBad.length} 处：${[...new Set(headBad)].slice(0, 3).join(" | ")}` : "列集逐字相符");
 
-  /* ---------- V7 · §3 额度四值口径 + §6 BD8 的可见态（设计书 §8-⑦） ---------- */
+  /* ---------- V7' · 额度**五档**词表 + `state/reason → 文案` 映射断言（方案 §8.2 ②③） ----------
+   * 🔴 只查"词表合法性"= 需求没做也绿（评审实测：页面完全没实现「无套餐」映射、fixture 塞一行
+   *    no_plan 数据，门照样 17/0）⇒ 本条必须钉**映射**：状态决定文案。
+   *    豁免只让给 `reason !== "no_plan"` 的结构化行（QA X-R4-9 的 `mapExempt` 原文），
+   *    否则 `state=available + items` 的合法行被误红（那条文案本来就是「套餐徽章 + 总额」）。
+   *    push 串一律 `(rqM && rqM.state) || "∅"` 防 undefined（X-R5-3：需求没做时门必须以**红**
+   *    收场，而不是解引用崩到退出码 2、把 `--mutation` 记成 BAD = 用崩溃冒充证据）。 */
   const vocabBad = [];
   const notFresh = [];
+  let mapRows = 0;
+  let noPlanRows = 0;
   for (const r of runs) {
     if (!r.selected.accounts.length) continue;
     const tbl = tableInfo(r.pageNodes);
@@ -745,24 +888,407 @@ async function runChecks() {
       if (!row || text(row).indexOf(a.name) < 0) { vocabBad.push(`${r.fixture}/${r.selected.id}: 第 ${i} 行与数据错位`); return; }
       const q = quotaCellOf(tbl, row.k.filter((c) => c.t === "td"));
       if (q.err) { vocabBad.push(`${r.fixture}/${r.selected.id}/${a.name}: ${q.err}`); return; }
+      const rqM = a.runtime && a.runtime.quota;
+      const structX = (rqM && Array.isArray(rqM.items) ? rqM.items : []).filter((it) => it && it.name);
       const got = cut(visibleText(q.cell), 60);
-      const hit = QUOTA_WORDS.filter((w) => got.indexOf(w) >= 0);
-      const nonce = QUOTA_NONCE.filter((w) => got.indexOf(w) >= 0);
-      if (hit.length !== 1 || nonce.length) {
-        vocabBad.push(`${r.fixture}/${r.selected.id}/${a.name}: 额度格「${cut(got, 30)}」不在四值口径内（${QUOTA_WORDS.join("/")}）`);
+      // 「无套餐」行**即使带 items** 也在词表内（它本来就不该出数字），所以豁免条件与映射同源
+      if (structX.length === 0 || (rqM && rqM.reason === "no_plan")) {
+        const hit = QUOTA_WORDS.filter((w) => got.indexOf(w) >= 0);
+        const nonce = QUOTA_NONCE.filter((w) => got.indexOf(w) >= 0);
+        if (hit.length !== 1 || nonce.length) {
+          vocabBad.push(`${r.fixture}/${r.selected.id}/${a.name}: 额度格「${cut(got, 30)}」不在五档口径内或越界（${QUOTA_WORDS.join("/")}；命中 ${JSON.stringify(hit)}；§4-7 硬约束 = 可见文本不得含其它档词子串）`);
+        }
       }
-      const rq = a.runtime && a.runtime.quota;
-      if (!rq && got.indexOf("尚未刷新") < 0) {
+      const wantM = !rqM ? "尚未刷新"
+        : (rqM.reason === "no_plan" ? NO_PLAN_WORD : (WANT_BY_STATE[rqM.state] || null));
+      const mapExempt = structX.length > 0 && !(rqM && rqM.reason === "no_plan");   // 只有这里能豁免
+      if (wantM && !mapExempt) {
+        mapRows += 1;
+        if (rqM && rqM.reason === "no_plan") noPlanRows += 1;
+        if (got.indexOf(wantM) < 0) {
+          vocabBad.push(`${r.fixture}/${r.selected.id}/${a.name}: state=${(rqM && rqM.state) || "∅"} reason=${(rqM && rqM.reason) || "∅"} 应出「${wantM}」却渲染「${cut(got, 30)}」（§4-7 五档：状态决定文案，不是词表合法性）`);
+        }
+      }
+      if (!rqM && got.indexOf("尚未刷新") < 0) {
         notFresh.push(`${r.fixture}/${r.selected.id}/${a.name}: runtime.json 无 quota 快照却写「${cut(got, 20)}」（§3 第四态必须与「未知」区分：网关还没查过 ≠ 查了但拿不到）`);
       }
     });
   }
-  check("V7", "⑦ 额度文本 ⊂ {有余量, 已耗尽, 未知, 尚未刷新}，且缺 runtime.json 快照的行写「尚未刷新」",
+  // 🔴 死判据防护：「无套餐」这一档的两个判别样本（items=[] 与 items.length>0）必须在场，
+  //    否则映射断言对新档零覆盖（QA r3 X-R3-2 第 3 条）
+  if (noPlanRows < 2) {
+    vocabBad.push(`判别样本不足：五档映射只核到 ${mapRows} 行、其中「无套餐」行 ${noPlanRows} 行（`
+      + "items=[] 与 items.length>0 两类 no_plan 样本都要在 fixture 里，否则本条对新档恒真）");
+  }
+  check("V7", "⑦' 额度文本 ⊂ {有余量, 已耗尽, 无套餐, 未知, 尚未刷新} **且** state/reason 决定文案，缺 runtime.json 快照的行写「尚未刷新」",
     vocabBad.length === 0 && notFresh.length === 0,
     () => {
       const u = [...new Set(vocabBad.concat(notFresh))];
-      return u.length ? `${u.length} 处：${u.slice(0, 3).join(" | ")}` : "四值口径与第四态都对";
+      return u.length ? `${u.length} 处：${u.slice(0, 3).join(" | ")}` : `五档词表 + 映射核对 ${mapRows} 行（其中 no_plan ${noPlanRows} 行）`;
     });
+
+  /* ---------- V10 · 结构化套餐余粮展示（2026-10-01 用户指示，DSH Jet Hub 展示公式） ----------
+   * 带结构化逐包数据（`runtime.quota.items`）的账号行，额度格必须：
+   *   含「查于」（刷新时间恒示）+ 套餐名徽章（`plan` 取到了就必须显示）+
+   *   量纲标签（Token/积分）或数字；失效包 >0 必须出「已失效」注记。
+   * 🔴 逐包明细进 tooltip（title 属性），不在常驻面刷屏 —— 断言 title 含包名。
+   * 2026-10-02 按方案 §8.2 ②（QA X-R5-2 原文）去掉三条自我豁免：
+   *   ① 「查于」的剥离走 **DOM 结构**（`.qchk`）而不用「查于+非数字通配」的旧正则（那正则会连旁边的数字
+   *      一起剥掉，等于判据自己给自己让路）；
+   *   ② 总额一致性 = `Σ active remaining` 经**页面缩写函数**（realm 回传 `r.qfmt`）缩写后的
+   *      **完整 token** 比对（禁 `300 ⊂ 1300` 那种子串侥幸），且只在"上游确实给了量化余量"
+   *      （`hasNum`）时钉 —— null 行的正确档位是「未知」，归 V14b 管（v5 两条互斥 = 要绿必须撒谎）；
+   *   ③ `hasNum && Σ<=0` 的行必须显式出「已耗尽」或「无套餐」**且量纲不消失**（可见或 tooltip，
+   *      评审 N-3 的既有缺陷：`total<=0` 那一支把 Token 一起吞了）；
+   *   ④ 缩写算法**不在门内重写第二份**（两份一起错就永远绿），取不到 realm 函数直接报红。 */
+  const structBad = [];
+  let structRows = 0;
+  for (const r of runs) {
+    if (!r.selected.accounts.length) continue;
+    const tbl = tableInfo(r.pageNodes);
+    if (!tbl.has) continue;
+    if (tbl.quotaIndex < 0) { structBad.push(`${r.fixture}/${r.selected.id}: 有账号却没有额度列`); continue; }
+    for (const a of r.selected.accounts) {
+      const rq = a.runtime && a.runtime.quota;
+      const items = rq && Array.isArray(rq.items) ? rq.items : [];
+      if (!items.length) continue;
+      // 🔴 no_plan 行不归本条：它的正确文案就是「无套餐」（**不显示数字**），
+      //    数字面由 V14 钉（分支顺序：no_plan 支排在结构化支之前）。
+      if (rq.reason === "no_plan") continue;
+      structRows += 1;
+      const row = tbl.rows.filter((tr) => text(tr).indexOf(a.name) >= 0)[0];
+      if (!row) { structBad.push(`${r.fixture}/${r.selected.id}/${a.name}: 找不到账号行`); continue; }
+      const q = quotaCellOf(tbl, row.k.filter((c) => c.t === "td"));
+      if (q.err) { structBad.push(`${r.fixture}/${r.selected.id}/${a.name}: ${q.err}`); continue; }
+      const got = visibleText(q.cell);
+      const main = cellTextExcept(q.cell, "qchk");          // ① 结构剥离「查于 …」那一行
+      const tipX = tipOf(q.cell);                            // 量纲允许只出现在 tooltip
+      const expiredN = items.filter((it) => it && it.active === false).length;
+      const problems = [];
+      if (got.indexOf("查于") < 0) problems.push("缺「查于」刷新时间");
+      if (rq.plan && got.indexOf(rq.plan) < 0) problems.push(`缺套餐徽章「${rq.plan}」`);
+      const unit0 = String((items[0] && items[0].unit) || "");
+      if (unit0 && !/(Token|积分)/i.test(`${got} ${tipX}`)) problems.push("缺量纲标签（Token/积分，可见或 tooltip）");
+      // ③ 只钉"给了量化余量却合计 0"的行；一个都没给的行归 V14b 管
+      const hasNum = items.some((it) => typeof it.remaining === "number");
+      const actX = items.filter((it) => it && it.active !== false);
+      const sumAct = actX.reduce((s, it) => s + (typeof it.remaining === "number" ? it.remaining : 0), 0);
+      if (hasNum && sumAct <= 0) {
+        if (!/(已耗尽|无套餐)/.test(main)) {
+          problems.push("Σ余量=0 的行必须显式出「已耗尽」或「无套餐」（不得只印 0）");
+        } else if (unit0 && !/\d[\s,]*(Token|积分|\/token)/i.test(
+          `${cellTextExceptAll(q.cell, ["qchk", "qpacks-detail"])} ${tipX}`)) {
+          // 🔴 本意是「Σ=0 的行不许把量纲弄丢」（评审 N-3），不是「量纲必须紧贴在档位词后面」。
+          //    原写法 `(已耗尽|无套餐)\s*(Token|积分)` 把两件事混成一件，于是页面只能渲染成
+          //    「已耗尽 Token」——状态词后面直接接单位，用户读作"已耗尽 个 Token？"（实盘 15:39 看着就别扭）。
+          //    现行页面把**数值与量纲放在一起**（`0 Token`）、档位词紧随其后。
+          //    ⚠️ 判据面必须剥掉折叠的逐包明细（`.qpacks-detail` 里恒写「合计剩余 N Token」），
+          //    否则"摘掉常驻量纲"的坏实现也会被判绿（实测：不剥时 23/0 全绿；剥后该变异必红）。
+          problems.push("Σ余量=0 的行量纲标注不得消失（常驻面须有『数字+量纲』，可见或 tooltip，评审 N-3）");
+        }
+      } else if (hasNum && sumAct > 0) {
+        // ②④ 期望串来自 realm 里的页面函数，门内不重算缩写
+        const want10 = r.qfmt[`${r.selected.id}/${a.name}`];
+        if (!r.hasFmt) {
+          problems.push("realm 取不到页面缩写函数 fmtQuotaNumber（V10'-④：判据不得在门内重写第二份算法）");
+        } else if (want10 === undefined) {
+          problems.push(`realm 没回传本号的缩写串（probe 缺键 ${r.selected.id}/${a.name}）`);
+        } else if (!tokenRe(want10).test(main)) {
+          problems.push(`总额与 Σactive remaining 不符：期望完整 token「${want10}」，实得「${cut(main, 48)}」（禁 300⊂1300 子串侥幸）`);
+        }
+      }
+      if (expiredN > 0 && got.indexOf("已失效") < 0) problems.push(`有 ${expiredN} 个失效包却无「已失效」注记`);
+      // 排除与套餐同名的包：套餐徽章的 title（「套餐：X」）也含 X，拿它核对是假通过
+      const firstActive = items.find((it) => it && it.active !== false && it.name && it.name !== rq.plan);
+      /* 🔴 2026-10-02 用户指令推进（旧判据"逐包明细只许写在本格 title 上"随之作废）：
+         31 个包时 tooltip 既不可选中也不能复制，还被实现截断到 12 行 ⇒ 明细必须住在
+         **本格内的就地展开块**（`.qpacks-detail`）里并**全量**列出；tooltip 只留套餐名。
+         设计变了，钉旧设计的判据要带着理由前进，不许退回。 */
+      const detail = (r.pageNodes || []).filter((n) => has(n, "qpacks-detail")
+        && String((n.a && n.a["data-qpacks-for"]) || "") === a.name)[0];
+      const dtxt = detail ? text(detail) : "";
+      if (!detail) problems.push("本格无就地展开的逐包明细块（.qpacks-detail）");
+      else if (firstActive && dtxt.indexOf(firstActive.name) < 0) problems.push("展开块里没有逐包行");
+      if (got.indexOf("展开") < 0 || !/个包/.test(got)) problems.push("缺「展开 N 个包」入口（明细只能靠悬停 = 用户指令的原始缺陷）");
+      if (items.length > 12 && dtxt.indexOf(`共 ${items.length} 个包`) < 0) {
+        problems.push(`展开块必须全量并写明「共 ${items.length} 个包」（截断到 12 行会让用户以为只有 12 个）`);
+      }
+      if (problems.length) structBad.push(`${r.fixture}/${r.selected.id}/${a.name}: ${problems.join("；")}`);
+    }
+  }
+  if (structRows < 5) {
+    structBad.push(`结构化判别样本只剩 ${structRows} 行（V10' 没有对象 = 死判据；正常应 ≥5：buddy-main + 5 条 ix-* 结构化行）`);
+  }
+  check("V10", "⑩' 结构化套餐余粮：查于 + 套餐徽章 + 量纲 + **总额=Σactive remaining（页面缩写函数算）** + 失效包注记 + 本格 tooltip 逐包明细",
+    structBad.length === 0 && structRows > 0,
+    () => structBad.length ? `${structBad.length} 处：${[...new Set(structBad)].slice(0, 3).join(" | ")}` : `结构化展示核对 ${structRows} 行（总额一致性用 realm fmtQuotaNumber）`);
+
+  /* ---------- V11 · 续期回行内 + 登录态倒计时（2026-10-01 用户裁决） ----------
+   * ① 行内动作 = 中文文字按钮，`data-op="refresh"` 的**有无**必须与能力位 `refresh` 严格同相
+   *    （能力位是判据不是标签：false 产品渲染 = 死钮，true 产品不渲染 = 功能缺失）；
+   * ② 可续期产品必须给出登录态位：有 `credential_expires_at` → 写"登录态 … 失效"，
+   *    没有 → 如实写"登录态失效时间未知"（**不判定、不猜**）；
+   * ③ 不可续期产品**不写**倒计时位（不制造无意义的焦虑）。 */
+  const renewBad = [];
+  let renewRows = 0;
+  for (const r of runs) {
+    const cap = r.selected.capabilities || {};
+    for (const a of r.selected.accounts) {
+      renewRows += 1;
+      const btns = sel(r.pageNodes, `tr[data-acc="${a.name}"] [data-op]`);
+      const ops = btns.map((b) => b.a["data-op"]);
+      const hasRefresh = ops.indexOf("refresh") >= 0;
+      if (hasRefresh !== !!cap.refresh) {
+        renewBad.push(`${r.fixture}/${a.name}: 续期钮=${hasRefresh} 与能力位 refresh=${!!cap.refresh} 不同相（ops=${JSON.stringify(ops)}）`);
+      }
+      for (const b of btns) {
+        if (!visibleText(b).trim()) renewBad.push(`${r.fixture}/${a.name}: 有无可见文字的钮（操作列必须是中文文字按钮）@ ${pathOf(b)}`);
+      }
+      const cell = sel(r.pageNodes, `tr[data-acc="${a.name}"] td`)[0];
+      const cellText = cell ? visibleText(cell) : "";
+      if (cap.refresh) {
+        if (a.credential_expires_at) {
+          if (cellText.indexOf("登录态") < 0 || cellText.indexOf("失效") < 0) {
+            renewBad.push(`${r.fixture}/${a.name}: 有 credential_expires_at 却没渲染登录态倒计时位`);
+          }
+        } else if (cellText.indexOf("登录态失效时间未知") < 0) {
+          renewBad.push(`${r.fixture}/${a.name}: 拿不到失效时刻却没写「登录态失效时间未知」（未知也要说清楚）`);
+        }
+      } else if (cellText.indexOf("登录态") >= 0) {
+        renewBad.push(`${r.fixture}/${a.name}: 不可续期产品却出现登录态位（无意义焦虑）`);
+      }
+    }
+  }
+  check("V11", "⑪ 续期钮与能力位同相 + 操作列全中文文字 + 登录态倒计时位（未知如实写、不可续期产品不写）",
+    renewBad.length === 0 && renewRows > 0,
+    () => renewBad.length ? `${renewBad.length} 处：${[...new Set(renewBad)].slice(0, 3).join(" | ")}` : `核对 ${renewRows} 行`);
+
+  /* ---------- V12 · 映射弹窗内零账号级动作（2026-10-01 用户裁决：续期回行内） ----------
+   * 弹窗只承载产品级信息（目录 + 映射），账号级动作（续期）一律在列表行内。 */
+  const modalOpsBad = [];
+  for (const r of runs) {
+    for (const n of sel(r.pageNodes, "[data-mop]")) modalOpsBad.push(`${r.fixture}: 面板里出现 [data-mop] 动作 @ ${pathOf(n)}`);
+  }
+  if (pageSrc.indexOf("mapAccountsHTML") >= 0) {
+    modalOpsBad.push("页面源码仍留有 mapAccountsHTML（弹窗内账号操作区必须整体移除）");
+  }
+  check("V12", "⑫ 弹窗零账号级动作：页面无 [data-mop]、源码无 mapAccountsHTML（续期只在行内）",
+    modalOpsBad.length === 0, () => modalOpsBad.length ? [...new Set(modalOpsBad)].slice(0, 3).join(" | ") : "零命中");
+
+  /* ---------- V13 · 「刷新额度」两处入口与 `balance` 能力位同相（方案 §5-2/§5-6，指令 2 = 10/10） ----------
+   * 行内第 3 颗（签到 · 续期 · 刷新额度 · 探活 · 删除）+ 卡头一颗，**同一判据** = `capabilities.balance`
+   * （能力位是判据不是标签：false 产品渲染 = 死钮，true 产品不渲染 = 功能缺失，同 V11 口径）。
+   * 卡头钮数按能力位逐档对表（模型映射 + 接入账号恒在 = 2 颗底，checkin/balance/refresh 各加一颗，
+   * ZCode 另加导入/购买两颗），并**绝对钉住** buddy 形态 = 5 颗（frontend-spec 行内 5 钮 / 卡头 5 钮的
+   * 定版事实，不随能力位漂移）。
+   * ⚠️ 诚实标注：10/10 产品 `balance=True` ⇒ 本条只有正例，**未构造 `balance=false` 的反例形态**
+   *   （方案 §8.2 真机段落同一声明）；反例要 monkeypatch 假能力位，属 pytest 面。 */
+  const quotaOpBad = [];
+  let quotaOpRows = 0;
+  for (const r of runs) {
+    const cap = r.selected.capabilities || {};
+    const headBtns = sel(r.pageNodes, ".card-head .btn");
+    const headQuota = headBtns.filter((b) => b.a.id === "ac-quota").length;
+    const wantHead = 2 + (cap.checkin ? 1 : 0) + (cap.balance ? 1 : 0) + (cap.refresh ? 1 : 0)
+      + (r.selected.id === "zcode" ? 2 : 0);
+    if (headQuota !== (cap.balance ? 1 : 0)) {
+      quotaOpBad.push(`${r.fixture}/${r.selected.id}: 卡头「刷新额度」=${headQuota} 与能力位 balance=${!!cap.balance} 不同相`);
+    }
+    if (headBtns.length !== wantHead) {
+      quotaOpBad.push(`${r.fixture}/${r.selected.id}: 卡头钮数 ${headBtns.length} ≠ 能力位对表值 ${wantHead}（模型映射+接入账号恒在，checkin/balance/refresh 各一颗，ZCode 另加导入/购买）`);
+    }
+    if (r.selected.id === "buddy" && headBtns.length !== 5) {
+      quotaOpBad.push(`${r.fixture}/buddy: 卡头钮数 ${headBtns.length} ≠ 定版 5 颗（模型映射/一键领取/刷新额度/批量续期/接入账号）`);
+    }
+    for (const a of r.selected.accounts) {
+      quotaOpRows += 1;
+      const ops = sel(r.pageNodes, `tr[data-acc="${a.name}"] [data-op]`).map((b) => b.a["data-op"]);
+      const hasQuota = ops.indexOf("quota") >= 0;
+      if (hasQuota !== !!cap.balance) {
+        quotaOpBad.push(`${r.fixture}/${a.name}: 行内「刷新额度」=${hasQuota} 与能力位 balance=${!!cap.balance} 不同相（ops=${JSON.stringify(ops)}）`);
+      }
+      if (ops.indexOf("quota") >= 0 && ops.indexOf("refresh") >= 0
+        && ops.indexOf("quota") !== ops.indexOf("refresh") + 1) {
+        quotaOpBad.push(`${r.fixture}/${a.name}: 行内钮序不是「续期 → 刷新额度 → 探活」（§5-6 定版第 3 颗）：${JSON.stringify(ops)}`);
+      }
+    }
+  }
+  check("V13", "⑬ 行内第 3 颗与卡头的「刷新额度」都与 `balance` 能力位同相；卡头钮数与能力位逐档对表（buddy 定版 5 颗）",
+    quotaOpBad.length === 0 && quotaOpRows > 0,
+    () => quotaOpBad.length ? `${quotaOpBad.length} 处：${[...new Set(quotaOpBad)].slice(0, 3).join(" | ")}` : `核对 ${quotaOpRows} 行 + ${runs.length} 轮卡头（balance 全 true ⇒ 只钉了正例，false 形态未构造）`);
+
+  /* ---------- V14 · 裁决③：`reason==="no_plan"` **无论有没有 items** 必出「无套餐」+ title ----------
+   * 这条打的是**分支顺序**（页面 `quotaCell` 把 no_plan 支排在结构化支之前），
+   * `ix-noplan-items` 一行（🔴 非可产出形状：后端 no_plan 走整键覆盖 ⇒ items 恒空，
+   * 样本只用来把顺序钉死）与 `ix-no-plan` / `buddy-noplan` 成对。
+   * title 必带**两可性原文**（§8.2 裁决③：「`plans=[]` 是确实无套餐还是身份无 entitlement」未判定）。 */
+  const noPlanBad = [];
+  let noPlanSeen = 0;
+  let noPlanWithItems = 0;
+  for (const r of runs) {
+    const tbl = tableInfo(r.pageNodes);
+    if (!tbl.has || tbl.quotaIndex < 0) continue;
+    for (const a of r.selected.accounts) {
+      const rq = a.runtime && a.runtime.quota;
+      if (!rq || rq.reason !== "no_plan") continue;
+      noPlanSeen += 1;
+      const withItems = (Array.isArray(rq.items) ? rq.items : []).filter((it) => it && it.name).length > 0;
+      if (withItems) noPlanWithItems += 1;
+      const row = tbl.rows.filter((tr) => text(tr).indexOf(a.name) >= 0)[0];
+      if (!row) { noPlanBad.push(`${r.fixture}/${r.selected.id}/${a.name}: 找不到账号行`); continue; }
+      const q = quotaCellOf(tbl, row.k.filter((c) => c.t === "td"));
+      if (q.err) { noPlanBad.push(`${r.fixture}/${r.selected.id}/${a.name}: ${q.err}`); continue; }
+      const got = cut(visibleText(q.cell), 60);
+      const tip = tipOf(q.cell);
+      if (got.indexOf(NO_PLAN_WORD) < 0) {
+        noPlanBad.push(`${r.fixture}/${r.selected.id}/${a.name}: reason=no_plan（items ${withItems ? "有" : "空"}）却渲染「${got}」，没出「无套餐」（裁决③：no_plan 支必须排在结构化支之前）`);
+      }
+      if (!tip.trim()) {
+        noPlanBad.push(`${r.fixture}/${r.selected.id}/${a.name}: 「无套餐」没有 title 说明（§8.2 裁决③：title 必须带"确实无套餐 vs 身份无 entitlement"的两可性原文，不许把未判定印成结论）`);
+      }
+    }
+  }
+  if (noPlanSeen < 2 || noPlanWithItems < 1) {
+    noPlanBad.push(`no_plan 判别样本不足：共 ${noPlanSeen} 行、其中带 items 的 ${noPlanWithItems} 行（两类都要在，否则分支顺序零覆盖 = 死判据）`);
+  }
+  check("V14", "⑭ 无套餐档：reason=no_plan 无论有无 items 必出「无套餐」，且本格带 title 两可性原文",
+    noPlanBad.length === 0,
+    () => noPlanBad.length ? [...new Set(noPlanBad)].slice(0, 3).join(" | ") : `核对 ${noPlanSeen} 行 no_plan（含 ${noPlanWithItems} 行带 items 的顺序样本）`);
+
+  /* ---------- V14b · `remaining:null` 的行**不得**渲染「已耗尽」（方案 §4-3/§4-4） ----------
+   * 「没给数字」与「数字是 0」是两件事；把前者渲染成后者 = 本轮点名的谎（工程 r3 B-R3-3）。
+   * 与 V10'-③ 的分工（QA X-R5-2）：**上游一个量化余量都没给**的行归本条，
+   * 给了却合计 0 的行归 ③，两条互不打架。 */
+  const nullBad = [];
+  let nullRows = 0;
+  for (const r of runs) {
+    const tbl = tableInfo(r.pageNodes);
+    if (!tbl.has || tbl.quotaIndex < 0) continue;
+    for (const a of r.selected.accounts) {
+      const rq = a.runtime && a.runtime.quota;
+      const items = rq && Array.isArray(rq.items) ? rq.items.filter((it) => it && it.name) : [];
+      if (!items.length) continue;
+      const hasNum = items.some((it) => typeof it.remaining === "number");
+      if (hasNum) continue;
+      nullRows += 1;
+      const row = tbl.rows.filter((tr) => text(tr).indexOf(a.name) >= 0)[0];
+      if (!row) { nullBad.push(`${r.fixture}/${r.selected.id}/${a.name}: 找不到账号行`); continue; }
+      const q = quotaCellOf(tbl, row.k.filter((c) => c.t === "td"));
+      if (q.err) { nullBad.push(`${r.fixture}/${r.selected.id}/${a.name}: ${q.err}`); continue; }
+      const got = cut(visibleText(q.cell), 60);
+      if (got.indexOf("已耗尽") >= 0) {
+        nullBad.push(`${r.fixture}/${r.selected.id}/${a.name}: 上游只给了桶、一个可用数都没给（remaining 全 null）却渲染「${got}」——「没给数字」≠「数字是 0」（§4-3 任一桶 None ⇒ 整号 None，禁止当 0）`);
+      }
+      if (/\b0\s*(Token|积分)\b/.test(got)) {
+        nullBad.push(`${r.fixture}/${r.selected.id}/${a.name}: 无量化余量却印「0 余量」形态：${got}`);
+      }
+    }
+  }
+  if (nullRows < 1) nullBad.push("没有 `remaining:null` 且无量化余量的判别样本（V14b 失去对象 = 死判据）");
+  check("V14b", "⑭b 上游没给可用数（items 全 remaining:null）的行不得渲染「已耗尽」，也不得印成 0 余量",
+    nullBad.length === 0,
+    () => nullBad.length ? [...new Set(nullBad)].slice(0, 3).join(" | ") : `核对 ${nullRows} 行（全部只出「未知」档）`);
+
+  /* ---------- V15 · 「重置于 X」+ 附属标注**五档**映射（方案 §4-5/§4-6 + §8.2 X-R5-9） ----------
+   * ① 正形：`active` 且 `expires_at` 为 ISO 形状 ⇒ 必出 `重置于 MM-DD HH:mm`（谓词收紧 = X-R5-5）；
+   * ② 反向：出现的「重置于」必须形如 `MM-DD HH:mm` —— 摘掉页面 ISO 护栏时上游秒级 epoch 会被
+   *    `shortTime(...).slice(5)` 切成 6 位残串印出来，V17 的 `\b\d{10}\b` 看不见（QA 实测的绕过），
+   *    真正把这一格抓住的就是这里的正形；
+   * ③ 附属标注五档映射：`reason → 注记文案`（`no_identity` 与 `no_credentials` 同文案、
+   *    两行都要在；摘掉映射时这两行必须**同时红**，否则映射表是假的）。 */
+  const v15Bad = [];
+  let resetRows = 0;
+  const noteSeen = {};
+  for (const r of runs) {
+    const tbl = tableInfo(r.pageNodes);
+    if (!tbl.has || tbl.quotaIndex < 0) continue;
+    for (const a of r.selected.accounts) {
+      const rq = a.runtime && a.runtime.quota;
+      if (!rq) continue;
+      const row = tbl.rows.filter((tr) => text(tr).indexOf(a.name) >= 0)[0];
+      if (!row) continue;
+      const q = quotaCellOf(tbl, row.k.filter((c) => c.t === "td"));
+      if (q.err || !q.cell) continue;
+      const got = cut(visibleText(q.cell), 90);
+      const items = Array.isArray(rq.items) ? rq.items.filter((it) => it && it.name) : [];
+      // 🔴 no_plan 行**没有数值面**（正确文案就是「无套餐」，裁决③），所以不要求「重置于」；
+      //    它仍然要过"出现即合形"（②）与标注映射（③）。
+      const act = rq.reason === "no_plan" ? [] : items.filter((it) => it.active !== false);
+      const hasISO = act.some((it) => isISOShape(it.expires_at));
+      const hasReset = got.indexOf("重置于") >= 0;
+      if (items.length && hasISO) {
+        resetRows += 1;
+        if (!/重置于 \d{2}-\d{2} \d{2}:\d{2}/.test(got)) {
+          v15Bad.push(`${r.fixture}/${r.selected.id}/${a.name}: 有 active 且 ISO 形状的到期时刻，却没有「重置于 MM-DD HH:mm」：「${got}」（§4-5 定义 = 有效包里最早的那个）`);
+        }
+      }
+      if (hasReset && !/重置于 \d{2}-\d{2} \d{2}:\d{2}/.test(got)) {
+        v15Bad.push(`${r.fixture}/${r.selected.id}/${a.name}: 出现了不合形的「重置于」（应为 MM-DD HH:mm）：「${got}」—— 页面 ISO 护栏被摘时上游 epoch 会残切成 6 位数字`);
+      }
+      // ③ 附属标注映射：五档**各自**要求（同文案两档由同一注记串自然覆盖）
+      const want = QUOTA_NOTE_MAP[rq.reason];
+      if (want) {
+        noteSeen[rq.reason] = (noteSeen[rq.reason] || 0) + 1;
+        if (got.indexOf(want) < 0) {
+          v15Bad.push(`${r.fixture}/${r.selected.id}/${a.name}: reason=${rq.reason} 应带附属标注「${want}」，实得「${got}」（§4-7：标注是附属不是档，摘了映射这一档就没人知道上游这轮没说话）`);
+        }
+      }
+    }
+  }
+  const missNote = Object.keys(QUOTA_NOTE_MAP).filter((k) => !noteSeen[k]);
+  if (missNote.length) v15Bad.push(`附属标注五档缺判别样本：${missNote.join(",")}（fixture 每档各一行，` 
+    + "且 no_credentials 与 no_identity 同文案 ⇒ 两行都要在）");
+  if (resetRows < 2) v15Bad.push(`「重置于」正形样本只剩 ${resetRows} 行（至少 2 行，否则本条对新契约恒真）`);
+  check("V15", "⑮ 「重置于 MM-DD HH:mm」正形 + 出现即合形 + 附属标注五档映射（冷却中/熔断状态不可读/读取失败/未发起×2）",
+    v15Bad.length === 0,
+    () => v15Bad.length ? `${v15Bad.length} 处：${[...new Set(v15Bad)].slice(0, 3).join(" | ")}`
+      : `重置于核对 ${resetRows} 行；标注覆盖 ${Object.keys(noteSeen).length}/5 档（同文案两档 ${noteSeen.no_credentials || 0}+${noteSeen.no_identity || 0} 行）`);
+
+  /* ---------- V17 · 额度格**用户可见面**零裸 epoch（方案 §8.2 ④ = QA X-R5-5 重排后的定稿） ----------
+   * 分工写死：钩子 epoch→ISO 归一的真相由 **pytest** 钉（§8.1-3 的撤证，静态门够不着 `upstream/*.py`）；
+   * 页面有**防御护栏**（`ISO_RE` 谓词，§4-5），V17 只钉这一层：额度格里不得出现 10 位秒级整数。
+   * 🔴 扫描面 = **整格可见文本 + 本格 tooltip**，比方案原文的 `cellTextExcept(cell,"qchk")` **更宽**：
+   *   只剥 `.qchk` 就放过了「查于」那一格 —— 而 §4-6 定的是 `查于 = data_at || checked_at`（**上游值优先**），
+   *   钩子漏归一的 `data_at` 会原样印在那里（交付要求的反向自证实验 (c) 实测：把 ix-quota-net 的
+   *   `data_at` 换成 `1790956800` ⇒ 本条红）。数值面（V10' 的总额一致性）仍按原口径剥 `.qchk`，
+   *   两处不混用：**判据只会比方案更严，不会更松**。
+   * tooltip 也在扫描面内：`失效于` 那一支就在 title 里，只扫 visibleText 会让本条**没有任何可红路径**
+   *   （= 死判据；X-R5-5 说的"epoch 被切片成 6 位残串"由 V15 的「出现即合形」补抓）。
+   * `ix-epoch` 常驻 fixture：正确实现下必须**绿**（页面整段不出「重置于」，tooltip 也不印）。 */
+  const epochBad = [];
+  let epochScanned = 0;
+  for (const r of runs) {
+    const tbl = tableInfo(r.pageNodes);
+    if (!tbl.has || tbl.quotaIndex < 0) continue;
+    for (const a of r.selected.accounts) {
+      const rq = a.runtime && a.runtime.quota;
+      if (!rq) continue;
+      const row = tbl.rows.filter((tr) => text(tr).indexOf(a.name) >= 0)[0];
+      if (!row) continue;
+      const q = quotaCellOf(tbl, row.k.filter((c) => c.t === "td"));
+      if (q.err || !q.cell) continue;
+      epochScanned += 1;
+      const numFace = cellTextExcept(q.cell, "qchk");     // 数值面（剥掉「查于 …」）
+      const visFace = visibleText(q.cell);                // 整格可见文本（含「查于」）
+      const tipFace = tipOf(q.cell);                      // 本格 tooltip
+      const hay = `${visFace} | ${tipFace}`;
+      const hit = EPOCH_RE.exec(hay);
+      if (hit) {
+        const where = EPOCH_RE.test(numFace) ? "数值面"
+          : (EPOCH_RE.test(visFace) ? "查于/文案面" : "tooltip");
+        epochBad.push(`${r.fixture}/${r.selected.id}/${a.name}: 额度格用户可见面（${where}）出现裸 epoch「${hit[0]}」（上游秒级整数没归一 / 页面 ISO 护栏被摘）：${cut(hay, 70)}`);
+      }
+    }
+  }
+  const epochSamples = runs.reduce((s, r2) => s + r2.selected.accounts.filter(
+    (a) => a.runtime && a.runtime.quota && Array.isArray(a.runtime.quota.items)
+      && a.runtime.quota.items.some((it) => it && /^\d{10}$/.test(String(it.expires_at))),
+  ).length, 0);
+  if (epochSamples < 1) epochBad.push("fixture 没有 `expires_at` 为裸 epoch 的行（ix-epoch 常驻样本被删 ⇒ V17 失去对象）");
+  check("V17", "⑰ 额度格**用户可见面**零裸 10 位 epoch（整格文本含「查于」那一格 + 本格 tooltip）；护栏在页面，钩子归一由 pytest 钉",
+    epochBad.length === 0,
+    () => epochBad.length ? `${epochBad.length} 处：${[...new Set(epochBad)].slice(0, 3).join(" | ")}`
+      : `扫描 ${epochScanned} 行额度格可见面 + tooltip 零命中（含 ${epochSamples} 行 ix-epoch 常驻样本被护栏兜住）`);
 
   /* ---------- V8 · §3 措辞禁用表（设计书 §8-⑧） ---------- */
   const hits = [];
@@ -786,6 +1312,46 @@ async function runChecks() {
   }
   check("V8", "⑧ 可见文本与属性零命中禁用词「正常」「在服务」「健康」「在线」「已取消」（§3 措辞禁用表）",
     hits.length === 0, () => hits.length ? `${hits.length} 处：${[...new Set(hits)].slice(0, 2).join(" | ")}` : `扫描 ${runs.length} 轮 DOM + 源码字面量零命中`);
+
+  /* ---------- V19 · 额度失败轮的"跨行说明只说一次"（2026-10-02 用户指令） ----------
+   * 用户实拍那一屏的病根：把"本轮没查成、下面显示的是上一轮"这句**跨行说明**塞进了
+   * 每一行的额度格 ⇒ 十行账号糊出十段失败文案。定版 = 面板顶部一条 alert 说一次，
+   * 行内只留定位注记「（读取失败/冷却中/未发起）」。正反两向都要有判据：
+   *   ① 有 SILENT 轮的轮 ⇒ 恰一条横幅且计数与数据同源；
+   *   ② 没有任何 SILENT 轮的轮 ⇒ 一条都不许出（不误报"没查成"）；
+   *   ③ 任何情况下，额度格里都不许出现那句跨行说明。 */
+  const STALE_REASONS = ["circuit", "circuit-untrusted", "unreachable", "no_credentials", "no_identity"];
+  // 与页面 `QUOTA_SILENT` / 后端 `query_balance.SILENT` 同一份名单（三处同尺，缺一处就漏判）
+  const STALE_SENTENCE = "下面这些行显示的是";
+  const staleBad = [];
+  let staleRounds = 0, cleanRounds = 0;
+  for (const r of runs) {
+    const accs = r.selected.accounts || [];
+    const silent = accs.filter((a) => {
+      const q = a.runtime && a.runtime.quota;
+      return q && STALE_REASONS.includes(q.reason);
+    });
+    const panelAlerts = sel(r.pageNodes, "#ac-panel .alert")
+      .filter((n) => text(n).indexOf("本轮额度没有取到新数据") >= 0);
+    const cells = sel(r.pageNodes, "#ac-panel td.num")
+      .filter((n) => text(n).indexOf(STALE_SENTENCE) >= 0);
+    if (cells.length) staleBad.push(`${r.fixture}/${r.selected.id}: ${cells.length} 个额度格里重复了跨行说明`);
+    if (silent.length) {
+      staleRounds += 1;
+      if (panelAlerts.length !== 1) {
+        staleBad.push(`${r.fixture}/${r.selected.id}: 有 ${silent.length} 个 SILENT 账号却出了 ${panelAlerts.length} 条横幅（必须恰一条）`);
+      } else if (text(panelAlerts[0]).indexOf(`${silent.length} 个账号`) < 0) {
+        staleBad.push(`${r.fixture}/${r.selected.id}: 横幅计数与数据不符（期望含「${silent.length} 个账号」，实得「${cut(text(panelAlerts[0]), 60)}」`);
+      }
+    } else {
+      cleanRounds += 1;
+      if (panelAlerts.length) staleBad.push(`${r.fixture}/${r.selected.id}: 本轮没有任何 SILENT 账号，横幅却出现了（误报"没查成"）`);
+    }
+  }
+  check("V19", "⑲ 额度失败轮：面板顶部恰一条横幅（计数与数据同源），行内不重复跨行说明；无失败轮不误报",
+    staleBad.length === 0 && staleRounds >= 1 && cleanRounds >= 1,
+    () => staleBad.length ? `${staleBad.length} 处：${[...new Set(staleBad)].slice(0, 2).join(" | ")}`
+      : `有 SILENT 轮 ${staleRounds} / 无 SILENT 轮 ${cleanRounds}（两向都有样本）`);
 
   /* ---------- L · 反转的 M6-IX 真机断言（e2e-records/m6-accounts-assertions.json） ----------
    * 设计书 §8-2：A6 / A8 / A10 正是本版要删的结构 → **逐条反转**（不是删除）。 */
@@ -829,14 +1395,19 @@ async function runChecks() {
       const hay = [n.x || "", ...Object.entries(n.a).filter(([k]) => k !== "style").map(([, v]) => String(v))];
       for (const w of needles) {
         if (!w) continue;
-        if (hay.some((h) => h.indexOf(w) >= 0) && !inside(n, ".req-detail")) {
+        if (hay.some((h) => h.indexOf(w) >= 0)) {
           detailBad.push(`${r.fixture}/${r.selected.id}：常驻面出现「${w}」@ ${pathOf(n)}`);
         }
       }
     }
   }
-  check("L-A10", "反转 M6-IX A10「头卡副行含协议/设备身份」→ 现在这两个字符串只许出现在展开行 .req-detail 里",
-    detailBad.length === 0, () => detailBad.length ? [...new Set(detailBad)].slice(0, 3).join(" | ") : "常驻面零命中（协议/设备身份/目录来源/base_url）");
+  // 2026-10-01 用户指示废除展开详情行：实现词汇不再「降级到 .req-detail」而是**整页不出现**
+  // （续期/模型目录并入模型映射弹窗；协议/设备身份/base_url 等只在后端视图可查）。
+  if (pageSrc.indexOf("req-detail") >= 0 || pageSrc.indexOf("data-exp") >= 0) {
+    detailBad.push("页面源码残留 req-detail / data-exp（展开行结构必须整体移除，不许只藏起来）");
+  }
+  check("L-A10", "反转 M6-IX A10：展开详情行已废除——协议/设备身份/目录来源/base_url 在页面上零出现，源码无 req-detail/data-exp 残留",
+    detailBad.length === 0, () => detailBad.length ? [...new Set(detailBad)].slice(0, 3).join(" | ") : "常驻面零命中（协议/设备身份/目录来源/base_url），展开行结构已整体移除");
 
   /* ---------- W1 · M7-C1 扫码型（`login === "qr"`）的渲染契约 ----------
    * 钉两个缺陷本体（都在 raccoon / loomy 上实测存在过）：
@@ -1001,30 +1572,13 @@ const TABLE_FIX = [  { from: L('        <th>账号</th><th>状态</th>',
             '        : `<span style="color:var(--text-faint)">—</span>`}</td>'),
     to: L('      <td class="num">${quotaCell(a)}</td>') },
 ];
-const QUOTA_OLD = L('function quotaCell(a) {',
-  '  const q = a.quota || {};',
-  '  if (q.state === "unknown")',
-  '    return `<span style="color:var(--text-faint)" title="未拿到额度缓存（账号尚无物化资源或 ops 未刷新）">—</span>`;',
-  '  const n = q.resources?.length || 0;',
-  '  const title = `${n} 个关联资源 · 预留 ${q.reserved ?? 0}`;',
-  '  const main = q.state === "exhausted"',
-  '    ? `<span style="color:var(--warn)">已耗尽</span>`',
-  '    : `剩余 ${esc(q.remaining ?? "—")}`;',
-  '  return `<span title="${esc(title)}" style="font-variant-numeric:tabular-nums">${main}</span>`;',
-  '}');
-/** §3 的额度格目标形态：runtime 优先 → 退 a.quota → 无快照写「尚未刷新」。 */
-const QUOTA_NEW = L('function quotaCell(a) {',
-  '  const rq = a.runtime && a.runtime.quota;',
-  '  if (!rq) return `<span style="color:var(--text-faint)" title="运行态里没有额度快照：网关还没查过（BUG-2 的可见态）">尚未刷新</span>`;',
-  '  if (rq.state === "available") return `<span>有余量</span><span class="sub">查于 ${esc(shortTime(rq.checked_at))}</span>`;',
-  '  if (rq.state === "exhausted") return `<span style="color:var(--warn)">已耗尽</span>`;',
-  '  return `<span style="color:var(--text-faint)" title="${esc(rq.detail || "上游未给出额度")}">未知</span>`;',
-  '}');
-const QUOTA_FIX = [
-  { from: L('  const quotaCol = p.accounts.some((a) => a.quota && a.quota.state !== "unknown");'),
-    to: L('  const quotaCol = p.accounts.some((a) => (a.runtime && a.runtime.quota) || a.quota);') },
-  { from: QUOTA_OLD, to: QUOTA_NEW },
-];
+/** 🔴 2026-10-02 五档改版：`QUOTA_OLD`/`QUOTA_NEW`/`QUOTA_FIX` 整组**退役删除**（不是删判据）。
+ *  原因 = 方案 §8.2 前置批③（工程 B-R5-5）：`fix` 只在**该判据基线为红**时才执行，而页面已经是
+ *  五档形态 ⇒ V4'/V7' 的基线必须为绿，"把未实现页修成设计形态"这件事已经没有可锚的对象
+ *  （旧 `quotaCell` 字面量在现页 0 命中，一走到就 `hits=0` 抛错 = 用锚点过期冒充结论）。
+ *  ⇒ 这两条判据改走 `expectGreen`（红 = 真缺陷，报可读消息、不施加变异、不计入可红分母，
+ *     漏跑变异由 `rows < denom` + `bad.length` 双重保证退出码 1，不会假绿）。
+ *  `TABLE_FIX` 仍被本轮**没动**的 V6 引着（同属休眠债，按"其余过期组不顺手大改"保留）。 */
 const WORDS_FIX = [
   { from: '（本机端口打不开属正常，整串粘贴到此处）', to: '（本机回跳接收端未落地，整串粘贴到此处）' },
 ];
@@ -1047,12 +1601,15 @@ const MUTATIONS = [
     to: L('  const items = f.ids.filter((id) => byId.get(id).accounts.length).map((pid) => {') },
   { id: "V3", fix: ENTRY_FIX, kills: ["V3"],
     why: "卡头之外再复辟一颗「接入账号」钮（v1 的原始缺陷：入口不在所作用产品的框里）",
-    // 锚点取卡头与元信息行之间 —— 落点**在 `.card-head` 之外**，专打"他处接入钮"那条分支
-    from: L('      ${metaLineHTML(p)}'),
+    // 重定锚（2026-10-01 改版：卡头说明行 metaLineHTML 已删）——落点改在面板体首行之前，
+    // 仍在 `.card-head` 之外，专打"他处接入钮"那条分支
+    from: L('      ${p.accounts.length ? tableHTML(p) : emptyHTML(p)}'),
     to: L('      <button class="btn btn-sm" id="ac-add-dup">${PLUS}接入账号</button>',
-          '      ${metaLineHTML(p)}') },
-  { id: "V4", fix: [...TABLE_FIX, ...QUOTA_FIX], kills: ["V4"],
-    // 实测注记：本条只把数据源换回网关池摘要，**措辞仍是四值** → V7 不随行变红（V7 由下面那条专门钉）
+          '      ${p.accounts.length ? tableHTML(p) : emptyHTML(p)}') },
+  { id: "V4", fix: [], expectGreen: true, kills: ["V4", "V7", "V10", "V14", "V15"],
+    // 实测注记（2026-10-02 五档改写后重跑）：本条把 quotaCell 的数据源换回网关池摘要，
+    // 于是「无 items 的行」丢掉快照档位词（V4'/V7' 同红）、「有 items 的行」丢掉数字/徽章/重置于
+    // （V10'/V14/V15 连带红）—— kills 按实测声明，不虚报也不漏报。
     why: "quotaCell 改回只读 a.quota（BUG-1 本体：额度列接到网关池摘要，运行态快照再也不看）",
     from: L('  const rq = a.runtime && a.runtime.quota;'),
     to: L('  const rq = a.quota && a.quota.state !== "unknown" ? {',
@@ -1062,24 +1619,103 @@ const MUTATIONS = [
     from: L('  el.setAttribute("role", "switch");'),
     to: L('  el.setAttribute("role", "switch");',
           '  { const d = document.createElement("span"); d.className = "dot"; el.appendChild(d); }') },
-  { id: "V6", fix: TABLE_FIX, kills: ["V6"],
-    why: "表头「额度」改名「配额」（§3 是逐字列集，改名即判红）",
+  { id: "V6", fix: TABLE_FIX, kills: ["V6", "V4", "V7", "V10", "V14", "V14b", "V15"],
+    why: "表头「额度」改名「配额」（§3 是逐字列集，改名即判红；连带：额度列按表头定位，列名一改所有读额度格的判据同时失去对象 = 如实声明，不写成单点）",
     from: L('        <th class="num">额度</th><th class="num">操作</th>'),
     to: L('        <th class="num">配额</th><th class="num">操作</th>') },
-  { id: "V7", fix: [...TABLE_FIX, ...QUOTA_FIX], kills: ["V7"],
+  { id: "V7", fix: [], expectGreen: true, kills: ["V7"],
     why: "第四态「尚未刷新」被折进「未知」（把 BUG-2「网关还没查过」藏成「查了但拿不到」，§3 明令区分）",
-    from: L('  if (!rq) return `<span style="color:var(--text-faint)" title="运行态里没有额度快照：网关还没查过（BUG-2 的可见态）">尚未刷新</span>`;'),
-    to: L('  if (!rq) return `<span style="color:var(--text-faint)">未知</span>`;') },
+    // 重定锚（2026-10-02 五档改版：「尚未刷新」那行的 title 文案扩了字，锚跟着走；变异后果不变）
+    from: L('    return `<span style="color:var(--text-faint)" title="运行态里没有额度快照：网关还没查过这个账号（BUG-2 的可见态）">尚未刷新</span>`;'),
+    to: L('    return `<span style="color:var(--text-faint)">未知</span>`;') },
   { id: "V8", fix: WORDS_FIX, kills: ["V8"],
-    why: "状态文字「启用」写成「正常」（评审 B-2「正常」是第三个谎：status 不含任何凭据有效性事实）",
-    // 重定锚：§3 定版措辞「已启用」（与 rail title 的「M 已启用」同口径），锚点只多一个「已」字；
-    // 变异后果不变（把那一档写成「正常」→ DOM 可见文本 + 源码字面量两处都会红）。
-    from: L('  const stateText = !a.enabled ? "已停用" : unknown ? "状态未知" : "已启用";'),
-    to: L('  const stateText = !a.enabled ? "已停用" : unknown ? "状态未知" : "正常";') },
+    why: "空态文案塞进禁用词「正常」（评审 B-2「正常」是第三个谎：status 不含任何凭据有效性事实）",
+    // 重定锚（2026-10-01 改版：开关后的状态文字已删）——V8 的词表扫描覆盖 DOM + 源码字面量，
+    // 改打空态标题那行；变异后果不变（可见文本 + 源码字面量两处都会红）。
+    from: L('        <div style="font-size:13px;font-weight:700;color:var(--text-soft)">还没有账号</div>'),
+    to: L('        <div style="font-size:13px;font-weight:700;color:var(--text-soft)">运行正常</div>') },
   { id: "V9", fix: ICON_FIX, kills: ["V9"],
     why: "10 个产品全用同一个图标（张冠李戴；V9 存在的意义就是钉「各自用各自产品的 icon」）",
     from: L('            <span class="mark-sm">${productMark(p)}</span>'),
     to: L('            <span class="mark-sm"><img src="/img/products/buddy.png" alt="?"></span>') },
+      { id: "V19", fix: [], expectGreen: true, kills: ["V19"],
+    why: "摘掉面板顶部的额度失败横幅（回到「每行各说一遍」或「干脆不说」的旧形态）",
+    from: L('  const n = Object.values(bits).reduce((x, y) => x + y, 0);',
+          '  if (!n) return "";'),
+    to: L('  const n = 0;   // 撤证：横幅永不出现') },
+{ id: "V10", fix: [], expectGreen: true, kills: ["V10"],
+    why: "摘掉本格内的就地展开明细（2026-10-02 用户指令的反面：明细又只剩悬停可见）",
+    from: L('  out.push(packsDetailHTML(a, rq, items));'),
+    to: L('  // 撤证：逐包明细不再就地展开（回到只住 tooltip 的旧形态）') },
+{ id: "V10", fix: [], expectGreen: true, kills: ["V10", "V15"],
+    why: "结构化套餐余粮被静默丢弃（quotaCell 忽略 items，退回「有余量」档——Q30 调研出的「查到了但不展示」缺陷本体）",
+    from: L('  const items = (Array.isArray(rq.items) ? rq.items : []).filter((it) => it && it.name);'),
+    to: L('  const items = [];') },
+  { id: "V11", fix: [], kills: ["V11"],
+    why: "行内续期钮被摘掉（能力位 refresh=True 的产品失去账号维度续期入口 = 2026-10-01 裁决的功能缺失）",
+    from: L('    out.push(textOp("refresh", `续期 ${a.name}`, "续期：刷新凭据并落盘（与启用位正交，停用账号也可续期；与额度无关）", "续期"));'),
+    to: L('    // 撤证：续期钮被摘') },
+  { id: "V12", fix: [], kills: ["V12"],
+    why: "账号级续期动作被塞回「模型映射」弹窗（用户裁决：续期属账号维度 → 只在列表行内，弹窗零动作）",
+    from: L('      ${p.accounts.length ? tableHTML(p) : emptyHTML(p)}'),
+    to: L('      <button class="btn btn-sm" data-mop="refresh">续期</button>',
+          '      ${p.accounts.length ? tableHTML(p) : emptyHTML(p)}') },
+
+  /* ==================== 2026-10-02 五档改版新增 ====================
+   * 🔴 锚点纪律（方案 §8.2「变异锚纪律」/ QA X-R5-4 第 4 条）：每条 `from` 都取**整行 + 前一行**
+   *    （`applyEdit` 是 `src.split(from).length-1` 的子串计数，2 空格前缀会同时命中 4 空格行），
+   *    并且都**与本轮页面实现同批定稿** —— 对当时页面的 `hits=1` 实测数见交付报告
+   *    （`docs/changes/e2e-records/gate-static-20261002.md`，逐条 grep 原始输出）。
+   *    `fix: [] + expectGreen: true` = 页面已实现该契约 ⇒ 基线必须为绿；红了就是真缺陷，
+   *    门报可读消息并跳过变异（`rows < denom` + `bad` 双保险 ⇒ 退出码必为 1，不可能假绿）。 */
+  { id: "V13", fix: [], expectGreen: true, kills: ["V13"],
+    why: "行内第 3 颗「刷新额度」被摘（指令 2「每个产品都要有账号维度刷新」的功能缺失 + 能力位同相判据失去对象）",
+    from: L('  if (c.balance) {',
+          '    out.push(textOp("quota", `刷新额度 ${a.name}`,',
+          '      "刷新额度：只读上游额度，不改凭据、不消耗签到配额（zcode 走联网腿；其余产品同款钩子）", "刷新额度"));',
+          '  }'),
+    to: L('  if (false) {',
+          '    // 撤证：行内「刷新额度」钮被摘',
+          '  }') },
+  { id: "V13", fix: [], expectGreen: true, kills: ["V13"],
+    why: "卡头产品级「刷新额度」被摘（指令 2 的第二条腿 = 产品维度；行内还在、卡头没了 ⇒ 同相判据必红）",
+    from: L('          ${c.balance ? `<button class="btn btn-sm" id="ac-quota"',
+          '            title="刷新额度：对该产品全部账号只读查一次上游额度（含停用账号；结果就地回执）">${REFRESH}刷新额度</button>` : ""}'),
+    to: L('          ${c.balance ? "" : ""}') },
+  { id: "V14", fix: [], expectGreen: true, kills: ["V14", "V7", "V4"],
+    why: "摘掉 `reason===\"no_plan\"` 那一支（裁决③ 的前端映射根本没做 → 无套餐行落回「未知」/结构化数字，「无套餐」档在界面上消失）",
+    // 🔴 反向自证①的同一编辑（`to` 只留注释）；`from` 含整支三行 ⇒ 逐字唯一命中
+    from: L('  if (rq.reason === "no_plan") {',
+          '    return `<span style="color:var(--text-faint)" title="${esc(rq.detail || "上游返回空套餐列表")}">无套餐${esc(note)}</span>`;',
+          '  }'),
+    to: L('  // 撤证：no_plan 支被摘（页面没有「无套餐」这一档）') },
+  { id: "V14b", fix: [], expectGreen: true, kills: ["V14b"],
+    why: "摘掉「上游一个可用数都没给」的护栏（= 把 remaining:null 当 0 累加并按 total<=0 判「已耗尽」，§4-3 明令禁止的谎：「没给数字」≠「数字是 0」）",
+    from: L('  if (rq.plan) out.push(`<span class="badge b-gray" style="margin-bottom:4px" title="${esc("套餐：" + rq.plan)}">${esc(rq.plan)}</span>`);',
+          '  if (!nums.length) {'),
+    to: L('  if (rq.plan) out.push(`<span class="badge b-gray" style="margin-bottom:4px" title="${esc("套餐：" + rq.plan)}">${esc(rq.plan)}</span>`);',
+          '  if (false) {') },
+  { id: "V15", fix: [], expectGreen: true, kills: ["V15"],
+    why: "「重置于 X」整段不渲染（§4-5 定义 = 有效包里最早的 expires_at，被摘后用户不知道额度什么时候恢复）",
+    from: L('  const isoExp = active.map((it) => it.expires_at).filter((v) => ISO_RE.test(String(v || "")))',
+          '    .sort()[0];',
+          '  if (isoExp) buckets.push(`重置于 ${esc(shortTime(isoExp).slice(5))}`);'),
+    to: L('  const isoExp = active.map((it) => it.expires_at).filter((v) => ISO_RE.test(String(v || "")))',
+          '    .sort()[0];',
+          '  if (false && isoExp) buckets.push(`重置于 ${esc(shortTime(isoExp).slice(5))}`);') },
+  { id: "V15", fix: [], expectGreen: true, kills: ["V15"],
+    why: "附属标注映射表里「未发起」那一档的两个 reason（no_credentials / no_identity）同时被摘 ⇒ **同文案两行必须同时红**，否则映射表是假的（方案 §8.2 X-R5-9）",
+    from: L('  no_credentials: "（未发起）",',
+          '  no_identity: "（未发起）",'),
+    to: L('  no_credentials: "",',
+          '  no_identity: "",') },
+  { id: "V17", fix: [], expectGreen: true, kills: ["V17", "V15"],
+    why: "摘掉页面的 ISO 形状护栏（§4-5 后半句「仅当匹配 ^\\d{4}-\\d{2}-\\d{2} 才渲染」，谓词恒真）⇒ 上游秒级 epoch 直接进用户可见面：tooltip 印 10 位裸 epoch（V17 红）、「重置于」被 slice(5) 切成 6 位残串（V15 的「出现即合形」红）",
+    // 🔴 这就是 X-R5-5 说的那条绕过：`shortTime(1790956800).slice(5)` = "956800"，
+    //    只扫 visibleText 的 V17 看不见 6 位残串 ⇒ 本条能红的通路是 **tooltip 里的 `失效于`**
+    //    （V17 因此必须同时扫 `tipOf(cell)`，见判据段注释），残串那一半由 V15 的正形兜住。
+    from: L('const ISO_RE = /^\\d{4}-\\d{2}-\\d{2}/;'),
+    to: L('const ISO_RE = /./;') },
 ];
 
 const applyEdit = (src, { from, to }, tag) => {
@@ -1121,9 +1757,16 @@ async function runMutations() {
   /** 一次读数里的红集合（连带变红要相对**施加变异前的那一份副本**算，不是相对基线）。 */
   const redOf = (run) => new Set((run.checks || []).filter((c) => !c.ok).map((c) => c.id));
   const baseRed = [...redOf(baseRun)];
+  /** 🔴 `expectGreen` 型条目（方案 §8.2 前置批① = 工程 B-R5-5 原文）：
+   *  语义 = 「本判据在**已实现页面**上基线必须为绿；一旦为红就是真缺陷，不是可绿性核验的对象」。
+   *  净效果只有一条：**禁止把真缺陷混进可绿性核验**（旧逻辑会去施加过期 fix，报"锚点过期"，
+   *  把坏页面说成门的毛病）。它**不可能造成假绿** —— 跳过变异 ⇒ 该条既进 `bad` 又不计入 `rows`
+   *  ⇒ `rows.length < denom` 且 `bad.length > 0`，退出码必为 1（这条安全边写在文件头）。 */
+  const greenExpected = MUTATIONS.filter((m) => m.expectGreen).length;
+  const skipped = [];
   console.log(`\n[变异自证] 真实页面基线：${(baseRun.checks || []).length} 项，红 ${baseRed.length} 项（${baseRed.join(",") || "无"}）`);
-  console.log("  🔴 本门是「判据先行」：基线为红是预期态，故每条变异先做**可绿性核验**（见文件头），");
-  console.log("     红项先施加最小 fix 编辑（/tmp 副本）转绿，再施加回归变异要求它**必须重新变红**。\n");
+  console.log(`  基线为红的条目先做**可绿性核验**（最小 fix 编辑，/tmp 副本）；`);
+  console.log("  expectGreen 型 " + greenExpected + " 条：基线红 = 真缺陷，记为不可核验并跳过变异（不施加过期 fix）。\n");
 
   for (const mut of MUTATIONS) {
     let src = baseSrc;
@@ -1133,6 +1776,22 @@ async function runMutations() {
       if (!before) throw new Error(`判据 ${mut.id} 在基线输出里不存在（判据没跑起来？）`);
       let prevRed = redOf(baseRun);
       if (!before.ok) {
+        if (mut.expectGreen && mut.fix.length) {
+          bad.push(`${mut.id} ← expectGreen 与 fix 同时声明（二者互斥：要么基线必须绿，要么走可绿性核验）`);
+          console.log(`  ✗ ${mut.id} ← ${mut.why}  ← BAD：声明矛盾（expectGreen + fix 并存）`);
+          continue;
+        }
+        if (mut.expectGreen) {
+          skipped.push(mut.id);
+          bad.push(`${mut.id} ← 基线必须为绿却是红（真缺陷，非可绿性核验对象）：${cut(before.detail, 120)}`);
+          console.log(`  ✗ ${mut.id} ← ${mut.why}  ← BAD：基线红（expectGreen 型 = 真缺陷）：${cut(before.detail, 120)}`);
+          continue;
+        }
+        if (!mut.fix.length) {
+          bad.push(`${mut.id} ← 基线红且无 fix：可绿性与证伪都无从核验（补 fix 或与页面同批落地）`);
+          console.log(`  ✗ ${mut.id} ← ${mut.why}  ← BAD：基线红且没有 fix 可走`);
+          continue;
+        }
         for (const f of mut.fix) src = applyEdit(src, f, `fix(${mut.id})`);
         const copy = join(work, `accounts-${mut.id}-fixed.js`);
         writeFileSync(copy, src);
@@ -1178,11 +1837,13 @@ async function runMutations() {
   for (const c of (baseRun.checks || [])) if (!covered.has(c.id) && /^V/.test(c.id)) {
     bad.push(`判据 ${c.id} 没有任何对应变异（永远不会红 = 等于没有断言）`);
   }
+  const denom = MUTATIONS.length - skipped.length;
   console.log("=".repeat(56));
-  console.log(`可红 ${rows.length}/${MUTATIONS.length}${bad.length ? `；${bad.length} 项 BAD` : "；" + rows.length + " 条判据全部可证伪"}`);
+  console.log(`可红 ${rows.length}/${denom}${bad.length ? `；${bad.length} 项 BAD` : `；${rows.length} 条判据全部可证伪`}`
+    + `（expectGreen 型 ${greenExpected} 条已计入分母：基线为绿时照常证伪，为红则跳变异并记为不可核验，本次跳过 ${skipped.length} 条）`);
   bad.forEach((b) => console.log(`  ✗ ${b}`));
   try { rmSync(work, { recursive: true, force: true }); } catch { /* /tmp 副本清不掉不影响结论 */ }
-  return (rows.length === MUTATIONS.length && !bad.length) ? 0 : 1;
+  return (rows.length === denom && !bad.length) ? 0 : 1;
 }
 
 /* ==================== 入口 ==================== */
@@ -1228,7 +1889,8 @@ async function main() {
   }
 
   const SECTIONS = {
-    R: "渲染现场可达性", V: "设计书 §8 八条判据（v2 结构）", L: "反转的 M6-IX 真机判据",
+    R: "渲染现场可达性", V: "设计书 §8 结构判据 + 2026-10-02 额度五档判据（V4'/V7'/V10'/V13/V14/V14b/V15/V17）",
+    L: "反转的 M6-IX 真机判据",
     W: "扫码型（qr）渲染契约（M7-C1）",
   };
   const failed = checks.filter((c) => !c.ok);

@@ -117,6 +117,11 @@
         </div>
       </div>
     </header>
+    <!-- 🔴 实例身份横幅（2026-10-02 用户实拍立项）：验收门 / 临时副本的界面与默认实例
+         逐像素一致，原先只有地址栏端口能区分真假，用户把门里的注入样本当成了真实账号数据。
+         文案由后端 `Runtime.instance_label()` 单源给出（前端不另写一份），
+         默认实例（数据根 = 仓库 `data/`）时整条保持 hidden。 -->
+    <div class="instance-banner" id="instance-banner" hidden></div>
 
     <main class="content" id="content"></main>
   </div>

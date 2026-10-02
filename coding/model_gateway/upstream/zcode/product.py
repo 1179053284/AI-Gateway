@@ -56,9 +56,6 @@ from model_gateway.upstream.zcode import store as zstore
 #: 本产品标识（§22.4；与 `accounts/registry.py` 的键、账号目录名一致）
 PRODUCT = "zcode"
 
-#: 额度数据来源标识（离线日志通道；§17 的数据源优先级：日志是客户端拿到的第一手响应）
-QUOTA_SOURCE = "zcode-log"
-
 #: 主推登录 provider（Z.ai 邮箱注册通道已关闭，§20 #9；与 `oauth.PROVIDERS` 及
 #: `mgw zcode login --provider` 的默认值同源）
 LOGIN_PROVIDER = "bigmodel"
@@ -490,31 +487,128 @@ def _json_or_empty(resp: httpx.Response) -> dict:
     return body if isinstance(body, dict) else {}
 
 
-async def quota(cred, meta) -> QuotaSnapshot:
-    """额度快照 —— **委托既有实现**（`upstream/zcode/quota.py` 的离线日志通道）。
+#: 额度的**联网**通道来源标识（2026-10-02 方案裁决①）。
+#: 旧常量 `QUOTA_SOURCE = "zcode-log"` 只属于**离线面**（`read_account_snapshot`），
+#: 两者混用会把"这一秒刚从上游取回的数值"标成「（离线）」—— 界面因此要说谎。
+QUOTA_SOURCE_NET = "zcode-billing"
+#: 熔断短路时的来源（§4-6：附属标注「（冷却中）」挂在 `reason` 上，不新增第六档）
+QUOTA_SOURCE_CIRCUIT = "zcode-circuit"
 
-    既有实现以**账号目录**为输入（日志在 `<账号>/data/.zcode/v2/logs/`）；身份取
-    §22.3 ③ 的 `meta` 通道（`meta["account"]`/`meta["dir"]`，缺则回退 `cred["account"]`，
-    见 `_identity_of`）。缺账号名 → `unknown`（**不编造**：`23 B2`「未知不当零」）。
+def _iso(epoch_seconds) -> str:
+    """秒级 epoch → 本地墙钟 ISO（与 `_write_quota_cache` 的 `checked_at` 同形，无 tz）。
+
+    🔴 归一化是**钩子的责任**（`accounts/types.py` 的 items 键契约原文），不是页面、不是缓存层：
+    上游三条样本的 `expires_at/period_end/server_time` 全是整数秒（【探针台账】§6.4），
+    直接塞进 `items` 的话前端 `shortTime()` 会把 `1790956800` 原样显示、
+    `Date.parse(1790956800)` 得 `NaN` ⇒ 「临期/重置于」判定静默熄火（工程 r4 B-R4-5）。
+    取不到（0/缺/非数）→ **空串**，页面据此**整段不出**，不猜。
     """
-    from model_gateway.upstream.zcode import quota as zq
+    import datetime as dt
+
+    try:
+        n = int(epoch_seconds)
+    except (TypeError, ValueError):
+        return ""
+    if n <= 0:
+        return ""
+    try:
+        return dt.datetime.fromtimestamp(n).isoformat(timespec="seconds")
+    except (OverflowError, OSError, ValueError):
+        return ""
+
+
+async def quota(cred, meta) -> QuotaSnapshot:
+    """额度快照 —— **联网主通道**（方案裁决①；r3 之前的"只读日志"已降级为离线面）。
+
+    身份与凭据一律走公共层：`_identity_of`（§22.3 ③ 的 `meta` 通道）+
+    `outbound_credentials`（复用 `_resolved_credentials` 的双处落盘合并规则）。
+    🔴 实测坑（【探针台账】§5.1）：16/16 个导入号**顶层没有 `credentials.json`**、
+    `meta.json` 里也没有 `dir`/`account` ⇒ 不经 `store.hook_meta()` 组装就取到 16/16 空 jwt。
+    任何"自己再拼一遍目录"的第四份写法都会在这里静默变成"额度永远未知"。
+
+    失败面**一律返回快照、不冒异常**（工程 r3 B-R3-3 的三处未闭合之一）：抛出去会被
+    `ops/builtin/query_balance._query_via_hook` 的 `except` 收成 `failed` ⇒ 顶栏红点每轮常亮，
+    把真失败稀释掉（§21.3 原则 3）。机器可读的档位在 `QuotaSnapshot.reason`：
+
+    - `no_identity`      缺账号名（身份都定不下来，**不发起**）
+    - `no_credentials`   缺 jwt / 缺 `device_mid`（**不发起**；接 `test_registry.py:258-263`
+                         钉的「既不编造也不打上游」）
+    - `circuit-untrusted` 熔断状态文件读不动 ⇒ **未知按最坏拒跑**，但与领取腿同口径记 `failed`
+                         （`zcode_claim.py:140-149`，第十二轮 PM B-12-4）；detail **不带钟点**
+    - `circuit`          盘上已熔着 ⇒ 不发起（同轮其余号也走这一档，见下面的"止损是推论"）
+    - `unreachable` / `expired` / `no_plan`  见 `billing.BillingResult` 的 docstring
+    """
+    from model_gateway.upstream.zcode import billing, quota as zq
 
     account, root = _identity_of(meta, cred)
     if not account:
-        return QuotaSnapshot(
-            state="unknown", source=QUOTA_SOURCE,
-            detail="缺账号名（meta['account']/meta['dir']；向后兼容 cred['account']），未取额度")
-    snap = zq.read_account_snapshot(_account_root_of(root), account)
-    if not snap.ok:
-        return QuotaSnapshot(state="unknown", source=QUOTA_SOURCE,
-                             detail=snap.note or "无可用日志记录")
-    remaining = zq.remaining_units(snap)
-    if remaining is None:
-        return QuotaSnapshot(state="unknown", source=QUOTA_SOURCE,
-                             detail=f"plan={snap.plan}；余量口径不可得")
-    return QuotaSnapshot(state="available" if remaining > 0 else "exhausted",
-                         source=QUOTA_SOURCE,
-                         detail=f"plan={snap.plan}；可用余量 {remaining}（token 量纲）")
+        return QuotaSnapshot(state="unknown", source=QUOTA_SOURCE_NET, reason="no_identity",
+                             detail="缺账号名（meta['account']/meta['dir']；向后兼容 cred['account']），"
+                                    "未发起额度查询")
+
+    circuit = zq.get_circuit()
+    # 🔴 熔断的唯一判者就是这里（发起**前**判一次），`billing` 不判（裁决④/工程 B-R3-4）。
+    #    `untrusted` 必须先判：`active()` 在文件读不动时也返回 True，两者界面文案与 ops 类别都不同。
+    if circuit.untrusted:
+        return QuotaSnapshot(state="unknown", source=QUOTA_SOURCE_CIRCUIT,
+                             reason="circuit-untrusted",
+                             detail=f"熔断状态文件读不动（{circuit.untrusted}）→ 按熔断拒跑；"
+                                    "未发起额度查询")
+    if circuit.active():
+        return QuotaSnapshot(state="unknown", source=QUOTA_SOURCE_CIRCUIT, reason="circuit",
+                             detail=f"ZCode 全局风控熔断中（剩余约 {circuit.left_minutes()} 分钟）"
+                                    "→ 未发起额度查询")
+
+    jwt, device_mid = outbound_credentials(cred, meta)
+    if not jwt or not device_mid:
+        return QuotaSnapshot(state="unknown", source=QUOTA_SOURCE_NET, reason="no_credentials",
+                             detail="账号缺 jwt 或设备码（缺 `X-Device-Mid` 上游必回 400/3001）"
+                                    "→ 未发起额度查询")
+
+    res = await billing.fetch_balance(jwt, device_mid, base_url=_plan_base())
+
+    if res.risk_controlled:
+        # 建**同一份**全局熔断（不是新机制）⇒ 同轮其余号在上面的"发起前判定"里自然被挡住：
+        # **止损是推论，不是机制**（工程 r4 B-R3-5：钩子签名被 FROZEN_HOOKS 钉死 `(cred, meta)`，
+        # 拿不到轮上下文，任何"本轮标志位"都无处落）。
+        # 🔴 `enter()` 是额度腿的**第二个调用点**（第一处 = `zcode_claim.py:121`），
+        #    `out.py:35-44` 的登记与 tech-design §17 的改述同批（方案 §9-2）。
+        circuit.enter(res.detail or "额度查询命中上游风控")
+        return QuotaSnapshot(state="unknown", source=QUOTA_SOURCE_CIRCUIT, reason="circuit",
+                             detail=res.detail)
+    if res.kind == "expired":
+        return QuotaSnapshot(state="unknown", source=QUOTA_SOURCE_NET, reason="expired",
+                             detail=res.detail)
+    if res.kind == "no_plan":
+        # 「无套餐」= 三态里的 `unknown` + 这个 reason（裁决③：**不动 QuotaState 枚举**）。
+        # 池语义与红点因此沿用现路径：unknown 不动池、类别取 inactive。
+        # 两可性如实写进 detail（【台账】§5：无法区分"确实无套餐"与"该身份无 entitlement"）。
+        return QuotaSnapshot(state="unknown", source=QUOTA_SOURCE_NET, reason="no_plan",
+                             plan="", plan_key=res.plan_key, data_at=_iso(res.server_time),
+                             detail=res.detail)
+    if res.kind != "ok":
+        return QuotaSnapshot(state="unknown", source=QUOTA_SOURCE_NET, reason="unreachable",
+                             detail=res.detail)
+
+    remaining = zq.remaining_units(zq.QuotaSnapshot(account=account, buckets=list(res.buckets),
+                                                    plan=res.plan))
+    items = tuple({
+        "name": b.show_name,
+        "unit": (b.unit_type or "").lower(),
+        "remaining": b.available,                        # 可为 None = 上游未给出（不当 0）
+        "total": b.total,
+        "used": b.used,
+        "active": True,                                  # 只表达"包有效"，不因本窗口用尽置 False
+        "expires_at": _iso(b.period_end),
+    } for b in res.buckets)
+    state = ("available" if (remaining or 0) > 0
+             else ("unknown" if remaining is None else "exhausted"))
+    detail = (f"plan={res.plan or '—'}；可用余量 {remaining if remaining is not None else '未给出'}"
+              f"（{res.buckets[0].unit_type or '未给出'} 量纲）"
+              if res.buckets else f"plan={res.plan or '—'}；上游未返回余额桶")
+    return QuotaSnapshot(state=state, source=QUOTA_SOURCE_NET, detail=detail,
+                         plan=res.plan, items=items, remaining=remaining,
+                         reason="", data_at=_iso(res.server_time), plan_key=res.plan_key)
 
 
 async def claim(cred, meta, *, precheck: bool) -> ClaimOutcome:

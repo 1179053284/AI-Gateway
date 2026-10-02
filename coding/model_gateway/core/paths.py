@@ -42,6 +42,16 @@ def resolve_config_path(path: Path | str | None = None) -> Path:
     return default_config_path()
 
 
+def default_data_dir() -> Path:
+    """仓库默认数据根 = `<项目根>/data`（与 `default_config_path()` 的默认值同尺）。
+
+    用途只有一个：让"本实例读的数据根是不是默认那份"成为**可询问的判据**
+    —— 验收门 / 临时副本 / 用户自己挪位置时 `MG_CONFIG` 指向别处，
+    而 `data_dir()` 跟着配置文件走（见下），于是界面上一切都像真的。
+    """
+    return (PROJECT_ROOT / "data").resolve()
+
+
 def data_dir(config_path: Path | str | None = None) -> Path:
     """运行时数据目录 = 生效配置文件的父目录（配置文件在哪，数据就跟着在哪）。
 

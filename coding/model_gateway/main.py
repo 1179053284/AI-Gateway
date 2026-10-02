@@ -42,6 +42,7 @@ from model_gateway.core.errors import ErrorClassifier, register_secret_values
 from model_gateway.core import instance_lock
 from model_gateway.core.ir import ReasoningSpec
 from model_gateway.core.resources import (
+    PRODUCT_ROUTE_NOTE,
     RESOURCE_PAGE,
     ROUTE_POOL_PAGE,
     ResourceManager,
@@ -168,6 +169,7 @@ def _maybe_start_ops(app) -> "asyncio.Task | None":
 
     from model_gateway.ops import builtin as ops_builtin
     from model_gateway.ops import runner as ops_runner
+    from model_gateway.ops.builtin import auto_renew
 
     op_claim = ops_builtin.OPERATIONS[ops_builtin.product_claim.OPERATION_ID]
     op_balance = ops_builtin.OPERATIONS[ops_builtin.query_balance.OPERATION_ID]
@@ -194,7 +196,7 @@ def _maybe_start_ops(app) -> "asyncio.Task | None":
         #   两条 cron 腿原先不传（`ops/runner.py:462-470`「给了才跳过」）→ 谎只对一半入口成立。
         #   两条腿都传 = 与手动腿同一判据（`cron_enabled_of` 内部就是 `_account_enabled`）；
         #   额度腿同样看停用位：它是运营动作（runner 的过滤语义「运营类跳过 disabled，
-        #   续期类不看」—— 续期不属本定时器），账号停用后既不签到也不再替它查余额。
+        #   续期类不看」；2026-10-01 起本定时器新增**第三条续期腿**，见下方 `auto_renew`）。
         # 🔴 结果只落 jsonl：顶栏红点的未读数以文件为准（`ops_runner.unread_failures`），
         #    不再累加进程内计数器 —— CLI 独立进程写的失败也要点得亮红点（验收 S-5）
         #
@@ -217,6 +219,13 @@ def _maybe_start_ops(app) -> "asyncio.Task | None":
         breport = await ops_runner.run_once(operation=op_balance, runtime=runtime,
                                             enabled_of=cron_enabled_of)
         ops_runner.write_report(breport, runtime.usage_dir)
+        # 续期腿（2026-10-01 用户裁决「失效前 2h 就应该自动续期」）：登录态将在
+        # `AUTO_RENEW_WITHIN_S` 内失效的账号逐个续期。同一 `cron_enabled_of`（停用账号
+        # 跳过）；失效时刻取不到的账号**不续**（credexp 判据，未知不猜）。
+        # ⚠️ 本轮不写 ops JSONL（`auto_renew` 未注册成 operation）：续期失败下轮仍会重试，
+        #    顶栏红点不记它 —— 已作为开放项登记台账，不假装"有留痕"。
+        await auto_renew.refresh_due(within_s=auto_renew.AUTO_RENEW_WITHIN_S,
+                                     enabled_of=cron_enabled_of)
 
     # 启动即刷一次：否则首个 tick 之前（最长一个间隔）额度全为"未知"
     refresh_quotas(runtime)
@@ -619,6 +628,32 @@ class Runtime:
         """
         self.dialects = DialectTable.load(self.dialects_path)
 
+    def instance_label(self) -> dict[str, str]:
+        """**实例身份自证**：本进程读的数据根是不是仓库默认那份、上游是不是假上游。
+
+        立项理由（2026-10-02 用户实拍）：验收门跑在 :8400-:8499 的独立实例上，
+        界面与 :8300 **逐像素一致**，账号/额度/目录全是门自己注入的样本 ——
+        用户把它当成真实数据来质问。端口号是界面上唯一能区分真假的地方，这不够。
+        所以这里只把事实拼成一句话给前端显示，**不猜"这是门还是用户的副本"**。
+        """
+        root = paths.data_dir(self.config_path)
+        default = paths.default_data_dir()
+        port = str(getattr(self.config.gateway, "port", "") or "")
+        if root == default:
+            return {"kind": "default", "data_root": str(root), "port": port, "note": ""}
+        fake = bool(os.environ.get("MGW_FAKE_TRACE") or os.environ.get("MGW_IX_REPO"))
+        if fake:
+            note = (f"验收门实例（端口 {port}）：数据根 {root} 不在仓库默认目录，"
+                    f"且上游由假上游注入（MGW_FAKE_TRACE / MGW_IX_REPO 在环）——"
+                    f"本页的账号、额度与模型目录都可能是注入样本，不是真实账号数据。"
+                    f"真实数据请看默认实例（数据根 {default}）。")
+        else:
+            note = (f"非默认数据根（端口 {port}）：本实例读 {root}，"
+                    f"仓库默认那份是 {default} —— 界面里的账号与额度来自前者。"
+                    f"若你以为这是默认实例，请先核对端口与数据根。")
+        return {"kind": "fake-upstream" if fake else "external",
+                "data_root": str(root), "port": port, "note": note}
+
     def config_warnings(self) -> list[dict[str, str]]:
         """配置告警（v2.0 §21 / PRD Q25-⑧）—— **两类**，措辞不同。
 
@@ -645,11 +680,18 @@ class Runtime:
         #    `#rv-addmap` 长在 resources.js（「模型资源」页），资源池那一侧只有
         #    档位/优先级/移除映射（models.js）—— 指到「资源池设置」页会让人在那一屏
         #    找不到任何"添加"按钮，比指错页更难查（他会以为自己找错地方）。
-        empty_models = [m.name for m in self.config.models if m.enabled and not m.resources]
+        # 🔴 判据 = 没有任何**开着开关**的映射。全部映射被关掉（账号侧模型映射弹窗里的
+        #    行开关）与"从没配过"在结果上同一种病：都不对外服务。但恢复动作不同 ——
+        #    前者回账号侧把行开关拨回来，后者才是配映射。
+        #    ⚠️ 本段刻意不写页名书名号形式：指路门 test_v2_cli 的正则不剥注释，
+        #    写了会被当成用户文案判红（既有门缺陷，见 .cursor/memory/pitfalls.md）。
+        def _live(m) -> bool:
+            return any(e.enabled for e in m.resources)
+        empty_models = [m.name for m in self.config.models if m.enabled and not _live(m)]
         if empty_models:
             out.append({
                 "kind": "model_without_resource",
-                "message": (f"{len(empty_models)} 个系统模型未配置任何资源，"
+                "message": (f"{len(empty_models)} 个系统模型没有任何生效的资源映射，"
                             f"已从 /v1/models 与 mgw setup 隐藏（调用将返回 503）"
                             f" —— 到{RESOURCE_PAGE}选中要承接的资源，在「模型列表」里"
                             f"添加映射指向该系统模型"
@@ -697,7 +739,7 @@ class Runtime:
                 #    「资源池设置」页只管这一条映射的**档位/优先级/移除**（models.js），
                 #    所以"更换映射"不能指到那里 —— 那一屏没有"添加"这一半。
                 "message": (f"{len(hidden)} 个已启用模型的资源映射全部不可用（已停用或凭据失效），"
-                            f"已从 /v1/models 与 mgw setup 隐藏 —— 到{RESOURCE_PAGE}启用对应资源，"
+                            f"已从 /v1/models 与 mgw setup 隐藏 —— 到{RESOURCE_PAGE}启用对应资源{PRODUCT_ROUTE_NOTE}，"
                             f"或在同一页的「模型列表」里给该模型更换映射"
                             f"（{'、'.join(hidden[:5])}{'…' if len(hidden) > 5 else ''}）"),
             })
@@ -726,7 +768,7 @@ class Runtime:
             causes = sorted({c for _n, gs in gap_hidden for c in gs})
             message = (f"{len(names)} 个模型因出站前提未注入不可服务"
                        f"（{'、'.join(causes)}），已从 /v1/models 与 mgw setup 隐藏 —— "
-                       f"选到它们必然失败（503）；请在{RESOURCE_PAGE}暂时停用对应资源，"
+                       f"选到它们必然失败（503）；请在{RESOURCE_PAGE}暂时停用对应资源{PRODUCT_ROUTE_NOTE}，"
                        f"或等待出站通道接线"
                        f"（{'、'.join(names[:5])}{'…' if len(names) > 5 else ''}）")
             if any("zcode" in c for c in causes):

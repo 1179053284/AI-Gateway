@@ -201,8 +201,14 @@ async def quota(cred, meta) -> QuotaSnapshot:
     if summary is None:
         return QuotaSnapshot(state="unknown", source=source,
                              detail="响应缺少 balance/permanentBalance 字段（结构变更？）")
+    # 两池即套餐表达（loomy-credits.ts:5-9）：永久积分 + 每日赠送（每日会作废的分桶）。
+    items = ({"name": "永久积分", "unit": "积分", "remaining": summary.permanent,
+              "total": None, "used": None, "active": True, "expires_at": ""},
+             {"name": "每日赠送", "unit": "积分", "remaining": summary.daily,
+              "total": summary.daily_quota, "used": summary.daily_consumed,
+              "active": True, "expires_at": ""})
     return QuotaSnapshot(state="available" if summary.total > 0 else "exhausted",
-                         source=source, detail=_pool_detail(summary))
+                         source=source, detail=_pool_detail(summary), items=items)
 
 
 # ── 签到：每日赠送额度（`loomy-credits.ts:195-244`）────────────────────

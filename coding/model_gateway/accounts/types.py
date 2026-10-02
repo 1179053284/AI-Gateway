@@ -150,11 +150,48 @@ class QuotaSnapshot:
     `unknown` 与 `exhausted` **必须分开**：前者是"没查到/查不动"（不能据此停用资源），
     后者是"确实为 0"（选路可据此跳过）。`source` 记录数据来源（如 `"zcode-log"`），
     便于事后判断该结论是不是过期通道给的。
+
+    加字段（2026-10-01，§22.3 加字段纪律：带默认值放字段末尾）——**套餐识别 + 逐包余量**，
+    供管理端账号列表按 DSH Jet Hub 的展示公式呈现（单位标签 + 总额 + 分桶 + 逐包明细）：
+
+    - `plan`：套餐名（取不到留空，**不编造**）。buddy/workbuddy = 首个有效包
+      `PackageName`；zcode = 客户端日志快照的 `plan`；其余产品包名即套餐表达，留空。
+    - `items`：逐包结构（**只有钩子真的解析到才填**，取不到一律空元组）。每项是普通 dict，
+      键：`name`（包名）、`unit`（量纲：credits/token/积分/美元…，取不到留空）、
+      `remaining` / `total` / `used`（数值，取不到写 `None`）、`active`（bool，失效包
+      False 且**不计入展示总额**，照抄 DSH `expiredTotal` 口径）、`expires_at`
+      （ISO 文本或空串；各产品时间单位不同——buddy 毫秒 / trae、zcode 秒 / qoder、
+      lobsterai ISO——归一化成 ISO 是**钩子的责任**）。
     """
 
     state: QuotaState = "unknown"
     source: str = ""
     detail: str = ""
+    plan: str = ""
+    items: tuple[dict, ...] = ()
+    # ↓ 2026-10-02 第二批加字段（同一条 §22.3 纪律：带默认值、只追加、不动 `QuotaState` 枚举）。
+    #   三态与池语义**一字不改**，这四个字段只是把"上游说了什么"如实带到缓存与视图层。
+    #
+    # - `remaining`：上游给出的**可量化余量**（与 `items` 同量纲，zcode = token）。
+    #   `None` = 上游没给可用数 ⇒ 三态照旧（**未知不当零**），绝不拿总量或第二个字段猜。
+    #   🔴 不叫 `quota_remaining` —— 那是 `ResourceState.quota_remaining`（§19 M5-3 的池字段）。
+    #   本轮**只有 zcode 填**：9 个产品的缺省 None ⇒ 它们的池写入行为逐字节不变（方案 §8.1-6）。
+    # - `reason`：**机器可读**的失败原因码，值域固定（方案 §3-7 / §4-1）：
+    #   `no_plan`（200 + code=0 + plans/balances 皆空）· `expired`（401/403）·
+    #   `circuit`（3012/429/405/5xx 或已熔断）· `circuit-untrusted`（熔断状态文件读不动）·
+    #   `unreachable`（网络异常）· `no_credentials`（缺 jwt/设备码，**未发起**）·
+    #   `no_identity`（缺账号名/身份读不动，**未发起**）· `""` = 上游明确说了且取到了事实。
+    #   🔴 「无套餐」在界面上是 `state=="unknown" && reason=="no_plan"` 推出来的**第五档**，
+    #      不是第四个状态枚举值 —— 这样 §22.3 的冻结接口与所有既有 `if state==` 判断都不动。
+    # - `data_at`：**上游数据时刻**（ISO，钩子负责归一化）；取不到留空。与 `checked_at`
+    #   （网关写盘时刻，属缓存层、不在本类型里）是两个量，界面「查于」读 `data_at || checked_at`。
+    # - `plan_key`：上游的套餐主键（zcode = `user_plan_id`）。唯一用途 = 日志通道的
+    #   **串号防护**（`quota.parse_log_tail`）；取不到 ⇒ 防护不接并如实写进 detail，
+    #   禁止拿空串假装防护在位。
+    remaining: int | None = None
+    reason: str = ""
+    data_at: str = ""
+    plan_key: str = ""
 
 
 @dataclass(frozen=True)

@@ -20,6 +20,7 @@ ProductProvider 机制，差异全部收敛到 product 配置」）；差异由 
 
 from __future__ import annotations
 
+import datetime
 import logging
 
 import httpx
@@ -287,8 +288,26 @@ async def quota(profile: p.ProductProfile, cred: dict, meta: dict) -> QuotaSnaps
     detail = f"有效包 {summary.active_count} 个，本周期剩余 {summary.total:g} {unit}"
     if summary.expired_count:
         detail += f"；另有 {summary.expired_count} 个失效包（{summary.expired_total:g}，不可扣费）"
+    # 逐包结构（2026-10-01）：包名即套餐表达（如「CodeBuddy个人体验版」），首个有效包名作套餐。
+    packages = p.balance_packages(body)
+    plan = next((pkg["name"] for pkg in packages
+                 if pkg["active"] and pkg["name"]), "")
+    items = []
+    for pkg in packages:
+        deduction_end = pkg.get("deduction_end") or 0
+        items.append({
+            "name": pkg["name"],
+            "unit": pkg["unit"] or unit,
+            "remaining": pkg["remaining"],
+            "total": pkg["total"],
+            "used": None,
+            "active": pkg["active"],
+            "expires_at": (datetime.datetime.fromtimestamp(deduction_end / 1000)
+                           .isoformat(timespec="seconds")
+                           if deduction_end > 0 else ""),
+        })
     return QuotaSnapshot(state="available" if summary.total > 0 else "exhausted",
-                         source=source, detail=detail)
+                         source=source, detail=detail, plan=plan, items=tuple(items))
 
 
 # ── 签到（`credits.ts:382-417` + `jet-hub-rpc.ts:461-531` 的 precheck 语义）──

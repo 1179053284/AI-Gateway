@@ -98,6 +98,68 @@ export function copyText(text, okMsg = "已复制") {
     () => toast(okMsg, "ok"), () => toast("复制失败", "err"));
 }
 
+/* ---------- 子侧栏拖拽调宽（双面板页三处共用，frontend-spec §3.1） ----------
+ * 宽度经 `--rail-w` 变量下发（base.css `.subnav { width: var(--rail-w, …) }`），
+ * **不用 aside.style.width**——内联值会压死 ≤768 条带的 `width:100%` 媒体规则。
+ * handle 是 aside 的兄弟节点：5px + `margin-right:-5px` 吃掉主区左内衬——
+ * 零布局位移，且不覆盖 aside 右缘的 4px 滚动条（压上就抓不到滚动条了）。
+ * 宽按页持久化（mgw-railw-<key>）：本页交互全部重绘 innerHTML，不存就每次归零。
+ * 窗口变窄的兜底不在这里：base.css 的 `max-width: calc(100% - 360px)` 是布局级钳制
+ * （任何缩放即时生效，且拖拽值保留——窗口回宽后回弹；JS 侧若监听 resize 复钳，
+ * 事件时读到的 clientWidth 可能是旧视口，钳制会静默放过——实测教训）。 */
+const RAIL_MIN = 150, RAIL_MAX = 560, RAIL_KEEP = 360;   // 栏下限 / 上限 / 主区最低保留
+
+function railClamp(w, wrap) {
+  const max = Math.max(RAIL_MIN, Math.min(RAIL_MAX, wrap.clientWidth - RAIL_KEEP));
+  return Math.min(max, Math.max(RAIL_MIN, w));
+}
+
+export function initSplitResize(root, key) {
+  const wrap = root.querySelector(".panel-split");
+  const aside = wrap && wrap.querySelector("aside.subnav");
+  if (!wrap || !aside) return;
+  /* vm 假 DOM（验收门脚本）无 CSSOM / after()：跳过接线。真浏览器判据在 CDP 真机侧。 */
+  if (!wrap.style || typeof wrap.style.setProperty !== "function"
+      || typeof aside.after !== "function") return;
+  const storeKey = `mgw-railw-${key}`;
+  const apply = (w) => wrap.style.setProperty("--rail-w", Math.round(w) + "px");
+  let saved = NaN;
+  try { saved = parseInt(localStorage.getItem(storeKey) || "", 10); } catch { /* 无存储 */ }
+  if (Number.isFinite(saved)) apply(railClamp(saved, wrap));
+
+  const handle = document.createElement("div");
+  handle.className = "split-handle";
+  handle.setAttribute("role", "separator");
+  handle.setAttribute("aria-orientation", "vertical");
+  handle.setAttribute("aria-label", "拖动调整侧栏宽度");
+  handle.title = "拖动调整宽度";
+  aside.after(handle);
+
+  let startX = 0, startW = 0;
+  handle.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    startX = e.clientX;
+    startW = aside.getBoundingClientRect().width;
+    handle.setPointerCapture(e.pointerId);
+    document.body.classList.add("rail-resizing");
+    e.preventDefault();
+  });
+  handle.addEventListener("pointermove", (e) => {
+    if (!handle.hasPointerCapture(e.pointerId)) return;
+    apply(railClamp(startW + e.clientX - startX, wrap));
+  });
+  const done = (e) => {
+    if (!handle.hasPointerCapture(e.pointerId)) return;
+    handle.releasePointerCapture(e.pointerId);
+    document.body.classList.remove("rail-resizing");
+    try {
+      localStorage.setItem(storeKey, String(Math.round(aside.getBoundingClientRect().width)));
+    } catch { /* 记不住不影响本页功能 */ }
+  };
+  handle.addEventListener("pointerup", done);
+  handle.addEventListener("pointercancel", done);
+}
+
 /* ---------- 简易分页（样式类 .pager，base.css v2.0）---------- */
 export function pagination(total, offset, limit, onPage) {
   const el = document.createElement("div");

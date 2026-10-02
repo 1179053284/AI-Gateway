@@ -36,6 +36,10 @@ class Balance:
     total: float = 0.0
     item_count: int = 0
     detail: str = ""
+    #: 逐积分包结构（2026-10-01 加字段）：`creditItems[]` 的 `{label, type,
+    #: creditsRemaining, expiresAt}`（`lobsterai-credits.ts:322-360`）——
+    #: 上游只给余量不给面值，`total`/`used` 不编造；`label` 即套餐/来源表达。
+    packages: tuple[dict, ...] = ()
 
 
 def _round2(value: float) -> float:
@@ -60,7 +64,18 @@ def _balance_from(data: dict) -> Balance:
     if total == 0 and not items:
         # 照抄 DSH：0 且拿不到明细 → 查不到，**不当 0**（`lobsterai-credits.ts:384-390`）。
         return Balance(known=False, detail="余额为 0 且无积分明细（照 DSH 口径视作查不到，不当 0）")
-    return Balance(known=True, total=total, item_count=len(items or []))
+    packages = tuple(
+        {
+            "name": str(protocol.read_str(item, "label") or "积分包"),
+            "unit": "积分",
+            "remaining": _round2(max(0.0, protocol.read_num(item, "creditsRemaining") or 0.0)),
+            "total": None,
+            "used": None,
+            "active": True,
+            "expires_at": str(protocol.read_str(item, "expiresAt") or ""),
+        }
+        for item in (items or []))
+    return Balance(known=True, total=total, item_count=len(items or []), packages=packages)
 
 
 async def fetch_balance(cred: dict) -> Balance:
@@ -90,7 +105,9 @@ async def quota_snapshot(cred: dict) -> QuotaSnapshot:
     items = f"（{balance.item_count} 个积分包）" if balance.item_count else ""
     state = "exhausted" if balance.total <= 0 else "available"
     return QuotaSnapshot(state=state, source=SOURCE,
-                         detail=f"余额 {balance.total:g} 积分{items}")
+                         detail=f"余额 {balance.total:g} 积分{items}",
+                         plan=(balance.packages[0]["name"] if balance.packages else ""),
+                         items=balance.packages)
 
 
 async def probe_credential(cred: dict) -> ProbeResult:
