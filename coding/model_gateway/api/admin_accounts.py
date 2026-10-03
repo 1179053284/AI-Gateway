@@ -21,7 +21,10 @@
 **模型映射轮增补（2026-10-01，超出上表 §22.7 冻结清单 —— 逐条语义见各函数）**::
 
     GET  /admin/api/accounts/{product}/catalog        产品级模型目录（映射弹窗的数据面）
-    POST /admin/api/accounts/mappings                 初始化映射（目录条目 → 系统模型）
+    POST /admin/api/accounts/mappings                 保存映射（目录条目 → 系统模型；整表提交）
+    POST /admin/api/accounts/auto-map                 首次配置用的「初始化映射」：服务端整表匹配并落库
+                                                      （模型分析优先，选不出腿/回答不可解析 ⇒ **整表**
+                                                      降级正则；🔴 会真发一次出站请求，只在用户亲手点时）
     POST /admin/api/accounts/claim-all                一键领取（全局 / 单产品批量）
     GET  /admin/api/accounts/{product}/{name}/check-models
                                                       该账号**可检测**的模型清单（只列已生效映射）
@@ -82,7 +85,10 @@ import asyncio
 import dataclasses
 import functools
 import importlib
+import json
 import logging
+import re
+import time
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
@@ -110,6 +116,7 @@ from model_gateway.ops.base import OpReport, OpResult
 from model_gateway.ops.bridge import outcome_to_op_result
 from model_gateway.ops.builtin import OPERATIONS, auto_renew, product_claim as product_claim_op
 from model_gateway.ops.builtin import query_balance as query_balance_op
+from model_gateway.stats.events import error_summary
 
 logger = logging.getLogger("model_gateway.api.accounts")
 
@@ -1587,59 +1594,18 @@ def _write_mappings_phase3(path, product: str, parsed, rids: dict[str, str],
             "skipped": skipped, "bits": bits}
 
 
-@router.post("/admin/api/accounts/mappings")
-@_endpoint
-async def account_mappings(request: Request):
-    """初始化映射（「模型映射」弹窗的提交面）：把产品目录条目挂到系统模型。
+async def _apply_mapping_items(request, product: str, meta,
+                               parsed: list[tuple[str, str, bool]]) -> dict:
+    """映射写入的**唯一出口**：校验过的整表 → 物化 → 产品位 + 扇出条目 → 热重载 → 回执。
 
-    载荷：`{"product", "items": [{"model", "target"}, …]}`（`target` = 空串 = 跳过该条）。
-
-    逐条语义：
-    - 参数形态（先拒后动，全部在写盘前）：`product` 必须已登记；`items` 非空对象数组；
-      `model` 非空字符串；`target` 为字符串（空串 = 跳过）；全部跳过 → 400（无动作不做假成功）；
-    - `target` 必须**可追溯**：现有系统模型，或枚举池条目名（缺失时**就地创建**，
-      `name/group/endpoint/params=params_default`，Q19-② 同口径）；两者都不是 → 400；
-    - 映射落点 = 每个**已启用**账号的物化资源（`ensure_resource` 幂等；显式钉到
-      `runtime.config_path` —— 资源与本次映射写入必须是**同一份配置**，否则引用完整性
-      校验必然失败）；停用账号不参与（与运营跳过停用同一判据）；产品没有已启用账号
-      → 400（映射无处可落，拒绝而不是空跑：`added:0` 的成功形态会被误读成"已配置"）;
-    - 去重判据 = (resource, model) 组合**全配置唯一**：已在目标模型 → 计入 `already`；
-      已在别的系统模型 → 进 `skipped`（附账号与占位模型名）；
-    - 写盘 = **既有保存链**（`config.loader.save_config` 原子写 + `runtime.reload_from_file`
-      热重载，与 `PUT /admin/api/config` **同一实现**，不新造写盘通道）；`reload` 如实
-      回报，失败时附 `reload_errors`（写入已发生但运行态未换代 —— 不谎报成功）;
-    - **幂等**：同载荷重发 → `added: 0`，全部落 `already`，`created_models` 为空。
-
-    ⚠️ 已知残留（登记，不伪装已覆盖）：本端点的"读-改-写"与 `PUT /admin/api/config`
-    同属**未纳入跨进程写锁**的管理端保存路径（`accounts/materialize.py` 模块头残留②的
-    同一口径）；与并发登录/物化落在同一毫秒窗口时后写者整份覆盖 —— 丢失无歧义、可重做
-    （映射动作幂等），且不产生半成品（本端点的物化在映射写入之前、各自都过校验）。
+    🔴 为什么是一段独立函数而不是端点内的代码：这张表有**两个生产者** ——
+    弹窗「保存」（用户逐行手动选的）与「初始化映射」（`account_auto_map`：模型分析 / 正则匹配
+    自动出的）。判据（先拒后动、(资源, 厂商模型) 组合唯一、条目只落启用号、产品位是真相、
+    回执字段集合）必须只有一份，否则两条路各长一套，很快就会变成
+    「初始化能写进去的形状，保存写不进去」这种两套真相（Q33-① 同一课）。
+    调用方负责 `parsed` 的**形态**校验（`account_mappings` 里那套逐条判据）；本函数不碰请求体。
+    逐条契约见 `account_mappings` 的文档 —— 两处共用同一条，不各写一份。
     """
-    body = await _body(request)
-    product = str(body.get("product") or "").strip()
-    meta = _product_meta(product)
-    items = body.get("items")
-    if not isinstance(items, list) or not items:
-        raise _ApiError(400, "缺少映射项：items 须为非空数组（[{model, target}, ...]）")
-    parsed: list[tuple[str, str, bool]] = []
-    for i, raw in enumerate(items):
-        if not isinstance(raw, dict):
-            raise _ApiError(400, f"items[{i}] 必须是对象（{{model, target, enabled?}}）")
-        mid = str(raw.get("model") or "").strip()
-        if not mid:
-            raise _ApiError(400, f"items[{i}] 缺少 model（厂商侧模型 id）")
-        target = raw.get("target") or ""
-        if not isinstance(target, str):
-            raise _ApiError(400, f"items[{i}].target 必须是字符串（空串 = 跳过该条）")
-        # `enabled` = 映射级开关（缺省 true = 既有行为）：非布尔直接拒，不让 "yes"/1 被
-        # Pydantic 宽松转换成开关位（与 `ModelResource.enabled` 的 strict 同一把尺）
-        enabled = raw.get("enabled", True)
-        if not isinstance(enabled, bool):
-            raise _ApiError(400, f"items[{i}].enabled 必须是布尔（开 = 进资源池可对外调用；"
-                                 "关 = 不参与资源池、不出现在 /v1/models）")
-        parsed.append((mid, target.strip(), enabled))
-    if not any(t for _, t, _ in parsed):
-        raise _ApiError(400, "没有需要建立的映射（全部 target 为空）—— 请至少选择一条目录条目")
 
     runtime = getattr(request.app.state, "runtime", None)
     path = getattr(runtime, "config_path", None)
@@ -1707,6 +1673,353 @@ async def account_mappings(request: Request):
                "accounts_mapped": len(names)}
     if not ok:
         payload["reload_errors"] = errors
+    return payload
+
+
+
+@router.post("/admin/api/accounts/mappings")
+@_endpoint
+async def account_mappings(request: Request):
+    """保存映射表（「模型映射」弹窗的**手动提交面**）：把用户逐行选好的目录条目挂到系统模型。
+
+    🔴 2026-10-03 更名说明：这条 formerly 叫「初始化映射」，现在「初始化」另有专面
+    （`account_auto_map` = 模型分析 / 正则降级），本端点只剩"手动提交"这一职 ——
+    两条都是**同一份写入出口** `_apply_mapping_items` 的调用方，判据不各写一份。
+
+    载荷：`{"product", "items": [{"model", "target"}, …]}`（`target` = 空串 = 跳过该条）。
+
+    逐条语义：
+    - 参数形态（先拒后动，全部在写盘前）：`product` 必须已登记；`items` 非空对象数组；
+      `model` 非空字符串；`target` 为字符串（空串 = 跳过）；全部跳过 → 400（无动作不做假成功）；
+    - `target` 必须**可追溯**：现有系统模型，或枚举池条目名（缺失时**就地创建**，
+      `name/group/endpoint/params=params_default`，Q19-② 同口径）；两者都不是 → 400；
+    - 映射落点 = 每个**已启用**账号的物化资源（`ensure_resource` 幂等；显式钉到
+      `runtime.config_path` —— 资源与本次映射写入必须是**同一份配置**，否则引用完整性
+      校验必然失败）；停用账号不参与（与运营跳过停用同一判据）；产品没有已启用账号
+      → 400（映射无处可落，拒绝而不是空跑：`added:0` 的成功形态会被误读成"已配置"）;
+    - 去重判据 = (resource, model) 组合**全配置唯一**：已在目标模型 → 计入 `already`；
+      已在别的系统模型 → 进 `skipped`（附账号与占位模型名）；
+    - 写盘 = **既有保存链**（`config.loader.save_config` 原子写 + `runtime.reload_from_file`
+      热重载，与 `PUT /admin/api/config` **同一实现**，不新造写盘通道）；`reload` 如实
+      回报，失败时附 `reload_errors`（写入已发生但运行态未换代 —— 不谎报成功）;
+    - **幂等**：同载荷重发 → `added: 0`，全部落 `already`，`created_models` 为空。
+
+    ⚠️ 已知残留（登记，不伪装已覆盖）：本端点的"读-改-写"与 `PUT /admin/api/config`
+    同属**未纳入跨进程写锁**的管理端保存路径（`accounts/materialize.py` 模块头残留②的
+    同一口径）；与并发登录/物化落在同一毫秒窗口时后写者整份覆盖 —— 丢失无歧义、可重做
+    （映射动作幂等），且不产生半成品（本端点的物化在映射写入之前、各自都过校验）。
+    """
+    body = await _body(request)
+    product = str(body.get("product") or "").strip()
+    meta = _product_meta(product)
+    items = body.get("items")
+    if not isinstance(items, list) or not items:
+        raise _ApiError(400, "缺少映射项：items 须为非空数组（[{model, target}, ...]）")
+    parsed: list[tuple[str, str, bool]] = []
+    for i, raw in enumerate(items):
+        if not isinstance(raw, dict):
+            raise _ApiError(400, f"items[{i}] 必须是对象（{{model, target, enabled?}}）")
+        mid = str(raw.get("model") or "").strip()
+        if not mid:
+            raise _ApiError(400, f"items[{i}] 缺少 model（厂商侧模型 id）")
+        target = raw.get("target") or ""
+        if not isinstance(target, str):
+            raise _ApiError(400, f"items[{i}].target 必须是字符串（空串 = 跳过该条）")
+        # `enabled` = 映射级开关（缺省 true = 既有行为）：非布尔直接拒，不让 "yes"/1 被
+        # Pydantic 宽松转换成开关位（与 `ModelResource.enabled` 的 strict 同一把尺）
+        enabled = raw.get("enabled", True)
+        if not isinstance(enabled, bool):
+            raise _ApiError(400, f"items[{i}].enabled 必须是布尔（开 = 进资源池可对外调用；"
+                                 "关 = 不参与资源池、不出现在 /v1/models）")
+        parsed.append((mid, target.strip(), enabled))
+    if not any(t for _, t, _ in parsed):
+        raise _ApiError(400, "没有需要建立的映射（全部 target 为空）—— 请至少选择一条目录条目")
+
+    return await _apply_mapping_items(request, product, meta, parsed)
+
+
+# ---------- 模型映射：初始化映射（auto-map = 模型分析，无可用模型时整表降级正则）----------
+
+#: 分析腿优先挑的**低档位**关键词。一次映射分析要把整张目录读一遍，拿旗舰模型做这件事
+#: 既慢又贵；判据 = 模型名里有没有这些词，不另立"档位表"（与前端下拉同一口径：名字本身就是
+#: 最可靠的档位证据）。
+_TIER_WORDS = ("flash", "lite", "mini", "eco", "turbo", "haiku", "idle", "free", "small")
+
+#: 单次分析送进模型的行数上限与调用次数上限（合起来 = 一次初始化最多分析的行数）。
+#: 483 行的 cline 目录一次送完既超输出预算、又要几十秒；超出的行**如实**交给正则兜底，
+#: 两个引擎各 matched 几条分开报 —— 界面不得在只分析了一部分时说成"全部由模型判断"。
+_ANALYZE_ROWS_PER_CALL = 40
+_ANALYZE_MAX_CALLS = 5
+
+#: 分析请求的出站超时预算。比资源检测那条腿（`min(30, attempt_timeout)`）宽一档：
+#: 检测只回 "ping"，这里要回一整张表的 JSON。仍封顶在 PRD 定稿的 60s 尝试超时内。
+_ANALYZE_TIMEOUT_CAP = 60.0
+
+#: 每行结论的粗略 token 预算（`{"model":"…","target":"…"}` 一行 ≈ 20~25 token，含名单名）。
+_ANALYZE_TOKENS_PER_ROW = 25
+
+_ANALYZE_SYSTEM = (
+    "你在做「模型映射」：把某个产品目录里的模型条目，对应到网关的统一模型名单。"
+    "规则："
+    "① target 必须逐字来自名单，不许改写大小写、不许加前缀、不许造名单外的名字；"
+    "② 拿不准或名单里确实没有对应的，target 填空串（漏映射比错映射好：错映射会让用户"
+    "的请求打到另一档模型上，而漏映射只是没进池）；"
+    "③ 名字相近但档位不同（如 glm-4.6 与 glm-4.6-flash）算不同模型，按条目自己的名字与能力判断；"
+    "④ 只输出 JSON，不要解释、不要 Markdown 代码围栏："
+    '{"mappings":[{"model":"条目id","target":"名单里的名字或空串"}]}'
+)
+
+
+def _pick_analyzer(runtime, cfg):
+    """网关内**此刻真能发一次 chat 请求**的出站路径；`None` = 没有可用模型，调用方降级正则。
+
+    四条都必须成立（全走既有判据，本层不自建一套"可用性"定义）：
+    ① 系统模型 `endpoint == "chat"` 且启用 —— images 模型回的不是文本，喂不进分析；
+    ② `(资源, 厂商模型)` 按 Q33-① 那条唯一判据**开着**（`cfg.mapping_enabled`）：
+       关着的映射进不了池，用它做分析 = 走一条界面和用户都看不见的通道；
+    ③ 资源启用且运行态已有适配器（否则根本发不出请求）；
+    ④ 凭据按两类接入分（与 `POST /admin/api/resources/test` 逐字同一条）：账号侧资源
+       `api_key` 恒空、凭据由适配器自解，所以"没有 Key"只有对**厂商侧**资源才算缺东西
+       （无条件要求 Key 正是上一轮被证伪的那条死路径）。
+
+    多条并列时的次序：**低档位优先**（名字含 flash/lite/…），再按 `(系统模型, 厂商模型)` 字典序
+    定死 —— 同一份配置反复初始化必须选中同一条腿，否则回执里的 `analyzed_by` 无从解释。
+    """
+    adapters = getattr(runtime, "adapters", None) or {}
+    keys = getattr(runtime, "key_values", None) or {}
+    by_id = {r.id: r for r in cfg.resources}
+    cands: list[tuple[int, str, str, str]] = []
+    for model in cfg.models:
+        if model.endpoint != "chat" or not model.enabled:
+            continue
+        for ref in model.resources:
+            res = by_id.get(ref.resource)
+            if res is None or not res.enabled:
+                continue
+            if not cfg.mapping_enabled(res, ref, model.name):
+                continue
+            adapter = adapters.get(res.id)
+            if adapter is None or not hasattr(adapter, "chat_nonstream"):
+                continue
+            key = keys.get(res.id, "")
+            if not key and not (res.product or "").strip():
+                continue
+            low = f"{model.name} {ref.model}".lower()
+            cheap = 0 if any(w in low for w in _TIER_WORDS) else 1
+            cands.append((cheap, model.name, ref.model, res.id))
+    if not cands:
+        return None
+    cands.sort()
+    cheap, model_name, vendor_model, rid = cands[0]
+    return {"system_model": model_name, "vendor_model": vendor_model,
+            "resource_id": rid, "adapter": adapters.get(rid), "key": keys.get(rid, ""),
+            "cheap": cheap == 0}
+
+
+def _catalog_line(item) -> str:
+    """目录条目 → 给模型看的一行事实（`id | 展示名 | 能力…`）。
+
+    🔴 取不到的字段**不写**（既不写 `上下文=?`，更不写 `上下文=0`）—— 与 `ModelInfo` 的
+    `None ≠ False` 同一条口径：给模型一个编出来的数，它会照着那个数去选档位。
+    """
+    facts = []
+    if item.context_window is not None:
+        facts.append(f"上下文{item.context_window}")
+    if item.max_output is not None:
+        facts.append(f"输出{item.max_output}")
+    if item.reasoning is True:
+        facts.append("深度推理")
+    if item.image_input is True:
+        facts.append("图片输入")
+    if item.tool_call is True:
+        facts.append("工具调用")
+    name = (item.name or "").strip()
+    return (f"{item.id} | {name or '（无展示名）'} | "
+            f"{'、'.join(facts) or '（能力未提供）'}")
+
+
+def _parse_analysis(text: str, ids: set[str], allowed: set[str]) -> tuple[dict[str, str], int]:
+    """模型回答 → `({条目id: 目标模型名}, 被丢弃条数)`。
+
+    校验放在这一层而不是信任模型：`model` 必须是本批真实送出去的 id，`target` 必须逐字在允许
+    名单内 —— 名单外的名字会在写入面阶段 1 就 400（"不自动创建用户无法追溯的模型名"），
+    一条幻觉就把整张表打回去。所以这里就地丢弃并计数，回执如实报"模型给了几条、其中几条不可用"。
+    """
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        raise ValueError("模型回答里没有 JSON 对象")
+    obj = json.loads(text[start:end + 1])
+    raw = obj.get("mappings") if isinstance(obj, dict) else None
+    if not isinstance(raw, list):
+        raise ValueError("模型回答里没有 mappings 数组")
+    out: dict[str, str] = {}
+    dropped = 0
+    for row in raw:
+        if not isinstance(row, dict):
+            dropped += 1
+            continue
+        mid = str(row.get("model") or "").strip()
+        target = str(row.get("target") or "").strip()
+        if mid not in ids:
+            dropped += 1                         # 本批没送出去的 id = 模型自己编的行
+            continue
+        if not target:
+            continue                             # 空串 = 模型明确说"这条不确定"，不算丢弃
+        if target not in allowed:
+            dropped += 1
+            continue
+        out.setdefault(mid, target)
+    return out, dropped
+
+
+async def _analyze_chunk(pick, rows, allowed: set[str], names_text: str,
+                         timeout: float, max_tokens: int) -> tuple[dict[str, str], int]:
+    """一批目录条目 → 模型给的映射 + 丢弃数（异常/不可解析原样抛出，由调用方整表降级）。"""
+    lines = "\n".join(_catalog_line(m) for m in rows)
+    body = {
+        "messages": [
+            {"role": "system", "content": _ANALYZE_SYSTEM},
+            {"role": "user", "content":
+                f"网关模型名单（target 只能逐字取这里的名字）：\n{names_text}\n\n"
+                f"产品目录条目（每行：id | 展示名 | 能力事实）：\n{lines}\n\n"
+                "对**每一条**都给出结论（不确定就填空串），只回 JSON。"},
+        ],
+        "max_tokens": max_tokens,
+        "stream": False,
+    }
+    data = await pick["adapter"].chat_nonstream(pick["key"], pick["vendor_model"], body,
+                                                timeout=timeout)
+    choices = (data or {}).get("choices") or []
+    content = ""
+    if choices and isinstance(choices[0], dict):
+        msg = choices[0].get("message") or choices[0].get("delta") or {}
+        content = str(msg.get("content") or "")
+    if not content.strip():
+        raise ValueError("模型回了空内容（多半是输出预算全花在思考上，或该条腿不回文本）")
+    return _parse_analysis(content, {m.id for m in rows}, allowed)
+
+
+@router.post("/admin/api/accounts/auto-map")
+@_endpoint
+async def account_auto_map(request: Request):
+    """「初始化映射」= 服务端把产品目录整表匹配到网关模型并**一次落库**（首次配置用）。
+
+    载荷：`{"product"}`。
+
+    两档引擎（2026-10-03 用户指令：调用网关内任意可用的 flash 档模型分析这些模型该匹配哪个网关
+    模型；网关内没有可用模型时降级用正则匹配）：
+    - **模型分析**：`_pick_analyzer` 选一条此刻真能出站的 chat 腿，分批（单次 ≤
+      `_ANALYZE_ROWS_PER_CALL` 行、总计 ≤ `_ANALYZE_MAX_CALLS` 次）让它逐条判定。
+      任何一步失败（选不出腿 / 超时 / 上游报错 / 回答不可解析 / 一条都没采纳）⇒ **整表降级正则**，
+      `via` 如实写 `"regex"`，原因带在 `reason` 里 —— 不许半路交出去。
+    - **正则**：`_enum_suggest`（枚举池三级匹配 + 首段前缀剥离），零网络、零消耗。
+    模型只答了一部分时**不**整表回退：模型答案优先、其余行由正则补齐，两个引擎各 matched 几条
+    分开报（`matched_model` / `matched_regex`），`analyzed` 覆盖了几行也照实说。
+
+    落库走 `_apply_mapping_items` —— 与弹窗「保存」**同一条写入出口**，本函数不碰配置细节。
+    目标名单 = 现有系统模型 ∪ 统一名枚举池条目（后者由写入时就地创建，与手动保存同口径）。
+    目录为空 / 一条也没匹配上 → 400（不做假成功："初始化成功而盘上 0 条"是最难查的那种谎）。
+
+    🔴 这条腿**会真实发出站请求**（消耗所选资源/账号的额度）：只在用户亲手点「初始化映射」时
+    被调用 —— 无自动腿、无定时、不读任何远程下发（铁律 1）。
+    """
+    body = await _body(request)
+    product = str(body.get("product") or "").strip()
+    meta = _product_meta(product)
+    runtime = getattr(request.app.state, "runtime", None)
+    cfg = getattr(runtime, "config", None)
+    pool = getattr(runtime, "enum_pool", None)
+    if cfg is None or pool is None:
+        raise _ApiError(503, "运行态不可用（无配置快照），无法分析映射")
+    hook = _hook(product, "list_models")
+
+    accounts_out = _catalog_accounts(runtime, product)
+    models, source, cat_reason = await _catalog_models(hook, product, accounts_out)
+    if not models:
+        raise _ApiError(400, f"产品 {meta.title} 的模型目录为空，没有条目可分析："
+                             f"{cat_reason or str(source.get('detail') or '未说明原因')}")
+
+    cfg_names = {m.name for m in cfg.models}
+    allowed = set(cfg_names) | set(pool.entries)
+    names_text = "、".join(sorted(allowed))
+    timeout = min(_ANALYZE_TIMEOUT_CAP, float(getattr(cfg.gateway, "attempt_timeout_seconds", 60) or 60))
+
+    via, reason, analyzed_by = "model", "", ""
+    decided: dict[str, str] = {}
+    analyzed = 0
+    pick = _pick_analyzer(runtime, cfg)
+    if pick is None:
+        via = "regex"
+        reason = ("网关内没有可用的模型（没有既启用、又按统一判据进池、且配有出站适配器的 chat 资源），"
+                  "已整表降级为正则匹配")
+    else:
+        analyzed_by = pick["system_model"]
+        # 单批行数按所选腿**自己**的输出上限收（Q33 号级承载同一课）：40 行的 JSON 要 600~900
+        # token，而实盘见过输出上限 512 的号 —— 截断 = 解析失败 = 整表白降级，不如一开始就少送。
+        spec = (getattr(runtime, "resource_specs", None) or {}).get(
+            (pick["resource_id"], pick["vendor_model"]))
+        cap = getattr(spec, "max_output", None)
+        cap = cap if isinstance(cap, int) and cap > 0 else None
+        per_call = max(1, min(_ANALYZE_ROWS_PER_CALL,
+                              (cap or 10 ** 9) // _ANALYZE_TOKENS_PER_ROW))
+        budget = _ANALYZE_ROWS_PER_CALL * _ANALYZE_MAX_CALLS
+        try:
+            for start in range(0, len(models), per_call):
+                if analyzed >= budget:
+                    break
+                chunk = models[start:start + per_call]
+                got, _dropped = await _analyze_chunk(
+                    pick, chunk, allowed, names_text, timeout,
+                    min(per_call * _ANALYZE_TOKENS_PER_ROW, cap or per_call * _ANALYZE_TOKENS_PER_ROW))
+                decided.update(got)
+                analyzed += len(chunk)
+        except Exception as e:  # noqa: BLE001 — 分析腿任何失败都整表降级，不半路交出去
+            via = "regex"
+            # 🔴 原因走 `error_summary`（与「模型检测」同一把尺，limit=600）：`str(e)` 在
+            #    `UpstreamError` 上只剩 "upstream 500"，上游原话在 `error_body` 里 —— 而这条
+            #    文案是要给用户看的（A-13 真 HTTP 复验抓出来的：换成 str(e) 后用户只看到两个
+            #    字"失败"）。该函数顺带做凭据脱敏，正好守住"原因进界面"这条出口。
+            reason = (f"模型分析未能完成（{error_summary(e, limit=600)}），已整表降级为正则匹配")
+            decided, analyzed = {}, 0
+        if via == "model" and not decided:
+            via = "regex"
+            reason = "模型一条映射也没给出（回答里没有可采纳的条目），已整表降级为正则匹配"
+        elif via == "model" and analyzed < len(models):
+            reason = (f"模型分析了 {analyzed}/{len(models)} 行（单次 {per_call} 行、总计上限 {budget} 行），"
+                      f"其余 {len(models) - analyzed} 行由正则补齐")
+
+    parsed: list[tuple[str, str, bool]] = []
+    matched_model = matched_regex = 0
+    for item in models:
+        target = decided.get(item.id, "") if via == "model" else ""
+        engine = "model" if target else ""
+        if not target:
+            sug = _enum_suggest(pool, cfg_names, item.id)
+            target = str((sug or {}).get("name") or "")
+            engine = "regex" if target else ""
+        if not target:
+            continue
+        if engine == "model":
+            matched_model += 1
+        else:
+            matched_regex += 1
+        parsed.append((item.id, target, True))   # enabled 缺省 True：初始化即进池，之后由逐行开关调整
+
+    if not parsed:
+        raise _ApiError(400, "没有任何目录条目能匹配上网关模型（"
+                             + ("模型分析与正则都无命中" if analyzed_by else "正则无命中")
+                             + "）：请先在「网关模型管理」页创建对应模型，或打开弹窗手动选择")
+
+    payload = await _apply_mapping_items(request, product, meta, parsed)
+    payload["via"] = via
+    payload["analyzed_by"] = analyzed_by
+    payload["entries"] = len(models)
+    payload["analyzed"] = analyzed
+    payload["matched_model"] = matched_model
+    payload["matched_regex"] = matched_regex
+    payload["unmatched"] = len(models) - matched_model - matched_regex
+    if reason:
+        payload["reason"] = reason
     return payload
 
 
