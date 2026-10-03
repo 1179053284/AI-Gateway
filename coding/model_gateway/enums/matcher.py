@@ -88,6 +88,18 @@ class EnumEntry:
 #   （gpt-6-astra / gpt-6.1-sol / gpt-6-luna / gpt-6-sol / gpt-5.6-sol：1.05M 上下文、128K 输出、
 #   图片输入；reasoning.effort 官方枚举含 none；gpt-5.6 为 gpt-5.6-sol 别名）。
 #   模型页与 Chat Completions 参考均未公布采样缺省值 → params_default 留空。
+# - 腾讯混元（2026-10-04 补入主力 3 条）：cloud.tencent.com/document/product/1823——130051 模型列表
+#   （ID/展示名/上下文/最大输入/最大输出/能力列）、131208 深度思考（thinking 与 reasoning_effort
+#   枚举、默认 high、携 tools 时 low→high）、136956 图片理解（示例只有 hy-vision-2.0-instruct）、
+#   132252 使用指南（逐字「混元语言模型不支持图片、视频等多模态输入」）；采样缺省官方零表述 → 不注入。
+# - MiniMax（2026-10-04 补入主力 3 条）：platform.minimax.cn（模型页/参数表 schema default/发布记录）
+#   ——M3 1M 上下文·输出参数上限 524,288（推荐 131,072，思考 token 计入上限）、M2.7 族 204,800；
+#   temperature 1.0 全站、top_p 分档 0.95/0.90 为官方 schema `default` 在册值 → 写入 params_default；
+#   reasoning_effort 仅 M3.1 生效 ⇒ 其余档位留空；M3.1-Flash-Preview 因「仅 M Plan/MiniMax Code」未入。
+# - Google Gemini（2026-10-04 补入主力 5 条）：ai.google.dev（模型索引、/docs/thinking 档位表、
+#   /docs/openai 兼容层「Reasoning cannot be turned off for Gemini 2.5 Pro or 3 models」）+
+#   Vertex 各模型页（1,048,576 / 65,536、模态、退役计划）；采样数字官方只写「varies by model」
+#   且 3.5-lite/3.6/3.7/3.8 设置被忽略 → params_default 留空；`none` 不入档位。
 # 官方未给缺省值的键不写入（未核实不注入）；推理开关/档位归推理参数体系，不入 params_default。
 BUILTIN_ENTRIES: list[EnumEntry] = [
     # —— 商汤 SenseNova（tokenplan 在售 8 项，见 /v1/models 实测记录）——
@@ -195,6 +207,82 @@ BUILTIN_ENTRIES: list[EnumEntry] = [
     EnumEntry("gpt-5.6-sol", "GPT-5.6 Sol", aliases=["gpt-5.6"], group="编程", vendor="OpenAI",
               context_window=1050000, max_output=128000, image_input=True,
               reasoning=True, effort_levels=["none", "low", "medium", "high", "xhigh", "max"]),
+    # —— 腾讯混元（2026-10-04 官网取证：TokenHub 模型列表 130051、深度思考 131208、
+    # 图片理解 136956、下线公告；国内 cloud.tencent.com 与国际站 ID 同串）——
+    # 官方逐字「本文中的混元语言模型不支持图片、视频等多模态输入」⇒ hy4/hy3 图/视频 = False；
+    # 音频官方全篇未提 ⇒ 记 False 只表示"无在册依据支持"，不冒充官方否定。
+    # 采样缺省官方零表述（示例里的 temperature 0.9 不是缺省值）⇒ params_default 一律留空。
+    # ctx 两页分别写 `1M` 与 `1024k`（官方从未给确切整数）⇒ 取较小读法 10^6：
+    #   写小只会保守换号一次，写大是 fail-open 去挨上游 400。
+    EnumEntry("hy4-preview", "Hy4 preview", group="编程", vendor="腾讯混元",
+              context_window=1000000, max_output=64000,
+              reasoning=True, effort_levels=["none", "high"]),
+    # effort 无 `low`（官方枚举只有 high / none，默认 high）；`hy3-preview` 2026-08-31 下线、
+    # 官方公告逐字「请求自动路由至 Hy3」⇒ 作别名；`hy3-202608` 是 Token Plan 页的快照 ID，非别名。
+    # 🔴 官方坑：携 `tools` 时 `low` 被 API **静默升为 high**（不是报错）。
+    EnumEntry("hy3", "Hy3", aliases=["hy3-preview"], group="编程", vendor="腾讯混元",
+              context_window=256000, max_output=128000,
+              reasoning=True, effort_levels=["none", "low", "high"]),
+    # 混元族**唯一**在册图输入出口（136956 图片理解示例只有它；hy3/hy4 两串在该页零出现）。
+    # 官方多模态理解表**没有能力列** ⇒ `tool_call` 取 EnumEntry 默认 True（依据级别=默认，
+    # 不是官方声明）；视频理解另有 `hunyuan-turbos-vision-video-20250728`（未入目录）。
+    EnumEntry("hy-vision-2.0-instruct", "HY-Vision-2.0-Instruct", group="通用",
+              vendor="腾讯混元", context_window=44000, max_output=16000, image_input=True),
+    # —— MiniMax（2026-10-04 官网取证：platform.minimax.cn 模型页/参数表/发布记录，
+    # 国内 `api.minimax.cn` 与国际 `api.minimax.io` ID 逐字相同；M 系无日期快照别名）——
+    # 🔴 `max_output` = 官方**参数上限**（M3 推荐 131,072 / M2.7 族推荐 65,536），且官方逐字
+    #   「思考 token 也计入此上限」；网关按 Q33-④ 把 max_output 当缺省 `max_tokens` 注入
+    #   （`core/ir.py::apply_spec_defaults`）⇒ 取上限是"不拦合法请求"的口径，推荐值差异记此备查。
+    # `reasoning_effort` 官方仅 M3.1 生效 ⇒ M3/M2.7 的 effort_levels 留空（有档可列就是编数）。
+    # `MiniMax-M3.1-Flash-Preview` **未入目录**：官方「暂时仅通过 M Plan 和 MiniMax Code 提供」
+    #   + 按量价目表/发布记录三处零命中 ⇒ 普通 Key 不可达；放开按量即补一条（反转触发）。
+    EnumEntry("MiniMax-M3", "MiniMax M3", group="编程", vendor="MiniMax",
+              context_window=1000000, max_output=524288,
+              image_input=True, video_input=True, reasoning=True,
+              params_default={"temperature": 1.0, "top_p": 0.95}),
+    # ctx 与 max_output 同值（204,800）⇒ 承载校验对本条几乎永不触发（如实注记）；
+    # top_p 取新版 OpenAPI 口径 0.90（旧 text-post 页写 0.95，冲突已裁）；
+    # highspeed 官网**无独立营销名** ⇒ display 逐字用文档 ID，不得自创 "MiniMax M2.7 Highspeed"。
+    EnumEntry("MiniMax-M2.7", "MiniMax M2.7", group="编程", vendor="MiniMax",
+              context_window=204800, max_output=204800, reasoning=True,
+              params_default={"temperature": 1.0, "top_p": 0.90}),
+    EnumEntry("MiniMax-M2.7-highspeed", "MiniMax-M2.7-highspeed", group="编程", vendor="MiniMax",
+              context_window=204800, max_output=204800, reasoning=True,
+              params_default={"temperature": 1.0, "top_p": 0.90}),
+    # —— Google Gemini（2026-10-04 官方域取证：ai.google.dev 模型索引 / thinking / OpenAI 兼容页
+    # + Vertex 各模型页；Gemini API 与 Vertex 的 model ID 逐字相同，3.x 系无日期快照）——
+    # 五款共同：1,048,576 上下文；65,536 = 官方 "Output token limit"（"含思考"只见于 pricing 的
+    #   计费口径「Output price (including thinking tokens)」，不是字段语义）；图/视/音输入全 ✅。
+    # 🔴 `none` 一律不进档位：官方「Reasoning cannot be turned off for Gemini 2.5 Pro or 3 models」，
+    #   且 ThinkingLevel 枚举只有 UNSPECIFIED/MINIMAL/LOW/MEDIUM/HIGH。
+    # params_default 全留空：ai.google.dev 从不公布逐模型数字（写「default varies by model，
+    #   见 getModel」），且 3.5-flash-lite/3.6/3.7/3.8 设了 temperature/topP/topK 会被忽略、
+    #   penalty 类直接报错 ⇒ 内置目录不得带这些键。
+    EnumEntry("gemini-3.8-flash", "Gemini 3.8 Flash", group="通用", vendor="Google Gemini",
+              context_window=1048576, max_output=65536,
+              image_input=True, video_input=True, audio_input=True,
+              reasoning=True, effort_levels=["low", "medium", "high"]),
+    # 3.8 / 3.7 传 `minimal` 会**报错**（三处原文，含 Vertex「will return an API validation error」）
+    # ⇒ 档位不含 minimal；3.6 的 minimal 只有 thinking 页**单源**在册（模型页与 Vertex 页均不列）。
+    EnumEntry("gemini-3.7-flash", "Gemini 3.7 Flash", group="通用", vendor="Google Gemini",
+              context_window=1048576, max_output=65536,
+              image_input=True, video_input=True, audio_input=True,
+              reasoning=True, effort_levels=["low", "medium", "high"]),
+    EnumEntry("gemini-3.6-flash", "Gemini 3.6 Flash", group="通用", vendor="Google Gemini",
+              context_window=1048576, max_output=65536,
+              image_input=True, video_input=True, audio_input=True,
+              reasoning=True, effort_levels=["minimal", "low", "medium", "high"]),
+    # 官方默认档 = **minimal**，且官方自警：minimal 会让多步 agentic 任务的工具调用提前终止。
+    EnumEntry("gemini-3.5-flash-lite", "Gemini 3.5 Flash-Lite", group="通用",
+              vendor="Google Gemini", context_window=1048576, max_output=65536,
+              image_input=True, video_input=True, audio_input=True,
+              reasoning=True, effort_levels=["minimal", "low", "medium", "high"]),
+    # display 取官方索引表写法 `Gemini 3.1 Pro`（模型页/pricing 另有两种写法，全表统一取一种）；
+    # Preview 未 GA、官方无关停日期；`-customtools` 是**独立端点**（同价）不并入别名。
+    EnumEntry("gemini-3.1-pro-preview", "Gemini 3.1 Pro", group="通用", vendor="Google Gemini",
+              context_window=1048576, max_output=65536,
+              image_input=True, video_input=True, audio_input=True,
+              reasoning=True, effort_levels=["low", "medium", "high"]),
     # —— 历史预置（Anthropic 原生 model id 别名，供 Claude Code 旧版直连解析；属性未取证）——
     EnumEntry("claude-sonnet-4", "Claude Sonnet 4",
               aliases=["claude-sonnet-4-20250514"], group="编程", vendor="Anthropic"),

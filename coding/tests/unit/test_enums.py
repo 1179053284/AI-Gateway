@@ -161,3 +161,79 @@ class TestBuiltinCatalogCurrentModels:
         assert _pool().match("gpt-5.6") == ("gpt-5.6-sol", 0.9)
         assert _pool().match("gpt-6.1-sol") == ("gpt-6.1-sol", 1.0)
         assert _pool().match("gpt-6-1-sol") == ("gpt-6.1-sol", 0.7)
+
+
+class TestBuiltinCatalogHunyuanMiniMaxGemini:
+    """2026-10-04 用户指令：混元 / MiniMax / Gemini 现役主力入内置目录。
+
+    证据：`docs/changes/reviews/20261003-hunyuan-minimax-gemini-catalog/`（r1 取证 ×3 +
+    r2 交叉验证 ×2 + r3 终审），逐格官方 URL；**终审判「可执行写入」后才落的数据**。
+    """
+
+    HUNYUAN = ["hy4-preview", "hy3", "hy-vision-2.0-instruct"]
+    MINIMAX = ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed"]
+    GEMINI = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash",
+              "gemini-3.5-flash-lite", "gemini-3.1-pro-preview"]
+
+    def test_entries_present_with_vendor_grouping(self):
+        """3+3+5 条目在目录中且 vendor 归属正确（厂商卡与官方图标分派按此串取键）。"""
+        by_name = {e.name: e for e in BUILTIN_ENTRIES}
+        for name, vendor in [(n, "腾讯混元") for n in self.HUNYUAN] \
+                + [(n, "MiniMax") for n in self.MINIMAX] \
+                + [(n, "Google Gemini") for n in self.GEMINI]:
+            assert by_name[name].vendor == vendor, name
+
+    def test_effort_levels_match_official_enums(self):
+        """档位按官方枚举逐条收录：hy4 无 `low`；MiniMax 仅 M3.1 有档 ⇒ 三条全空；
+        Gemini 的 `minimal` 只有 3.6/3.5-lite 在册，且**任何一款都不含 none**（官方：不可关思考）。"""
+        pool = _pool()
+        assert pool.get("hy4-preview").effort_levels == ["none", "high"]
+        assert pool.get("hy3").effort_levels == ["none", "low", "high"]
+        assert pool.get("hy-vision-2.0-instruct").effort_levels == []  # 官方无 thinking 口径
+        for name in self.MINIMAX:
+            assert pool.get(name).effort_levels == [], name
+        for name in ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.1-pro-preview"]:
+            assert pool.get(name).effort_levels == ["low", "medium", "high"], name
+        for name in ["gemini-3.6-flash", "gemini-3.5-flash-lite"]:
+            assert pool.get(name).effort_levels == ["minimal", "low", "medium", "high"], name
+        assert all("none" not in pool.get(n).effort_levels for n in self.GEMINI)
+
+    def test_params_default_follows_official_publication(self):
+        """MiniMax 的 temperature/top_p 是官方 schema `default` 在册值 ⇒ 写入；
+        混元（只有示例 0.9）与 Gemini（「varies by model」+ 3.5-lite/3.6+ 设置被忽略）⇒ 一律留空。"""
+        pool = _pool()
+        assert pool.get("MiniMax-M3").params_default == {"temperature": 1.0, "top_p": 0.95}
+        for name in ["MiniMax-M2.7", "MiniMax-M2.7-highspeed"]:
+            assert pool.get(name).params_default == {"temperature": 1.0, "top_p": 0.90}, name
+        for name in self.HUNYUAN + self.GEMINI:
+            assert pool.get(name).params_default == {}, name
+
+    def test_modalities_and_limits_are_evidence_backed(self):
+        """数值/模态只取官方表内值：混元语言模型明确不支持图/视频；Gemini 五款图视音全支持；
+        MiniMax 的 `max_output` 记**参数上限**（非推荐值）——Q33-④ 会拿它当缺省 max_tokens 注入。"""
+        pool = _pool()
+        assert (pool.get("hy4-preview").context_window, pool.get("hy4-preview").max_output) \
+            == (1000000, 64000)
+        assert (pool.get("hy3").context_window, pool.get("hy3").max_output) == (256000, 128000)
+        for name in ["hy4-preview", "hy3"]:
+            e = pool.get(name)
+            assert not e.image_input and not e.video_input, name   # 官方逐字否定
+        v = pool.get("hy-vision-2.0-instruct")
+        assert (v.context_window, v.max_output, v.image_input, v.video_input) \
+            == (44000, 16000, True, False)
+        assert pool.get("MiniMax-M3").max_output == 524288          # 上限；官方推荐 131,072
+        assert pool.get("MiniMax-M3").image_input and pool.get("MiniMax-M3").video_input
+        assert pool.get("MiniMax-M2.7").max_output == 204800
+        for name in self.GEMINI:
+            e = pool.get(name)
+            assert (e.context_window, e.max_output) == (1048576, 65536), name
+            assert e.image_input and e.video_input and e.audio_input, name
+            assert e.reasoning and e.tool_call, name
+
+    def test_alias_and_channel_naming_resolve(self):
+        """`hy3-preview` 官方公告自动路由 ⇒ 别名；腾讯 TokenHub 的小写 `minimax-m3` 是
+        **跨厂商渠道命名**（不进 aliases），但规范化仍须能解析到官方 ID。"""
+        assert _pool().match("hy3-preview") == ("hy3", 0.9)
+        assert _pool().match("minimax-m3") == ("MiniMax-M3", 0.7)
+        assert _pool().match("MiniMax-M2.7-highspeed") == ("MiniMax-M2.7-highspeed", 1.0)
+        assert _pool().match("gemini-3.8-flash") == ("gemini-3.8-flash", 1.0)

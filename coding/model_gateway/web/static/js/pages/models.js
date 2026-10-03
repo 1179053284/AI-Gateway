@@ -52,6 +52,35 @@ async function persist(root, okMsg = "已保存并生效") {
 const off = (m) => m.enabled === false;
 const vendorOf = (m) => catalog[m.name]?.vendor || "";
 
+/** 厂商图标 = 各厂商**官方图标资产**（2026-10-03 与账号页产品图标同一口径，来源逐条记台账）。
+ *  键是内置目录 `vendor` 字段的**原文** ⇒ 目录改中文名而这里没跟上，界面会静默退回首字母，
+ *  由 `tests/unit/test_v2_vendor_icons.py` 按目录实际取值集合钉住。
+ *  没在册的厂商（用户自定义 / 未来新增条目）**回落首字母**：宁可朴素，不编造别人的 logo。 */
+const VENDOR_ICON = {
+  "商汤 SenseNova": "sensenova",
+  "DeepSeek": "deepseek",
+  "智谱 GLM": "glm",
+  "Moonshot Kimi": "kimi",
+  "Anthropic": "anthropic",
+  "OpenAI": "openai",
+  "腾讯混元": "hunyuan",
+  "MiniMax": "minimax",
+  "Google Gemini": "gemini",
+};
+
+/** 厂商官方图标的 `<img>`（不在册 ⇒ `null`）。分派表与回落同 §`VENDOR_ICON` 注释。
+ *  20px 卡头（`vendorMark`）与 40px 详情头卡共用这一个产出点：同一块品牌在**同一屏**里
+ *  一处是官方图标、一处是首字母，读的人不会认为这是两种设计，只会认为其中一处坏了。 */
+function vendorIconTag(vendor) {
+  const key = VENDOR_ICON[vendor];
+  return key ? `<img src="/img/vendors/${key}.png" alt="${esc(vendor[0] || "?")}">` : null;
+}
+
+function vendorMark(vendor, dark) {
+  const icon = vendorIconTag(vendor);
+  return `<span class="mark-sm${icon ? "" : dark ? " dark" : ""}">${icon || esc(vendor[0] || "?")}</span>`;
+}
+
 function vendorCards() {
   const byVendor = new Map(vendorOrder.map((v) => [v, []]));
   const custom = [];
@@ -76,7 +105,7 @@ function cardHTML(c) {
     <div class="group-card" style="margin-bottom:12px">
       <div style="display:flex;height:28px;align-items:center;gap:8px;padding:0 4px;margin-bottom:6px"
         title="${esc(c.vendor)} · 目录 ${c.catCount} 个模型 / 已接入 ${c.models.length}">
-        <span class="mark-sm ${anyOn ? "dark" : ""}">${esc(c.vendor[0])}</span>
+        ${vendorMark(c.vendor, anyOn)}
         <span style="min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:800;color:var(--text-soft)">${esc(c.vendor)}</span>
         <button class="icon-btn sm" data-add="${esc(c.vendor)}" title="添加模型" aria-label="添加模型"
           style="margin-right:-4px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg></button>
@@ -285,7 +314,7 @@ function drawDetail(root) {
     <!-- 头卡：模型名 + 端点/状态徽章 + 启停（删除按钮 Q24-④ 暂隐藏） -->
     <div class="card" style="display:flex;align-items:center;justify-content:space-between;gap:12px">
       <div style="display:flex;min-width:0;align-items:center;gap:12px">
-        <span class="logo-block dark">${esc((m.name[0] || "模").toUpperCase())}</span>
+        <span class="logo-block ${vendorIconTag(vendorOf(m)) ? "" : "dark"}">${vendorIconTag(vendorOf(m)) || esc((m.name[0] || "模").toUpperCase())}</span>
         <div style="min-width:0">
           <div style="display:flex;min-width:0;align-items:center;gap:8px">
             <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:15px;font-weight:800;letter-spacing:-.02em;color:var(--text);${disabled ? "opacity:.45" : ""}">${esc(m.name)}</span>
