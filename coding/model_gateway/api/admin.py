@@ -629,13 +629,28 @@ def _autogen_ids(body: dict) -> None:
 
 @router.get("/admin/api/config")
 async def get_config(request: Request, reveal: int = Query(default=0)):
-    """当前配置（Q18-② 扁平资源）。默认脱敏 resources[].api_key；接入密钥明文（UI 复制用）。"""
+    """当前配置（Q18-② 扁平资源）。默认脱敏 resources[].api_key；接入密钥明文（UI 复制用）。
+
+    🔴 每条映射条目额外带一个**派生位** `mapping_enabled` = `AppConfig.mapping_enabled`
+    （Q33-① 唯一判据：厂商侧看条目位、账号侧看产品位 + 号开关）。界面（「网关模型管理」
+    资源池行与"N 个资源"计数）只读这一位——判据在前端再写一份就会分叉（映射弹窗说进池、
+    资源池表说不进池），正是 Q33 要消灭的"两套真相"。写回时该键被 Pydantic 忽略
+    （`ModelResource` 没这个字段），不会污染配置文件。
+    """
     runtime = request.app.state.runtime
-    data = runtime.config.model_dump(mode="json")
+    cfg = runtime.config
+    data = cfg.model_dump(mode="json")
     if not reveal:
         for r in data.get("resources", []):
             if r.get("api_key"):
                 r["api_key"] = mask_key(r["api_key"])
+    by_id = {r.id: r for r in cfg.resources}
+    # `model_dump` 保序 ⇒ 逐位对齐即可，不必再按 id 找一遍（找错了就是把 A 条目的判据写到 B 上）
+    for m_dump, m in zip(data.get("models", []), cfg.models):
+        for e_dump, e in zip(m_dump.get("resources", []), m.resources):
+            res = by_id.get(e.resource)
+            e_dump["mapping_enabled"] = bool(
+                cfg.mapping_enabled(res, e, m.name) if res is not None else e.enabled)
     return data
 
 

@@ -263,7 +263,7 @@ function drawDetail(root) {
             <span class="badge ${disabled ? "b-muted" : "b-ok"}" style="flex:none">${disabled ? "已禁用" : "启用"}</span>
           </div>
           <div style="margin-top:4px;font-size:12px;font-weight:600;color:var(--text-faint)">
-            ${esc(EP_TEXT[m.endpoint] || m.endpoint)} · ${esc(m.group || "未分组")} · ${(m.resources || []).filter((e) => e.enabled !== false).length} 个资源（顺序 = 优先级）</div>
+            ${esc(EP_TEXT[m.endpoint] || m.endpoint)} · ${esc(m.group || "未分组")} · ${(m.resources || []).filter((e) => !poolOff(e)).length} 个资源（顺序 = 优先级）</div>
         </div>
       </div>
       <div style="display:flex;flex:none;align-items:center;gap:8px">
@@ -331,6 +331,12 @@ const EFFORT_LABEL = { low: "low · 轻量", medium: "medium · 中档", high: "
  *    在数组里是两条、在界面上是一行「N 个账号」。
  * 🔴 只与**相邻**同组条目合并：`m.resources[]` 的下标就是调度优先级，
  *    被别的条目隔开说明这一组在两处各有一个优先级位，合成一行就是在撒谎（也会让"上移"跨位移动）。 */
+/** 这条映射**当下进不进池**：只读后端派生的 `mapping_enabled`（= `AppConfig.mapping_enabled`，
+ *  厂商侧看条目位、账号侧看产品位 + 号开关）。🔴 判据不在前端再写一份——写一份就是两套真相
+ *  （映射弹窗那颗开关说进池、这张表说不进池）。字段缺失（旧 payload / 别的出口）才回落条目位。 */
+const poolOff = (e) => (typeof e.mapping_enabled === "boolean"
+  ? e.mapping_enabled === false : e.enabled === false);
+
 function poolUnits(m) {
   const byId = new Map((cfg.resources || []).map((x) => [x.id, x]));
   const units = [];
@@ -339,7 +345,7 @@ function poolUnits(m) {
     const prod = res ? String(res.product || "").trim() : "";
     // 映射级开关（账号页模型映射弹窗那一颗）关掉的条目**不进池**，也就不是本表的行；
     // 但它仍占数组里的一个优先级位 —— 单元下标必须按全量算，交换才不会跨过它搬别人。
-    const off = r.enabled === false;
+    const off = poolOff(r);
     if (!isDerivedResource(res)) { units.push({ kind: "provider", key: "p:" + i, idxs: [i], res, model: r.model, off }); return; }
     const key = "a:" + prod + ":" + r.model;
     const last = units[units.length - 1];
