@@ -984,9 +984,38 @@ class _StaticNoCacheMiddleware:
         await self.app(scope, receive, send_wrapper)
 
 
+def configure_logging() -> logging.Logger:
+    """给 `model_gateway` 这个 logger 装上它自己的 handler（债务 Q33-债13）。
+
+    为什么必须显式做：`uvicorn.run(..., log_level="info")` 的 dictConfig **只配
+    `uvicorn` / `uvicorn.error` / `uvicorn.access` 三个 logger，不碰 root**；
+    而 `logging.getLogger("model_gateway")` 自己不设级别也不挂 handler ⇒ 记录向上传给 root，
+    root 是 `level=WARNING handlers=[]`，最后只能落到 `logging.lastResort`（按 WARNING 起放）。
+    结果 = **出货形状下所有 `logger.info` 诊断一条都不落日志**。真机对照（同一实例同一批请求，
+    只差启动前有没有配过根 logger）：`grep -c "\\[选路" gw2.log` = 0 vs `gw3.log` = 2。
+    本轮刻意写进日志的承载避开原因（"…已换下一条（不记失败、不计入 y）"）本意就是给排障看的，
+    看不见 ⇒ 与 §12「消灭无报错的失败」相冲。
+
+    幂等：重复调用（测试里多次 `create_app`）不叠加 handler；级别走 `MGW_LOG_LEVEL`
+    （默认 `INFO`，设 `WARNING` 可回到安静形态）。
+    """
+    log = logging.getLogger("model_gateway")
+    level_name = (os.environ.get("MGW_LOG_LEVEL") or "INFO").strip().upper()
+    log.setLevel(getattr(logging, level_name, logging.INFO))
+    if not log.handlers:
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
+        log.addHandler(handler)
+        # 🔴 不动 `propagate`：caplog 的 handler 挂在 root 上，靠的就是向上传播
+        #    （现有判据 `caplog.at_level(..., logger="model_gateway.zcode")` 若干条依赖这条链，
+        #    关掉传播会把它们静默饿死）。生产里 root 本来就没有 handler ⇒ 不会双份打印。
+    return log
+
+
 def create_app(config_path: Path | None = None, *,
                usage_dir: Path | None = None, enums_path: Path | None = None) -> FastAPI:
     """装配 FastAPI 应用（测试与启动共用；usage_dir/enums_path 供测试隔离注入）。"""
+    configure_logging()
     config_path = paths.resolve_config_path(config_path)
     config = _load_config_or_exit(config_path)
 
