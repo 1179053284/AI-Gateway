@@ -877,3 +877,63 @@ class TestProductModelRemoval:
             r = await client.post(url, json=body)
             assert r.status_code == 400, (body, r.status_code, r.text)
         assert Path(gw.config_path).read_text(encoding="utf-8") == before   # 一次都没写
+
+    async def test_removal_scope_is_the_one_product_not_all_account_resources(
+            self, vendor, make_gateway, client):
+        """🔴 复验 R10 报备 2 补的判据：作用域必须是**这一个产品**的派生资源。
+
+        前一条只钉了"厂商侧不许动"，把实现变异成 `rids = 全部账号侧资源`（跨产品）时六条**全绿**
+        —— 那意味着"别的产品的账号映射被一起删掉"这条真实事故形状零覆盖。
+        这一条造两个产品（buddy + trae）各挂同一个厂商模型 `vm-x` 到同一系统模型，
+        删 buddy 的 ⇒ trae 的位与条目都必须还在，且系统模型不得被报成"清空"。
+        """
+        gw = await make_gateway(_cfg(vendor.port, models=[
+            {"name": "glm-5.3", "endpoint": "chat", "resources": []}]))
+        _seed("buddy", "scope-b-1")
+        _seed("trae", "scope-t-1")
+        for prod in ("buddy", "trae"):
+            r = await client.post(f"{gw.base_url}/admin/api/accounts/mappings",
+                                  json={"product": prod, "items": [
+                                      {"model": "vm-x", "target": "glm-5.3"}]})
+            assert r.status_code == 200, (prod, r.text)
+        saved = _saved(gw)
+        model = next(m for m in saved["models"] if m["name"] == "glm-5.3")
+        assert len(model["resources"]) == 2, model            # 前提：两个产品各一条
+        assert {b["product"] for b in saved["product_models"]} == {"buddy", "trae"}
+
+        out = (await client.post(f"{gw.base_url}/admin/api/accounts/product-models/remove",
+                                 json={"product": "buddy", "model": "vm-x"})).json()
+        assert out["entries_removed"] == 1 and out["bit_removed"] is True, out
+        assert out["emptied_models"] == [], out               # trae 那条还在 ⇒ 不能说清空
+        saved = _saved(gw)
+        assert [b["product"] for b in saved["product_models"]] == ["trae"], saved
+        model = next(m for m in saved["models"] if m["name"] == "glm-5.3")
+        assert len(model["resources"]) == 1, model
+        kept_rids = {r["id"] for r in saved["resources"]
+                     if (r.get("product") or "").strip() == "trae"}
+        assert {e["resource"] for e in model["resources"]} == kept_rids, (model, kept_rids)
+
+    async def test_emptied_models_only_lists_models_that_really_lost_every_entry(
+            self, vendor, make_gateway, client):
+        """🔴 复验 R10 报备 3 补的判据：`emptied_models` 的判据是"**删完以后一条不剩**"。
+
+        把实现里的 `if m.resources and not keep` 放宽成 `if m.resources`（删过任何条目就报清空）
+        时，原有六条全绿 —— 而这正是界面会撒谎的那个字段：模型明明还有别的资源在承接，
+        回执却说"它掉出 /v1/models 了"。这一条造"同一系统模型挂两条不同厂商模型"的形状。
+        """
+        gw = await make_gateway(_cfg(vendor.port, models=[
+            {"name": "glm-5.3", "endpoint": "chat", "resources": []}]))
+        _seed("buddy", "emp-1")
+        for vm in ("vm-x", "vm-other"):
+            r = await client.post(f"{gw.base_url}/admin/api/accounts/mappings",
+                                  json={"product": "buddy", "items": [
+                                      {"model": vm, "target": "glm-5.3"}]})
+            assert r.status_code == 200, (vm, r.text)
+        assert len(_saved(gw)["models"][0]["resources"]) == 2          # 前提：两条都在
+
+        out = (await client.post(f"{gw.base_url}/admin/api/accounts/product-models/remove",
+                                 json={"product": "buddy", "model": "vm-x"})).json()
+        assert out["entries_removed"] == 1, out
+        assert out["emptied_models"] == [], (out, "还剩 vm-other，不得报『一条不剩』")
+        left = next(m for m in _saved(gw)["models"] if m["name"] == "glm-5.3")
+        assert [e["model"] for e in left["resources"]] == ["vm-other"], left

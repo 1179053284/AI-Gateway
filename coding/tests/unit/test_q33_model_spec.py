@@ -562,6 +562,19 @@ class TestCapsMerge:
                                                from_stale_cache=True))
         assert caps["specStale"] is True and caps["maxOutputTokens"] == 4096
 
+    def test_minimal_exit_without_pool_or_spec_still_declares_the_flag(self):
+        """🔴 复验 R10 报备 1 补的判据：三条 return 都得带这个位，**最早那条也不例外**。
+
+        `entry is None and spec is None`（既不在内置目录、又没有合并规格）走的是函数开头
+        那条最小 return。把 `specStale` 只加在后两条上时，全量 115 条**一条都不红**，
+        而这个模型是真的会走到那条路上（自定义名 + 号全没目录）⇒ 字段集随分支漂移，
+        消费方就得写 `if (specStale === undefined)`，等于把"陈旧"重新变成不可判定。
+        """
+        caps = build_model_caps(self._Model(), None)
+        assert "specStale" in caps, f"最小出口丢了标注位：{sorted(caps)}"
+        assert caps["specStale"] is False, caps
+        assert caps["maxOutputTokens"] is None and caps["supportsToolCall"] is None
+
     def test_spec_can_lift_numbers_and_union_flags(self):
         pool = self._Pool(self._Entry())
         spec = ModelSpec(max_input=1000000, max_output=32000, tool_call=None,

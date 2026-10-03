@@ -23,6 +23,10 @@
     GET  /admin/api/accounts/{product}/catalog        产品级模型目录（映射弹窗的数据面）
     POST /admin/api/accounts/mappings                 初始化映射（目录条目 → 系统模型）
     POST /admin/api/accounts/claim-all                一键领取（全局 / 单产品批量）
+    GET  /admin/api/accounts/{product}/{name}/check-models
+                                                      该账号**可检测**的模型清单（只列已生效映射）
+    POST /admin/api/accounts/product-models/remove    删除一条 (产品, 厂商模型) 映射
+                                                      （🔴 位与派生条目**一起删**，判据见该函数）
 
 **错误语义**（§22.7）：
 

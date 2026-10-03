@@ -69,6 +69,10 @@ def build_cli_models(config, enum_pool, dialects, base_url: str, api_key: str,
             "supportsReasoning": caps_fields["supportsReasoning"],
             "maxInputTokens": caps_fields["maxInputTokens"],
             "maxOutputTokens": caps_fields["maxOutputTokens"],
+            # 🔴 复验 R10 报备 4：`/v1/models` 带了这个位而**下发文件**不带，
+            #    只读文件的工具（WorkBuddy 这类）就仍然分不清"昨天的数"与"实时的数"，
+            #    等于把刚闭口的欠账在第二条出口上复活。字段与 `/v1/models` 同名同语义。
+            "specStale": caps_fields["specStale"],
             "tags": ["custom"],
             "caps": build_caps_block(m, enum_pool, dialects, spec=spec),
         })

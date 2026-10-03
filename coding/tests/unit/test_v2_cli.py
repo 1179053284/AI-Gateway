@@ -440,3 +440,18 @@ def test_cli_models_feed_the_same_spec_into_the_caps_block(tmp_path, monkeypatch
     assert any(v for v in levels.values()), f"档位全 null（spec 没喂进 caps 块）：{levels}"
     assert rows[0]["supportsReasoning"] is True
     assert rows[0]["maxOutputTokens"] == 8000
+    # 🔴 复验 R10 报备 4：`/v1/models` 有的**陈旧标注位**，下发文件也必须有 ——
+    #    只读文件的工具（WorkBuddy 这类）拿不到这个位，就仍然会把"昨天缓存里的数"
+    #    当成实时事实，正是刚闭口那条欠账在**第二条出口**复活（与本测试自己的立意冲突）。
+    assert rows[0]["specStale"] is False, rows[0]
+    # 🔴 两份都要推过期：规格取数是「**按号**优先、产品级兜底」，只改产品级那份
+    #    等于测了兜底腿（我第一次就写错在这里：glob 的是 `CACHE_FILE + "*"`，
+    #    只命中 `_catalog_cache.json`，按号副本 `_catalog_cache.<名>-<hash>.json` 没动 ⇒ 判据假红）。
+    for p in sorted(root.glob("_catalog_cache*")):
+        data = json.loads(p.read_text(encoding="utf-8"))
+        data["fetched_at"] -= catalog_cache.DEFAULT_TTL_SECONDS + 60
+        p.write_text(json.dumps(data), encoding="utf-8")
+    stale = build_cli_models(config, enums, dialects, "http://127.0.0.1:1/v1", "mg-t")
+    assert stale[0]["specStale"] is True, stale[0]
+    # 标"陈旧"不收回数值：陈旧缓存仍是可用的兜底来源（工具按承诺上限规划请求）
+    assert stale[0]["maxOutputTokens"] == 8000 and stale[0]["maxInputTokens"] == 200000
