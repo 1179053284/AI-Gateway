@@ -530,9 +530,37 @@ class TestCapsMerge:
     def test_without_spec_is_byte_identical_to_before(self):
         pool = self._Pool(self._Entry())
         caps = build_model_caps(self._Model(), pool)
+        # 🔴 契约扩展之后多了一个**只读标注位** `specStale`（台账 §17）；
+        #    这条判据的原意是"不传规格时数值/布尔腿一个字都不许变"，所以只把新增位摘出来，
+        #    其余七项仍逐字对老形状。
+        assert caps.pop("specStale") is False, "无合并规格参与声明 ⇒ 陈旧位必须是 False，不是缺失"
         assert caps == {"name": "GLM 5.3", "vendor": "智谱", "maxInputTokens": 262144,
                         "maxOutputTokens": 65536, "supportsToolCall": True,
                         "supportsImages": False, "supportsReasoning": True}
+
+    def test_spec_staleness_is_declared_and_only_that(self):
+        """🔴 UT-95（单元腿；端到端见 INT-93）：`from_stale_cache` 必须有用户可见出口。
+
+        上一版这件事算出来了却**零消费方** ⇒ 界面上"昨天取到的数"与"实时取到的数"一模一样。
+        三条缺一不可：陈旧 ⇒ `true`、新鲜 ⇒ `false`、**不许**顺手改动数值腿。
+        """
+        pool = self._Pool(self._Entry())
+        stale = ModelSpec(max_input=1_000_000, max_output=65536, sources=1,
+                          from_stale_cache=True)
+        fresh = ModelSpec(max_input=1_000_000, max_output=65536, sources=1,
+                          from_stale_cache=False)
+        a = build_model_caps(self._Model(), pool, spec=stale)
+        b = build_model_caps(self._Model(), pool, spec=fresh)
+        assert a["specStale"] is True and b["specStale"] is False
+        # 标注位是**附加**事实，不许把数改掉或改成 null（工具侧仍按承诺上限规划请求）
+        assert a["maxInputTokens"] == b["maxInputTokens"] == 1_000_000
+
+    def test_custom_model_without_catalog_entry_still_declares_the_flag(self):
+        """不在内置目录、只有规格时也必须带这个位（缺字段 = 界面只能显示"不知道"）。"""
+        caps = build_model_caps(self._Model(), None,
+                                spec=ModelSpec(max_output=4096, sources=1,
+                                               from_stale_cache=True))
+        assert caps["specStale"] is True and caps["maxOutputTokens"] == 4096
 
     def test_spec_can_lift_numbers_and_union_flags(self):
         pool = self._Pool(self._Entry())

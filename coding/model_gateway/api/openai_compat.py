@@ -39,9 +39,9 @@ def _openai_json_error(status: int, body: dict) -> JSONResponse:
 async def list_models(request: Request):
     """模型清单 + **能力位**（v2.0 §12 / PRD Q25-②）。
 
-    原有 6 字段**不删不改**（向后兼容），追加 8 个能力位字段：
+    原有 6 字段**不删不改**（向后兼容），追加 9 个能力位字段：
     `name` / `vendor` / `maxInputTokens` / `maxOutputTokens` /
-    `supportsToolCall` / `supportsImages` / `supportsReasoning` / `caps`。
+    `supportsToolCall` / `supportsImages` / `supportsReasoning` / `specStale` / `caps`。
 
     🔴 实测依据（`08` §6.4）：工具侧 `supportsToolCall !== true` 会**删除请求中的 tools**；
     无 `thinkingLevelMap` 会让推理档位**变哑** —— 都是"无报错的能力静默降级"。

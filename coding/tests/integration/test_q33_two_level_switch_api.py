@@ -708,3 +708,172 @@ class TestPerAccountSpecWiring:
                 body = {"max_tokens": 2048}
             state = gw.runtime.resources.registry[(rid, "vm-x")]
             assert gw.runtime.scheduler._capacity_reject(Ir(), state) is None   # 8192 ≥ 2048
+
+
+class TestStaleSpecHasAUserVisibleExit:
+    """🔴 INT-93 · 陈旧规格必须有**对外可见**的标注位（债务 Q33-债8 第①条，用户批准的契约扩展）。
+
+    `ModelSpec.from_stale_cache` 从 Q33 第一版起就算得出来，但**零消费方** ⇒ 界面上
+    "昨天缓存里的数"与"刚刚实时取到的数"长得一模一样，用户以为看到的是当下事实。
+    出口定在声明侧（`/v1/models` 每条模型一个只读位 `specStale`），三条缺一不可：
+    ① 陈旧 ⇒ `true`，且数**照旧声明出来**（陈旧仍是可用的兜底来源，不许顺手改成 null）；
+    ② 新鲜 ⇒ `false`（这一腿是①的反证：写成恒 `true` 或恒 `false` 都必须红）；
+    ③ 前提自证 —— 读缓存函数自己说这份是陈旧的，不然整条判据是在测"我以为的数据"。
+    """
+
+    async def _map_with_freshness(self, vendor, make_gateway, client, *, stale: bool,
+                                  target: str):
+        from model_gateway.accounts import catalog_cache
+        from model_gateway.accounts.types import ModelInfo
+
+        gw = await make_gateway(_cfg(vendor.port, models=[
+            {"name": target, "endpoint": "chat", "resources": []}]))
+        _seed("buddy", "fresh-1")
+        catalog_cache.write_cache("buddy", [ModelInfo(id="vm-x", context_window=200000,
+                                                      max_output=8192)],
+                                  source_account="fresh-1")
+        catalog_cache.cache_path("buddy").unlink(missing_ok=True)   # 只留按号证据
+        path = catalog_cache.cache_path("buddy", account="fresh-1",
+                                        root=catalog_cache.product_dir("buddy"))
+        if stale:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data["fetched_at"] -= catalog_cache.DEFAULT_TTL_SECONDS + 60
+            path.write_text(json.dumps(data), encoding="utf-8")
+        view = catalog_cache.read_cache("buddy", account="fresh-1",
+                                        root=catalog_cache.product_dir("buddy"))
+        # ③ 前提自证：这次装配读到的究竟是哪一种，由读函数自己说
+        assert view and view["stale"] is stale, view
+
+        r = await client.post(f"{gw.base_url}/admin/api/accounts/mappings",
+                              json={"product": "buddy", "items": [
+                                  {"model": "vm-x", "target": target}]})
+        assert r.status_code == 200, r.text
+        assert r.json()["added"] == 1, r.json()
+        entry = next(m for m in (await client.get(
+            f"{gw.base_url}/v1/models",
+            headers={"Authorization": "Bearer gw-user"})).json()["data"]
+            if m["id"] == target)
+        return entry
+
+    async def test_stale_declares_true_and_keeps_the_numbers(self, vendor, make_gateway, client):
+        entry = await self._map_with_freshness(vendor, make_gateway, client,
+                                               stale=True, target="stale-custom")
+        assert entry["specStale"] is True, entry
+        # ① 的另半句：标注"陈旧"不等于"不声明"—— 离线时这是唯一可用的规格来源
+        assert entry["maxOutputTokens"] == 8192 and entry["maxInputTokens"] == 200000, entry
+
+    async def test_fresh_declares_false(self, vendor, make_gateway, client):
+        entry = await self._map_with_freshness(vendor, make_gateway, client,
+                                               stale=False, target="fresh-custom")
+        assert entry["specStale"] is False, entry
+        assert entry["maxOutputTokens"] == 8192, entry
+
+
+class TestProductModelRemoval:
+    """🔴 INT-94 · 产品位**删除入口**（用户批准的契约扩展第二条，台账 §17）。
+
+    Q33-① 把 `(产品, 厂商模型) → 系统模型 + enabled` 定为账号侧映射的唯一真相，但界面上
+    只有开/关两颗状态，**没有删除**：想"这个产品的这个模型我根本不想接"没有出口 ——
+    关着的位永远留在配置里，而且号被重新启用时还会按它把条目**补回来**（继承腿读的就是位）。
+    本类钉的是删除面必须成立的六件事，其中 ①② 是"删了但没删"的两种形状：
+    只删位 ⇒ 条目失去主人、`mapping_enabled` 回落条目位 ⇒ 照进池；
+    只删条目 ⇒ 位还开着 ⇒ 号一启用就被补回来。所以判据必须**同时**看配置里的位与条目。
+    """
+
+    async def _map(self, gw, client, *, product="buddy", model="vm-x", target="glm-5.3"):
+        r = await client.post(f"{gw.base_url}/admin/api/accounts/mappings",
+                              json={"product": product, "items": [{"model": model,
+                                                                   "target": target}]})
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    async def _one_account_model(self, vendor, make_gateway, client, *, target="glm-5.3"):
+        gw = await make_gateway(_cfg(vendor.port, models=[
+            {"name": target, "endpoint": "chat", "resources": []}]))
+        _seed("buddy", "rm-1")
+        await self._map(gw, client, target=target)
+        return gw
+
+    async def test_bit_and_entries_are_removed_together(self, vendor, make_gateway, client):
+        gw = await self._one_account_model(vendor, make_gateway, client)
+        r = await client.post(f"{gw.base_url}/admin/api/accounts/product-models/remove",
+                              json={"product": "buddy", "model": "vm-x"})
+        assert r.status_code == 200, r.text
+        out = r.json()
+        assert out["bit_removed"] is True and out["entries_removed"] == 1, out
+        assert out["emptied_models"] == ["glm-5.3"], out       # 该模型一条映射都不剩
+        assert out["product_resources"] == 1, out              # 该产品派生资源数（如实报）
+        saved = _saved(gw)
+        assert saved.get("product_models") in (None, []), saved    # ① 位真没了
+        model = next(m for m in saved["models"] if m["name"] == "glm-5.3")
+        assert model["resources"] == [], model                 # ② 条目也真没了
+        ids = [m["id"] for m in (await client.get(
+            f"{gw.base_url}/v1/models",
+            headers={"Authorization": "Bearer gw-user"})).json()["data"]]
+        assert "glm-5.3" not in ids, ids                       # 掉出对外声明，不是只改了盘
+
+    async def test_removal_is_idempotent_and_says_so(self, vendor, make_gateway, client):
+        gw = await self._one_account_model(vendor, make_gateway, client)
+        url = f"{gw.base_url}/admin/api/accounts/product-models/remove"
+        first = (await client.post(url, json={"product": "buddy", "model": "vm-x"})).json()
+        second = (await client.post(url, json={"product": "buddy", "model": "vm-x"}))
+        assert second.status_code == 200, second.text            # 幂等 = 200，不是 404
+        out = second.json()
+        assert out["bit_removed"] is False and out["entries_removed"] == 0, out
+        assert first["bit_removed"] is True, first               # 第一次确实删过东西
+
+    async def test_other_products_and_vendor_entries_are_untouched(self, vendor, make_gateway,
+                                                                  client):
+        """🔴 删除的作用域 = **该产品的派生资源** × 这个厂商模型，别的二字不动。
+
+        故意让**厂商侧**资源也挂一个同名厂商模型 `vm-x`：按"厂商模型"一把删就会把
+        用户自己的按量 Key 映射一起清掉（那是另一类接入，与这个产品无关）。
+        """
+        gw = await make_gateway(_cfg(vendor.port, models=[
+            {"name": "glm-5.3", "endpoint": "chat",
+             "resources": [{"resource": "res-A", "model": "vm-x"}]}]))
+        _seed("buddy", "scope-1")
+        await self._map(gw, client)
+        out = (await client.post(f"{gw.base_url}/admin/api/accounts/product-models/remove",
+                                 json={"product": "buddy", "model": "vm-x"})).json()
+        assert out["emptied_models"] == [], out                  # 厂商侧那条还在 ⇒ 模型不该被清空
+        model = next(m for m in _saved(gw)["models"] if m["name"] == "glm-5.3")
+        assert [e["resource"] for e in model["resources"]] == ["res-A"], model
+        assert model["resources"][0]["model"] == "vm-x", model
+
+    async def test_a_closed_bit_can_be_deleted_too(self, vendor, make_gateway, client):
+        """需求动机本身：位**关着**时也只能开/关、删不掉 ⇒ 这一条就是那个缺失的出口。"""
+        gw = await self._one_account_model(vendor, make_gateway, client)
+        off = await client.post(f"{gw.base_url}/admin/api/accounts/mappings",
+                                json={"product": "buddy", "items": [
+                                    {"model": "vm-x", "target": "glm-5.3", "enabled": False}]})
+        assert off.status_code == 200, off.text
+        assert _saved(gw)["product_models"][0]["enabled"] is False   # 前提：现在是"关着的位"
+        out = (await client.post(f"{gw.base_url}/admin/api/accounts/product-models/remove",
+                                 json={"product": "buddy", "model": "vm-x"})).json()
+        assert out["bit_removed"] is True, out
+        assert _saved(gw).get("product_models") in (None, []), _saved(gw)
+
+    async def test_no_enabled_account_is_not_a_blocker(self, vendor, make_gateway, client):
+        """号全停了也要能删（写入面要求"至少一个启用号"是因为条目要有落点；删除不需要落点）。"""
+        gw = await make_gateway(_cfg(vendor.port, models=[
+            {"name": "glm-5.3", "endpoint": "chat", "resources": []}]))
+        _seed("buddy", "off-1")
+        await self._map(gw, client)
+        r = await client.post(_enable_url(gw, "buddy", "off-1", "disable"))
+        assert r.status_code == 200, r.text                        # 前提：真的停用了
+        out = await client.post(f"{gw.base_url}/admin/api/accounts/product-models/remove",
+                                json={"product": "buddy", "model": "vm-x"})
+        assert out.status_code == 200, out.text
+        assert out.json()["bit_removed"] is True, out.text
+
+    async def test_bad_input_is_rejected_without_touching_the_disk(self, vendor, make_gateway,
+                                                                   client):
+        gw = await self._one_account_model(vendor, make_gateway, client)
+        before = Path(gw.config_path).read_text(encoding="utf-8")
+        url = f"{gw.base_url}/admin/api/accounts/product-models/remove"
+        for body in ({"product": "buddy"}, {"product": "buddy", "model": "   "},
+                     {"product": "not-registered", "model": "vm-x"}):
+            r = await client.post(url, json=body)
+            assert r.status_code == 400, (body, r.status_code, r.text)
+        assert Path(gw.config_path).read_text(encoding="utf-8") == before   # 一次都没写

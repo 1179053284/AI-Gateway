@@ -47,9 +47,9 @@ def build_model_caps(model: Any, enum_pool: Any, dialects: Any = None, *, spec: 
                     ) -> dict[str, Any]:
     """组装单个系统模型的**能力位**（在原有 6 字段之外追加的部分）。
 
-    返回 7 个键（`caps` 单独在 `build_caps_block` 里组装，便于 M3-2/M3-4 分期）：
+    返回 8 个键（`caps` 单独在 `build_caps_block` 里组装，便于 M3-2/M3-4 分期）：
     `name` / `vendor` / `maxInputTokens` / `maxOutputTokens` /
-    `supportsToolCall` / `supportsImages` / `supportsReasoning`
+    `supportsToolCall` / `supportsImages` / `supportsReasoning` / `specStale`
 
     **自定义系统模型**（不在内置目录，Q19-② 允许就地新建）→ 走最小字段集，**不崩**；
     能力位此时是 `null`（= 不知道），不是 `false`（= 明确不支持）—— 见 `_flag`。
@@ -66,6 +66,8 @@ def build_model_caps(model: Any, enum_pool: Any, dialects: Any = None, *, spec: 
       - 🔴 端点不变量在合并**之后**再压一次：非 chat 端点的 `supportsToolCall` 只能是 `false`
         （图像端点没有 `tools` 参数，账号目录说 `true` 也不许并出承诺）。
     不传 `spec` 时数值腿与改动前**逐字一致**（旧调用点零风险）。
+    `specStale`（债务 Q33-债8 第①条）：这条声明里**至少有一个数取自超 TTL 的目录缓存**时为 `true`；
+    没有合并规格参与声明 ⇒ `false`（不是"不知道"—— 这件事只有目录缓存来源会说，而它说了没说过是可判定的）。
     """
     entry = enum_pool.get(model.name) if enum_pool is not None else None
     endpoint = str(getattr(model, "endpoint", "") or "chat")
@@ -78,6 +80,7 @@ def build_model_caps(model: Any, enum_pool: Any, dialects: Any = None, *, spec: 
             "supportsToolCall": _flag(None, tool_call=True, endpoint=endpoint),
             "supportsImages": _flag(None),
             "supportsReasoning": _flag(None),
+            "specStale": False,
         }, endpoint)
     base = {"name": (entry.display if entry is not None else "") or model.name,
             "vendor": entry.vendor if entry is not None else "",
@@ -86,7 +89,12 @@ def build_model_caps(model: Any, enum_pool: Any, dialects: Any = None, *, spec: 
             "supportsToolCall": _flag(entry.tool_call if entry is not None else None,
                                       tool_call=True, endpoint=endpoint),
             "supportsImages": _flag(entry.image_input if entry is not None else None),
-            "supportsReasoning": _flag(entry.reasoning if entry is not None else None)}
+            "supportsReasoning": _flag(entry.reasoning if entry is not None else None),
+            # 🔴 债务 Q33-债8 第①条的出口（用户批准的契约扩展之一）：这一条声明里的数
+            #    **有没有取自陈旧目录缓存**。以前 `ModelSpec.from_stale_cache` 算出来了却没有
+            #    任何消费方 ⇒ 界面上"昨天取到的数"和"实时取到的数"长得一模一样，用户以为
+            #    看到的是当下事实。口径：`spec is None`（没有合并规格参与声明）⇒ `False`。
+            "specStale": False}
     return _enforce_endpoint(base if spec is None else _merge_spec_maxima(base, spec), endpoint)
 
 
@@ -128,6 +136,8 @@ def _merge_spec_maxima(caps: dict[str, Any], spec: Any) -> dict[str, Any]:
     # 🔴 端点不变量不在这里压 —— 由唯一出口 `_enforce_endpoint()` 统一压（评审 R8-报备 R-8：
     #    原先只有"合并腿"守得住，而 `spec=None` + 目录条目 `tool_call=True` 那条路根本不经过这里，
     #    `endpoint=images` 的系统模型照样对外承诺 `supportsToolCall: true`。）
+    # 陈旧标注：合并规格里**至少有一个数**来自超 TTL 的目录缓存 ⇒ 声明侧如实带上这件事。
+    out["specStale"] = bool(getattr(spec, "from_stale_cache", False))
     return out
 
 

@@ -1706,6 +1706,96 @@ async def account_mappings(request: Request):
     return payload
 
 
+def _write_product_model_removal(path, product: str, model: str) -> dict:
+    """移除面阶段 2（同步段）：**读整份配置 → 删产品位 → 删由它派生的条目 → 原子保存**。
+
+    🔴 为什么位与条目必须**一起删**（与写入面 ⓪ 的"要么一起改，要么一个都不动"对称）：
+    只删位会留下一批**没有主人**的条目 —— 产品位没了，`mapping_enabled` 就回落到条目位
+    （Q33 的"无位 = 旧配置零迁移"那条），于是"已经删除"的映射**照旧进池、照对外声明**；
+    只删条目而留着位，则号被重新启用时 `sync_product_models` 会按那颗还开着的位**把条目补回来**。
+    两种都是"删了但没删"，用户第二次点同一颗删除钮只会更困惑。
+
+    ⚠️ 与写入面同一口径的已知残留：这段"读-改-写"未纳入**跨进程**写锁（`materialize.py`
+    模块头残留② / `account_mappings` 的同一处登记）；同毫秒并发写时后写者整份覆盖，
+    丢失可重做（删除动作幂等）。
+    """
+    with materialize_order_lock():
+        config = _load_config_for_write(path)
+        bit = config.product_mapping(product, model)
+        bit_target = bit.system_model if bit is not None else None
+        if bit is not None:
+            config.product_models = [pm for pm in config.product_models
+                                     if not (pm.product == product and pm.model == model)]
+        rids = {r.id for r in config.resources
+                if (r.product or "").strip() == product}
+        entries_removed = 0
+        emptied: list[str] = []
+        for m in config.models:
+            keep = [ref for ref in m.resources
+                    if not (ref.resource in rids and ref.model == model)]
+            if m.resources and not keep:
+                emptied.append(m.name)      # 这个系统模型一条映射都不剩 ⇒ 会掉出 /v1/models
+            entries_removed += len(m.resources) - len(keep)
+            m.resources = keep
+        try:
+            save_config(config, path)
+        except OSError as e:
+            raise _ApiError(500, f"配置写入失败：{e}") from None
+    return {"bit_removed": bit is not None, "system_model": bit_target,
+            "entries_removed": entries_removed, "product_resources": len(rids),
+            "emptied_models": emptied}
+
+
+@router.post("/admin/api/accounts/product-models/remove")
+@_endpoint
+async def account_product_model_remove(request: Request):
+    """删除一条 **(产品, 厂商模型)** 映射（产品位 + 它派生的全部账号条目）。
+
+    载荷：`{"product", "model"}`。
+
+    这是 Q33-① 定版后**唯一缺的写面**：产品位是账号侧映射的唯一真相，而界面上只能
+    「开/关」它、不能删除它 —— 关着的位会永远留在配置里（`mapping_enabled` 认它，
+    号被启用时还会按它把条目补回来），用户想"这个产品的这个模型我根本不想接"没有出口。
+    本端点补的就是这个出口，判据与写入面**同源**（同一个 `product_mapping` 取数、
+    同一条 `(资源, 厂商模型)` 组合、同一次热重载）。
+
+    语义定版（三条都是被"删了但没删"那两种形状逼出来的，不是审美）：
+    - **位与条目一起删**（见 `_write_product_model_removal` 的红线注）；
+    - **幂等 = 200**，不是 404：调用方的意图（这条映射不在池里）已成立；回执用
+      `bit_removed` / `entries_removed` 如实说"本来有没有、删了几条"，界面据此措辞，
+      不许把"本来就没有"报成"已删除"；
+    - 参数形态先拒后动：`product` 未登记 → 400（`_product_meta` 单一判据点），
+      `model` 非非空字符串 → 400；**没有**"产品必须有启用账号"的前置 —— 删除不需要落点，
+      号全停了也要能把它从配置里清掉（否则停用态的产品就锁死了，与需求相反）。
+
+    回执：`{product, model, bit_removed, system_model, entries_removed, product_resources,
+    emptied_models[], reload}`；`emptied_models` = 因此**一条映射都不剩**的系统模型名
+    （它们会掉出 `/v1/models`，界面必须说得出这一层后果，别让用户以为调用还会成功）；
+    热重载失败时附 `reload_errors`（写入已发生但运行态未换代 —— 不谎报成功）。
+    """
+    body = await _body(request)
+    product = str(body.get("product") or "").strip()
+    meta = _product_meta(product)
+    model = body.get("model")
+    if not isinstance(model, str) or not model.strip():
+        raise _ApiError(400, "缺少 model：须是非空字符串（要移除的厂商侧模型 id）")
+    model = model.strip()
+
+    runtime = getattr(request.app.state, "runtime", None)
+    path = getattr(runtime, "config_path", None)
+    if runtime is None or path is None:
+        raise _ApiError(500, "运行态不可用（无配置快照），拒绝写入")
+
+    # 纯配置写面（零网络、零物化、零钩子）：整段下放工作线程，理由同 `_write_mappings_phase3`
+    # —— `save_config` 是 tempfile + fsync + replace，留在事件循环里一次删除就把全网关按住。
+    done = await asyncio.to_thread(_write_product_model_removal, path, product, model)
+    ok, errors = await runtime.reload_from_file()
+    payload = {"product": product, "title": meta.title, "model": model, **done, "reload": ok}
+    if not ok:
+        payload["reload_errors"] = errors
+    return payload
+
+
 @router.get("/admin/api/accounts/{product}/{name}/check-models")
 @_endpoint
 async def account_check_models(request: Request, product: str, name: str):
