@@ -326,36 +326,72 @@ class TestReasoningParams:
     """INT-36：推理参数三级合并端到端（资源默认 + 请求覆盖）。"""
 
     async def test_three_level_merge(self, vendor, make_gateway, client):
+        """INT-36：推理参数三级合并端到端（资源默认 + 请求覆盖 + 无默认不注入）。
+
+        🔴 Q33-③ 改判带来的前置调整（**不是放宽判据，是把前提换对**）：本用例原先靠
+        「串行请求恒走 A（平局取优先级）」这条 §5.3 旧定论来保证第二、三条请求还打到 A。
+        号间轮转之后该前提不再成立（串行会 A→B→A 分摊，正是用户要的"开 4 个号就 4 个号轮流"）。
+        所以三级合并改为**按资源各建一个池**来验：验 A 的资源默认与请求覆盖就用只含 A 的池；
+        验"B 无默认 ⇒ 一个字段都不注入"就用 A 恒 500 逼出切换。判据一条没少，
+        只是不再依赖那条被推翻的路由行为。
+        """
         vendor.set("sk-A", Ok(content="r"))
-        vendor.set("sk-B", Ok(content="r"))
         cfg = gateway_config(vendor.port, models=[{
+            "name": "test-model", "endpoint": "chat",
+            "resources": [
+                {"resource": "res-A", "model": "vm-A",
+                 "reasoning": {"enabled": True, "effort": "low"}}]}])
+        gw = await make_gateway(cfg)
+
+        # ① 请求不带推理字段 → 出站走资源默认（enabled + low）
+        await _chat(client, gw, _body())
+        a_body = vendor.bodies_for("sk-A")[0]
+        assert a_body["thinking"] == {"type": "enabled"}
+        assert a_body["reasoning_effort"] == "low"
+
+        # ② 请求带 reasoning_effort=high → 出站 high（请求级覆盖资源默认）；
+        #    未指定的 thinking 仍走资源默认
+        await _chat(client, gw, _body(reasoning_effort="high"))
+        a_body2 = vendor.bodies_for("sk-A")[1]
+        assert a_body2["reasoning_effort"] == "high"
+        assert a_body2["thinking"] == {"type": "enabled"}
+
+        # ③ 换到**无默认**的资源 B（让 A 恒 500 逼出切换）⇒ 推理字段一个都不注入
+        vendor.set("sk-A", Err(500))
+        vendor.set("sk-B", Ok(content="r"))
+        cfg2 = gateway_config(vendor.port, models=[{
             "name": "test-model", "endpoint": "chat",
             "resources": [
                 {"resource": "res-A", "model": "vm-A",
                  "reasoning": {"enabled": True, "effort": "low"}},
                 {"resource": "res-B", "model": "vm-B"},
             ]}])
-        gw = await make_gateway(cfg)
-
-        # ① 请求不带推理字段 → A 出站资源默认（enabled+low）
-        await _chat(client, gw, _body())
-        a_body = vendor.bodies_for("sk-A")[0]
-        assert a_body["thinking"] == {"type": "enabled"}
-        assert a_body["reasoning_effort"] == "low"
-
-        # ② 请求带 reasoning_effort=high → 出站 high（请求级覆盖资源默认）
-        await _chat(client, gw, _body(reasoning_effort="high"))
-        a_body2 = vendor.bodies_for("sk-A")[1]
-        assert a_body2["reasoning_effort"] == "high"
-        assert a_body2["thinking"] == {"type": "enabled"}  # 未指定字段走资源默认
-
-        # ③ B 无默认 → 不注入（厂商默认）；串行请求恒选 A（平局取优先级），
-        # 故先让 A 恒 500 触发切换，B 承接后检查出站体
-        vendor.set("sk-A", Err(500))
-        resp = await _chat(client, gw, _body())
+        gw2 = await make_gateway(cfg2)
+        resp = await _chat(client, gw2, _body())
         assert resp.status_code == 200
         b_body = vendor.bodies_for("sk-B")[0]
         assert "thinking" not in b_body and "reasoning_effort" not in b_body
+
+    async def test_rotation_spreads_sequential_requests_over_accounts(self, vendor,
+                                                                     make_gateway, client):
+        """🔴 Q33-③ 端到端判据：串行请求**摊到多个号**上，而不是恒打优先级首位。
+
+        四号全空闲、`x=2`：连续四条必须落在**四个不同的 key** 上各一条。
+        撤证：把 `pick_and_acquire` 的滑动窗口改回固定前缀切片，C/D 两个 key 永远收不到请求，
+        这条立刻红 —— 所以它钉的是"轮转真的发生"，不是"恰好没堆在一起"。
+        """
+        for key in ("sk-A", "sk-B", "sk-C", "sk-D"):
+            vendor.set(key, Ok(content="r"))
+        cfg = gateway_config(vendor.port, scheduling={"max_active_per_model": 2},
+                             models=[{"name": "test-model", "endpoint": "chat",
+                                      "resources": [{"resource": f"res-{k}", "model": f"vm-{k}"}
+                                                    for k in "ABCD"]}])
+        gw = await make_gateway(cfg)
+        for _ in range(4):
+            resp = await _chat(client, gw, _body())
+            assert resp.status_code == 200
+        hit = [k for k in ("sk-A", "sk-B", "sk-C", "sk-D") if vendor.bodies_for(k)]
+        assert hit == ["sk-A", "sk-B", "sk-C", "sk-D"], hit   # 四条 = 四个号各一条
 
     async def test_request_override_reaches_upstream(self, vendor, make_gateway, client):
         vendor.set("sk-A", Ok(content="r"))
@@ -474,3 +510,269 @@ class TestModelParamsInjection:
         assert resp.status_code == 200
         b = vendor.bodies_for("sk-A")[0]
         assert "temperature" not in b
+
+
+class TestSpecDefaultOutboundLeg:
+    """INT-80 · 统一规格层的**出站腿接线**判据（评审 R2-③：先前只有直接调函数的单测，
+    把 `scheduler.py` 的 `apply_spec_defaults` 调用点删掉仍然全绿）。
+
+    这条把"出站缺省带不带规格的数"钉在**真实请求路径**上：
+    在册厂商模型的枚举目录里 `sensenova-6.8-flash-lite` 的 `max_output=65536` ⇒
+    调用方不给 `max_tokens` 时，出站体必须带上**该资源自己**的 65536；
+    给了就用给的（Q28 的优先级「工具传参 > 网关设置 > 规格 > 厂商内置」不得被翻案）。
+    """
+
+    async def test_vendor_spec_default_reaches_outbound_body(self, vendor, make_gateway, client):
+        vendor.set("sk-A", Ok(content="r"))
+        cfg = gateway_config(vendor.port, models=[{
+            "name": "test-model", "endpoint": "chat",
+            "resources": [{"resource": "res-A", "model": "sensenova-6.8-flash-lite"}]}])
+        gw = await make_gateway(cfg)
+
+        await _chat(client, gw, _body())
+        b = vendor.bodies_for("sk-A")[0]
+        assert b.get("max_tokens") == 65536, f"出站缺省没走规格层：{b!r}"
+
+        await _chat(client, gw, _body(max_tokens=128))
+        assert vendor.bodies_for("sk-A")[1]["max_tokens"] == 128
+
+    async def test_default_uses_this_resources_own_number_not_the_pool_max(
+            self, vendor, make_gateway, client):
+        """🔴 INT-80 的第二腿（评审 R9 报备）：单资源那条腿**分不出**"自己的"与"池内最大"。
+
+        把 `scheduler._out_body` 的取数从 `resource_specs[(rid, vm)]` 换成 `model_specs[name]`
+        （= 池内最大）时，原判据照样绿，而真机上会给上限 65536 的号注入 131072 ⇒ 真实上游 400
+        —— 正是 R1-⑤ 当初判死的那件事，只是没人把"两个数不相等"的形状造出来。
+        """
+        vendor.set("sk-A", Ok(content="small"))
+        vendor.set("sk-B", Ok(content="big"))
+        cfg = gateway_config(vendor.port, models=[{
+            "name": "test-model", "endpoint": "chat",
+            "resources": [{"resource": "res-A", "model": "sensenova-6.8-flash-lite"},   # 65536
+                          {"resource": "res-B", "model": "glm-5.2"}]}],                  # 131072
+            scheduling={"max_active_per_model": 1})
+        gw = await make_gateway(cfg)
+        await _chat(client, gw, _body())                     # 调用方什么都不给
+        bodies = vendor.bodies_for("sk-A")
+        assert bodies, "res-A 本该承接第一条"
+        assert bodies[0]["max_tokens"] == 65536, (
+            f"注入了池内最大而不是这条资源自己的数：{bodies[0]!r}")
+        # 同一模型换到大的那条号 ⇒ 注入它自己的 131072（两份数各自成立）
+        await _chat(client, gw, _body())
+        assert vendor.bodies_for("sk-B")[-1]["max_tokens"] == 131072, vendor.bodies_for("sk-B")
+
+
+
+class TestReasoningDefaultIsPerSystemModel:
+    """🔴 INT-92 · 资源级**推理默认**的键必须带系统模型维度（评审 R9-B-1'）。
+
+    与本轮刚修的 `resource_specs` 是同一类缺陷，而且就在同一次装配里、红线注释的上面二十行：
+    `reasoning` 住在 `models[].resources[]` 这条条目上，同一个 `(资源, 厂商模型)` 被别名挂到
+    第二个系统模型时两边完全可以填不同默认，而旧表键只有 `(rid, vendor_model)` + 后写覆盖 ⇒
+    顺序决定哪一份活下来，另一份整份消失（或凭空串到另一个网关名上），定向判据零红。
+    """
+
+    def _cfg(self, port, *, alias_last: bool):
+        main = {"name": "m-main", "endpoint": "chat",
+                "resources": [{"resource": "res-A", "model": "vm-A",
+                               "reasoning": {"enabled": True, "effort": "low"}}]}
+        alias = {"name": "m-alias", "endpoint": "chat",
+                 "resources": [{"resource": "res-A", "model": "vm-A",
+                                "reasoning": {"enabled": False}}]}
+        models = [main, alias] if alias_last else [alias, main]
+        return gateway_config(port, models=models)
+
+    async def test_both_aliases_keep_their_own_reasoning_default(self, vendor, make_gateway,
+                                                                 client):
+        for alias_last in (False, True):
+            vendor.reset()
+            vendor.set("sk-A", Ok(content="r"))
+            gw = await make_gateway(self._cfg(vendor.port, alias_last=alias_last))
+            await _chat(client, gw, _body(model="m-main"))
+            await _chat(client, gw, _body(model="m-alias"))
+            bodies = vendor.bodies_for("sk-A")
+            assert len(bodies) == 2, bodies
+            # m-main 那条：条目自己填的 enabled+low 必须还在（被别名覆盖时会整份消失或变成 disabled）
+            assert bodies[0].get("thinking") == {"type": "enabled"}, (alias_last, bodies[0])
+            assert bodies[0].get("reasoning_effort") == "low", (alias_last, bodies[0])
+            # m-alias 那条：它自己的 disabled 默认（配对补 none）
+            assert bodies[1].get("thinking") == {"type": "disabled"}, (alias_last, bodies[1])
+            assert bodies[1].get("reasoning_effort") == "none", (alias_last, bodies[1])
+
+class TestCapacityAwareRouting:
+    """INT-84 · 出站**承载校验**接线（债务 Q33-债6-② / tech §22.5-9 第①条）。
+
+    定版口径三条，缺一不可：
+    ① 请求要的输出一**已知大于**该资源的上限 ⇒ 这条资源承载不了，直接换下一条，
+       **一次都不往它身上打**（旧行为 = 打上去吃上游 400，白烧一次额度并把好资源冷却掉）；
+    ② 避开**不记失败**：不计入 `C`（y 的计数）、不冷却、不进 `attempts`
+       —— 一次成功的避开不是故障，否则 y 会把用户刚配好的大窗口请求越用越窄地冷却掉；
+    ③ **不知道 = 不拦**：目录/缓存都没给这个数时照发（宁可吃一个可见的 400，
+       也不凭空否决一条可能可用的资源，与 §12「消灭无报错的失败」同一条立意）。
+    """
+
+    async def test_over_capacity_resource_is_skipped_without_failure_credit(
+            self, vendor, make_gateway, client):
+        """res-A（目录 max_output=65536）装不下 100000 ⇒ 必须换到 res-B（131072）。"""
+        vendor.set("sk-A", Ok(content="small"))
+        vendor.set("sk-B", Ok(content="big"))
+        cfg = gateway_config(vendor.port, models=[{
+            "name": "test-model", "endpoint": "chat",
+            "resources": [{"resource": "res-A", "model": "sensenova-6.8-flash-lite"},
+                          {"resource": "res-B", "model": "glm-5.2"}]}])
+        gw = await make_gateway(cfg)
+
+        r = await _chat(client, gw, _body(max_tokens=100000))
+        assert r.status_code == 200, r.text
+        assert vendor.bodies_for("sk-A") == [], "已知装不下却仍打出去了（白烧额度）"
+        assert vendor.bodies_for("sk-B")[0]["max_tokens"] == 100000
+
+        st = gw.runtime.resources.registry[("res-A", "sensenova-6.8-flash-lite")]
+        assert st.C == 0 and st.status == "active", (st.C, st.status)   # ② 不记失败
+        assert gw.runtime.resources.pools["test-model"] and \
+            len(vendor.bodies_for("sk-A")) == 0
+
+    async def test_unknown_capacity_is_never_a_rejection(self, vendor, make_gateway, client):
+        """目录里查不到的厂商模型 ⇒ `max_output=None` = 不知道 ⇒ 照发，不拦、不换。"""
+        vendor.set("sk-A", Ok(content="r"))
+        cfg = gateway_config(vendor.port, models=[{
+            "name": "test-model", "endpoint": "chat",
+            "resources": [{"resource": "res-A", "model": "vm-not-in-catalog"}]}])
+        gw = await make_gateway(cfg)
+
+        r = await _chat(client, gw, _body(max_tokens=200000))
+        assert r.status_code == 200, r.text
+        assert vendor.bodies_for("sk-A")[0]["max_tokens"] == 200000
+
+    async def test_default_injection_cannot_self_reject(self, vendor, make_gateway, client):
+        """缺省注入的那份本来就取自**这条资源自己**的规格 ⇒ 等值必须放行（R1-⑤ 的另一半）。"""
+        vendor.set("sk-A", Ok(content="r"))
+        cfg = gateway_config(vendor.port, models=[{
+            "name": "test-model", "endpoint": "chat",
+            "resources": [{"resource": "res-A", "model": "sensenova-6.8-flash-lite"}]}])
+        gw = await make_gateway(cfg)
+        await _chat(client, gw, _body())               # 调用方什么都不给
+        assert vendor.bodies_for("sk-A")[0]["max_tokens"] == 65536
+
+
+class TestCapacityAvoidReturnsItsReservation:
+    """🔴 INT-87 · 避开一条资源时必须**成对归还**它在选路段里做的两件事（复验轮 R5-①）。
+
+    `pick_and_acquire` 在同一个同步段里既 `in_flight += 1` **又** `reserve_quota()`（M5-3 的
+    租约设计，就是为了并发下不撞"剩余额度=1"）。承载判据只 `release()` 一半 ⇒
+    每避开一次就有一个号的额度被"已预留"永久吃掉：实测 `reserved` 1→2→3 后
+    该号谁也派不到，而错误码还指着 `ALL_OVER_CAPACITY` 说谎。
+    """
+
+    async def test_reserved_quota_returns_to_zero_after_avoids(self, vendor, make_gateway,
+                                                               client):
+        """额度**已知**时才算真的在预留（`reserve_quota` 在 `remaining is None` 时直接放行、
+        不留预留 ⇒ 不设额度这条判据是空的，第一版就是这么假绿过一遍）。
+        """
+        vendor.set("sk-A", Ok(content="small"))
+        vendor.set("sk-B", Ok(content="big"))
+        cfg = gateway_config(vendor.port, models=[{
+            "name": "test-model", "endpoint": "chat",
+            "resources": [{"resource": "res-A", "model": "sensenova-6.8-flash-lite"},
+                          {"resource": "res-B", "model": "glm-5.2"}]}])
+        gw = await make_gateway(cfg)
+        a = gw.runtime.resources.registry[("res-A", "sensenova-6.8-flash-lite")]
+        assert gw.runtime.resources.set_quota("res-A", 3) is True   # 余量已知 ⇒ 预留真的会记
+
+        for _ in range(3):
+            r = await _chat(client, gw, _body(max_tokens=100000))
+            assert r.status_code == 200, r.text
+        assert a.quota.reserved == 0, (
+            f"避开腿漏还额度预留：{a.quota!r}（三次避开吃掉三次预留 ⇒ 该号从此派不到活）")
+        assert a.in_flight == 0
+        assert len(vendor.bodies_for("sk-A")) == 0, "被预留吃满之前它就该一直被避开"
+        assert len(vendor.bodies_for("sk-B")) == 3
+
+        # 反证的后半句：这个号**没被弄坏** —— 换成它承载得了的请求，照样派到它
+        r = await _chat(client, gw, _body(max_tokens=128))
+        assert r.status_code == 200, r.text
+        assert len(vendor.bodies_for("sk-A")) == 1, (
+            f"避开过一次就被永久饿死（reserved 泄漏的直接后果）：quota={a.quota!r}")
+
+    async def test_max_completion_tokens_is_measured_too(self, vendor, make_gateway, client):
+        """🔴 复验轮 R5-②：`max_tokens` 键**显式为 null** 时，真正的上限在 `max_completion_tokens`
+        上 —— 旧写法 `body.get("max_tokens", body.get(...))` 读出 None ⇒ 该拦的不拦，
+        白烧一次额度吃 400（正是这条判据要消灭的形状）。
+        """
+        vendor.set("sk-A", Ok(content="small"))
+        vendor.set("sk-B", Ok(content="big"))
+        cfg = gateway_config(vendor.port, models=[{
+            "name": "test-model", "endpoint": "chat",
+            "resources": [{"resource": "res-A", "model": "sensenova-6.8-flash-lite"},
+                          {"resource": "res-B", "model": "glm-5.2"}]}])
+        gw = await make_gateway(cfg)
+        r = await _chat(client, gw, _body(max_tokens=None, max_completion_tokens=100000))
+        assert r.status_code == 200, r.text
+        assert vendor.bodies_for("sk-A") == [], "显式 null 把另一个键掩掉了 ⇒ 小上限的号照样被打"
+        assert vendor.bodies_for("sk-B")[0]["max_completion_tokens"] == 100000
+
+
+class TestEmptyPoolIsNotACapacityVerdict:
+    """🔴 INT-88 · 空池的终局原因（真机复验 R5-F-2 判死的**本轮引入的回归**）。
+
+    接线时把 `capacity_only` 初值写成 True，判据就成了"只要没被真试过就是装不下"。
+    池里一个候选都没有（号全停 / 条目全关）时第一轮 `pick_and_acquire` 直接返回 None，
+    错误码被写成 `ALL_OVER_CAPACITY`、文案是"所有候选资源的输出上限都小于本次请求所需"
+    ⇒ 用户照着去调 `max_tokens`，而真问题是"没把账号启用"。
+    R3 在同一形状下拿到的是 `NO_RESOURCE`（`docs/changes/reviews/q33-r3-live.md:96`），
+    所以这不是口径分歧而是回归 —— 也与这段注释自己那句"故障与容量是两件事"冲突。
+
+    三个形状分开钉（缺一个都允许退化回单个初值）：
+    ① 空池 ⇒ `NO_RESOURCE`（根本没拦过任何一条）；
+    ② 拦过一条、但至少真试过一条 ⇒ **不得**是 `ALL_OVER_CAPACITY`；
+    ③ 每条都被拦、一次都没真试过 ⇒ 这才是 `ALL_OVER_CAPACITY`。
+    """
+
+    async def test_empty_pool_is_no_resource_not_over_capacity(self, vendor, make_gateway,
+                                                                client):
+        cfg = gateway_config(vendor.port, models=[chat_res("A")])
+        cfg["resources"][0]["enabled"] = False          # 号停用 ⇒ 池空，与容量毫无关系
+        gw = await make_gateway(cfg)
+        r = await _chat(client, gw, _body())
+        assert r.status_code == 503, r.text
+        code = r.json()["error"]["code"]
+        assert code == "NO_RESOURCE", f"空池被谎报成容量问题：{code}"
+        assert "上限" not in r.json()["error"]["message"]
+
+    async def test_one_avoid_plus_one_real_try_is_not_over_capacity(self, vendor, make_gateway,
+                                                                     client):
+        """② 真试过的腿必须赢：一次 5xx 是故障，不许被说成"网关认为装不下"。"""
+        vendor.set("sk-A", Ok(content="small"))
+        vendor.set("sk-B", Err(status=500, message="upstream boom"))
+        cfg = gateway_config(vendor.port, models=[{
+            "name": "test-model", "endpoint": "chat",
+            "resources": [{"resource": "res-A", "model": "sensenova-6.8-flash-lite"},
+                          {"resource": "res-B", "model": "glm-5.2"}]}])
+        gw = await make_gateway(cfg)
+        # res-A 上限 65536 < 100000 ⇒ 被避开；res-B 承载得了 ⇒ 真打出去并失败
+        r = await _chat(client, gw, _body(max_tokens=100000))
+        assert r.status_code == 503, r.text
+        assert r.json()["error"]["code"] != "ALL_OVER_CAPACITY", r.text
+        assert len(vendor.bodies_for("sk-B")) >= 1, "真试过这条腿没成立 ⇒ ② 判据为空"
+        assert len(vendor.bodies_for("sk-A")) == 0
+
+    async def test_every_candidate_rejected_is_over_capacity(self, vendor, make_gateway,
+                                                              client):
+        """③ 的正向腿：拦过**且**从没真试过 ⇒ 这个码才是真的。"""
+        cfg = gateway_config(vendor.port, models=[{
+            "name": "test-model", "endpoint": "chat",
+            # 目录里这两条的上限是 65536 / 131072（`chat_res` 用的 `vm-A/vm-B` 不在目录里
+            # ⇒ "不知道 = 不拦"会直接放过，这条判据就变成空的）
+            "resources": [{"resource": "res-A", "model": "sensenova-6.8-flash-lite"},
+                          {"resource": "res-B", "model": "glm-5.2"}]}])
+        gw = await make_gateway(cfg)
+        r = await _chat(client, gw, _body(max_tokens=200000))   # 65536 / 131072 都装不下
+        assert r.status_code == 503, r.text
+        assert r.json()["error"]["code"] == "ALL_OVER_CAPACITY", r.text
+        assert vendor.requests == [], "一条都没该打出去"
+        # 🔴 文案本身也是判据（评审 R9-报备 R2-续：换回旧的过度断言时 48 条全绿）：
+        #    旧串"所有候选资源的输出上限都小于本次请求所需"在"拦过 + 其余号正好在冷却"这种
+        #    混合形状下替网关说了没证据的话，新串只断言它真的知道的那部分
+        msg = r.json()["error"]["message"]
+        assert "所有候选资源的输出上限" not in msg, msg
+        assert "已知装不下的候选已跳过" in msg, msg

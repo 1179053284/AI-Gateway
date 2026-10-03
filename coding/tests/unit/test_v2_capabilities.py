@@ -24,11 +24,13 @@ from model_gateway.enums.matcher import EnumEntry, EnumPool
 
 
 class _Model:
-    """最小 SystemModel 替身（只需 name + caps_overrides）。"""
+    """最小 SystemModel 替身（name + caps_overrides + endpoint）。"""
 
-    def __init__(self, name: str, caps_overrides: dict | None = None):
+    def __init__(self, name: str, caps_overrides: dict | None = None,
+                 endpoint: str = "chat"):
         self.name = name
         self.caps_overrides = caps_overrides or {}
+        self.endpoint = endpoint
 
 
 def _pool(*entries: EnumEntry) -> EnumPool:
@@ -58,13 +60,36 @@ def test_caps_fields_map_from_enum_entry():
 
 
 def test_custom_model_falls_back_without_crash():
-    """自定义系统模型（不在内置目录）→ 最小字段集，**不崩**（§12.3 兜底）。"""
+    """自定义系统模型（不在内置目录）→ 最小字段集，**不崩**（§12.3 兜底）。
+
+    🔴 Q33 复验轮 R3-F-3 改判的三个能力位：`null` = **不知道**，不再印 `false`。
+    `false` 是"这个模型明确不能干这件事"的 affirmative 承诺，而我们并没有这个证据；
+    工具侧 `!== true` 对 `null` 与 `false` 的处理**完全相同**（照旧保守 ⇒ 零回归），
+    差别只在我们不再说谎、且管理端能把它渲染成"未知"。
+    """
     caps = build_model_caps(_Model("my-own-model"), _pool())
 
     assert caps["name"] == "my-own-model"
     assert caps["vendor"] == ""
     assert caps["maxInputTokens"] is None
-    assert caps["supportsToolCall"] is False
+    assert caps["supportsToolCall"] is None        # 不知道 ⇒ null（不是 false）
+    assert caps["supportsImages"] is None
+    assert caps["supportsReasoning"] is None
+
+
+def test_images_endpoint_is_the_one_place_false_is_a_claim():
+    """`supportsToolCall` 在非 chat 端点上的 `false` 是**有依据的否**（图像端点没有 tools 参数，
+    与 `EnumEntry.__post_init__` 同一条不变量），其余能力位仍只能是"不知道"。
+
+    反向对照：同一模型换成 chat 端点 ⇒ 三个能力位必须回到 `null`，
+    防止下一轮把"保守"重新实现成"一律 false"（那会把三态又压回两态）。
+    """
+    img = build_model_caps(_Model("my-own-model", endpoint="images"), _pool())
+    assert img["supportsToolCall"] is False          # 有依据的否
+    assert img["supportsImages"] is None             # 图像输出能力 ≠ tools 参数，仍是不知道
+    assert img["supportsReasoning"] is None
+    chat = build_model_caps(_Model("my-own-model"), _pool())
+    assert chat["supportsToolCall"] is None
 
 
 def test_missing_directory_attr_emits_null_not_fabricated():

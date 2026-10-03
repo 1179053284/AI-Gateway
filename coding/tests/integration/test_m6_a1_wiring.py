@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import threading
 import time
 from pathlib import Path
 
@@ -121,8 +122,23 @@ async def test_a1_wiring_disable_api_does_not_block_loop_and_revert_proves_it(
     async def _unwired(product, name, credentials, meta, *, root=None, via="login"):
         return store.commit_login(product, name, credentials, meta, root=root, via=via)
 
+    # 🔴 Q33-①② 之后启停路径的**第一个等锁写者**不再是 `commit_login_async`：
+    # 「一个开关一个主人」把派生资源位写在 meta 之前（先资源后 meta、meta 失败回滚），
+    # 所以只撤 `commit_login_async` 这一条桩，写请求会先死在前一步的工作线程等锁里、
+    # 心跳照常毫秒级 ⇒ 红证打不响（本仓纪律：红证不响 = 判据失效，必须随设计推进而不是放宽阈值）。
+    # 改法 = 两条 async 入口**一起**换回"协程里直调同步版"，这才是修复前的真实生产形态。
+    from model_gateway.accounts import materialize as mat_mod
+
+    async def _unwired_resource(product, name, enabled, *, config_path=None):
+        return mat_mod.set_resource_enabled(product, name, enabled, config_path=config_path)
+
+    async def _unwired_ensure(product, name, *, config_path=None):
+        return mat_mod.ensure_resource(product, name, config_path=config_path)
+
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(store, "commit_login_async", _unwired)
+        mp.setattr(mat_mod, "set_resource_enabled_async", _unwired_resource, raising=False)
+        mp.setattr(mat_mod, "ensure_resource_async", _unwired_ensure, raising=False)
         p2 = await _probe(client, gw, "/admin/api/accounts/buddy/acc-w2/disable")
     assert p2["write_s"] >= 0.8
     assert p2["write"].status_code == 500, p2["write"].text
@@ -186,3 +202,74 @@ def test_async_service_paths_are_wired_to_the_await_forms():
     for tree, attr, want in cases:
         got = _store_calls(tree, attr)
         assert got == want, f"store.{attr} 调用形态漂移：期望 {want}（await 数, 未 await 数），实际 {got}"
+
+
+@pytest.mark.asyncio
+async def test_mappings_write_offloads_the_blocking_save(vendor, make_gateway, client, monkeypatch):
+    """🔴 A-1 同族第二条（债务 Q33-债3 / 复验轮 R4-⑦）：映射写面阶段 3 也必须在工作线程里。
+
+    与启停那条同形，但**阻塞源不同**：不是跨进程文件锁，而是本进程的**配置写锁**
+    （`materialize.order_lock()`）+ 读盘 + `save_config` 的 fsync。三态闭环：
+    ① 接线（写请求等满锁 ≥0.8s，心跳 <50ms）→ ② 撤接线（阶段 3 在循环线程里同步跑完，
+    心跳 ≥500ms）→ ③ 恢复（<50ms）。阈值与 `test_a1_wiring_*` 完全同一把尺，**没有放宽**。
+
+    ② 的桩 = 把 `asyncio.to_thread` 换成"在当前线程直接跑完"，即本轮修复前的生产形态；
+    这一替换会让同窗口内其它 `to_thread` 也变同步（只会让红更强，不会把红掩掉）。
+    """
+    from model_gateway.api import admin_accounts as aa
+
+    gw = await make_gateway(_cfg(vendor.port))
+    _seed("buddy", "map-loop-1")
+    body = {"product": "buddy", "items": [{"model": "vm-x", "target": "glm-5.3"}]}
+    url = f"{gw.base_url}/admin/api/accounts/mappings"
+    hb_url = f"{gw.base_url}/admin/api/accounts/capabilities"
+
+    def _held_lock() -> threading.Lock:
+        lk = threading.Lock()
+        lk.acquire()
+        threading.Timer(1.0, lk.release).start()
+        return lk
+
+    async def _probe() -> tuple[float, float, int]:
+        """与文件头那条 `_probe` **同一计时形状**：起点取在创建任务之前，
+        终点取在各任务**自己完成**的那一刻（在任务内部算）。
+
+        🔴 两个错法都实测踩过（M21 那一轮）：
+        ① 起点写在任务体内 ⇒ 循环被按住时心跳任务还没开始跑，起点也跟着晚 ⇒ 假绿 9ms；
+        ② 终点写在 `asyncio.gather` 之后 ⇒ 量到的是两者里**更慢**的那个（写要等满锁 1s）
+          ⇒ 接线态也"红"，判据反向失效。
+        """
+        loop = asyncio.get_running_loop()
+
+        async def _one(coro, t0: float) -> tuple[float, httpx.Response]:
+            resp = await coro
+            return time.monotonic() - t0, resp
+
+        t_write = time.monotonic()
+        write = loop.create_task(_one(client.post(url, json=body), t_write))
+        t_hb = time.monotonic()
+        heartbeat = loop.create_task(_one(client.get(hb_url), t_hb))
+        (write_s, write_resp), (hb_s, hb_resp) = await asyncio.gather(write, heartbeat)
+        assert hb_resp.status_code == 200, hb_resp.text
+        return write_s, hb_s, write_resp.status_code
+
+    monkeypatch.setattr(aa, "materialize_order_lock", _held_lock)
+    w1, h1, code1 = await _probe()
+    assert code1 == 200
+    assert w1 >= 0.8, f"写请求没等满配置写锁（{w1:.2f}s）⇒ 判据前提不成立"
+    assert h1 < 0.05, f"接线后心跳被写请求拖住（{h1 * 1000:.0f}ms ≥ 50ms）"
+    print(f"[映射写面①绿] 写 {w1:.3f}s（等满锁）/ 心跳 {h1 * 1000:.0f}ms（<50ms）")
+
+    async def _inline(fn, *args, **kwargs):
+        return fn(*args, **kwargs)                  # 未接线形态：阻塞动作留在事件循环线程
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(aa.asyncio, "to_thread", _inline)
+        w2, h2, code2 = await _probe()
+    assert code2 == 200 and w2 >= 0.8
+    assert h2 >= 0.5, f"撤接线后心跳未被拖住（{h2 * 1000:.0f}ms < 500ms）⇒ 红证不成立"
+    print(f"[映射写面②红] 写 {w2:.3f}s / 心跳 {h2 * 1000:.0f}ms（≥500ms）")
+
+    w3, h3, code3 = await _probe()                  # ③ 恢复：桩随 context 退出撤销
+    assert code3 == 200 and h3 < 0.05, f"恢复后心跳仍被阻塞（{h3 * 1000:.0f}ms）"
+    print(f"[映射写面③绿] 写 {w3:.3f}s / 心跳 {h3 * 1000:.0f}ms（<50ms）")

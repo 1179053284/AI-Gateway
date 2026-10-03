@@ -13,6 +13,8 @@ import argparse
 import sys
 from pathlib import Path
 
+from model_gateway.accounts import catalog_cache
+from model_gateway.core import model_spec
 from model_gateway.core.capabilities import build_caps_block, build_model_caps
 from model_gateway.core import local_admin
 from model_gateway.core.resources import (
@@ -43,10 +45,18 @@ def build_cli_models(config, enum_pool, dialects, base_url: str, api_key: str,
     if servable is None:
         servable = servable_models(config)
     out: list[dict] = []
+    spec_cache: dict = {}     # 同一次 CLI 里按产品复用的目录缓存读（零网络）
     for m in config.models:
         if not m.enabled or m.name not in servable:
             continue
-        caps_fields = build_model_caps(m, enum_pool)
+        # 🔴 R5-3：同一个 spec 必须**同时**喂给能力位与 `caps` 块。旧写法只给 `build_model_caps`，
+        #    `build_caps_block` 漏传 ⇒ 账号独有模型（不在内置枚举池、档位只在按号目录缓存里）
+        #    写进工具配置文件的 `thinkingLevelMap` 七个键全 null —— 工具侧推理档位变哑，
+        #    正是本轮 R3-F-2 刚消灭的那个形状在**另一条出口**上复活。与 `/v1/models`
+        #    （`openai_compat` 两处都传 spec）同一条判据，不得各说各话。
+        spec = model_spec.resolve(config, m, enum_pool,
+                                  reader=catalog_cache.read_cache, cache=spec_cache)
+        caps_fields = build_model_caps(m, enum_pool, dialects, spec=spec)
         out.append({
             "id": f"custom-local:{m.name}",   # 工具侧前缀（网关入站会剥离，Q25-⑦）
             "name": f"Model-Gateway · {m.name}",
@@ -60,7 +70,7 @@ def build_cli_models(config, enum_pool, dialects, base_url: str, api_key: str,
             "maxInputTokens": caps_fields["maxInputTokens"],
             "maxOutputTokens": caps_fields["maxOutputTokens"],
             "tags": ["custom"],
-            "caps": build_caps_block(m, enum_pool, dialects),
+            "caps": build_caps_block(m, enum_pool, dialects, spec=spec),
         })
     return out
 

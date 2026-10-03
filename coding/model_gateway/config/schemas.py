@@ -223,6 +223,41 @@ class ModelResource(BaseModel):
     enabled: bool = Field(default=True, strict=True)
 
 
+class ProductModelMapping(BaseModel):
+    """**产品维度**的模型映射位（Q33-①）：某产品的某厂商模型 → 哪个网关系统模型，以及是否进池。
+
+    🔴 为什么需要它（而不是继续用 `ModelResource.enabled` 当产品开关）：
+    账号资源是「一个产品 × N 个账号」，产品维度的开关若靠往每个账号的映射条目上刷一遍
+    来表达，就必然出现两件事：① 停用的账号被扇出集排除，产品开关对它的映射**既关不掉也打不开**
+    （写面只遍历已启用账号）；② 聚合只能写成「组内至少一条开着就算开着」，
+    于是「产品关 + 个别号手动开着」这种状态不可表达。本字段是**唯一真相**，
+    `ModelResource` 上的条目只负责「这个账号有没有这条映射」的**存在性**。
+
+    两级开关的判定式（Q33-①②，`core/resources.py` 落地）::
+
+        可调用 = 系统模型开
+               ∧ 产品位开（本字段）
+               ∧ 号开（`Resource.enabled`，由账号页那颗开关同步驱动）
+
+    🔴 第四条件「该号目录确实有此模型」**已接**（债务 Q33-债6-②）：判据在
+    `accounts/catalog_cache.account_lacks()` —— 只认**这个号自己的**、
+    **未过期**的目录缓存（`_catalog_cache.<号>-<短哈希>.json`，只在"取的就是这个号的凭据"那两条腿上落盘）。
+    为什么必须按号：产品级那份只说得出"这个产品有这些模型"，而权益是按号算的（同产品不同号
+    套餐可以不同），拿产品级去筛号会**误杀**权益窄的号、放进权益宽的号 —— 两种都是假判据。
+    三种"没有证据"一律**不拦**（没取过 / 超 TTL / 读不动）：不知道就照建条目，由调用期上游答复
+    告诉我们，与 §12「消灭无报错的失败」同一条立意 —— 静默否决比一次可见的 404 更坏。
+    拦下时逐号如实报进写面回执的 `skipped`（绝不静默跳过）。
+
+    旧配置零迁移：本列表为空 ⇒ 产品资源回落到条目 `ModelResource.enabled`（既有语义不变）。
+    strict 同其余开关（非 bool 拒绝，不被宽松转换）。
+    """
+
+    product: str = Field(min_length=1)        # 产品 id（`accounts/registry.py` 在册）
+    model: str = Field(min_length=1)          # 厂商侧模型 ID（该产品目录里的 id）
+    system_model: str = Field(min_length=1)   # 网关系统模型 name
+    enabled: bool = Field(default=True, strict=True)
+
+
 # 已知参数键的取值范围（Q24）：模块级常量（类内带注解会被 Pydantic 当私有属性）。
 # 未知键不校验直接放行——开放扩展，错误由厂商 400 兜底。
 PARAM_RANGES: dict[str, tuple[float, float]] = {
@@ -302,6 +337,9 @@ class AppConfig(BaseModel):
     error_rules: list[ErrorRule] = Field(default_factory=list)
     resources: list[Resource] = Field(default_factory=list)
     models: list[SystemModel] = Field(default_factory=list)
+    #: 🔴 产品维度的模型映射位（Q33-①）：账号侧「产品 × 厂商模型」的唯一真相。
+    #: 空 = 旧配置 ⇒ 产品资源回落到条目 `ModelResource.enabled`（零迁移）。
+    product_models: list[ProductModelMapping] = Field(default_factory=list)
     pricing: list[Pricing] = Field(default_factory=list)
 
     # 软校验警告（不阻塞加载；排除序列化，不写回文件）
@@ -329,12 +367,60 @@ class AppConfig(BaseModel):
         for dup in sorted({x for x in model_names if model_names.count(x) > 1}):
             raise ValueError(f"models[].name 重复：'{dup}'")
 
-        # —— 引用完整性（资源必须存在）——
+        # —— 产品维度映射位（Q33-①）：唯一性 + 目标可追溯 ——
+        # 一个 (产品, 厂商模型) 只允许有一个真相位：两条位会让「产品开关」重新变成
+        # 一个需要聚合的状态（聚合语义一旦不一致，就又是那个「既关不掉也打不开」的洞）。
+        #
+        # 🔴 坏位**只丢不炸**（Q33 评审 R2-④ 判死后的修正）：原先用 `raise` 表达"位无效"，
+        #    后果是**整份配置加载失败** ⇒ 网关把所有模型一起停服，而界面上没有任何自救入口
+        #    （删掉一个系统模型就能把用户推到这一步 = 灾难级可用性）。有效/无效的把关属于
+        #    **写面**的职责（`POST /admin/api/accounts/mappings` 在动盘前就拒，回执 400 可执行），
+        #    读面的职责是"能起就起、坏的那条丢掉并如实告警"。
+        pm_seen: dict[tuple[str, str], int] = {}
+        keep_bits: list[ProductModelMapping] = []
+        for i, pm in enumerate(self.product_models):
+            key = (pm.product, pm.model)
+            if key in pm_seen:
+                w.append(f"product_models[{i}] 重复：'{pm.product}/{pm.model}'"
+                         f"（与 product_models[{pm_seen[key]}] 同键）—— 已忽略本条，"
+                         "同一产品同一厂商模型只能有一个映射位")
+                continue
+            if pm.system_model not in set(model_names):
+                w.append(f"product_models[{i}]('{pm.product}/{pm.model}').system_model "
+                         f"'{pm.system_model}' 不是 models[] 里在册的系统模型 —— 已忽略本条"
+                         "（该模型可能已被删除；请到「接入账号资源」页的模型映射弹窗重新指定目标）")
+                continue
+            pm_seen[key] = i
+            keep_bits.append(pm)
+        self.product_models = keep_bits
+
+        # —— 引用完整性（资源必须存在）+ 🔴 **同一系统模型内**的组合唯一 ——
+        # 后果（评审 R1-§二实测）：同一条 `models[].resources[]` 里出现两次
+        # `(resource, model)` ⇒ 生效集窗口被算成 `[a, a]`，承诺 x=2 实际只有 1 条能承接，
+        # 池宽与统计口径一起虚增。
+        # 🔴 作用域只在**本模型内**：**跨系统模型**挂同一组合是既有设计（一条上游模型起两个
+        #    网关名，运行态按 `(rid, vendor_model)` 共享冷却 —— 判据
+        #    `tests/unit/test_scheduler.py::TestGlobalResourceState::
+        #    test_cooldown_shared_across_system_models` 钉着）；在跨节校验里把它丢掉，
+        #    等于把"别名"这条路堵死，用户看到的是"无可用资源"。
+        # 处置与产品位同一条纪律：**留首条、丢重复、如实告警**（不抛 —— 抛 = 整份配置加载失败，
+        # 一条坏映射不该把全网关停服）。
         for mi, m in enumerate(self.models):
+            combo_seen: dict[tuple[str, str], int] = {}
+            keep_refs: list[ModelResource] = []
             for ri, r in enumerate(m.resources):
                 loc = f"models[{mi}]('{m.name}').resources[{ri}]"
                 if r.resource not in resource_ids:
                     raise ValueError(f"{loc}: 引用不存在的 resource '{r.resource}'")
+                key = (r.resource, r.model)
+                if key in combo_seen:
+                    w.append(f"{loc}: 同一系统模型 '{m.name}' 里 (resource '{r.resource}', "
+                             f"model '{r.model}') 出现两次（首条在 resources[{combo_seen[key]}]）"
+                             " —— 已忽略本条：重复条目会让生效集把同一条算两遍，"
+                             "承诺的 x 条并行实际能承接的更少")
+                    continue
+                combo_seen[key] = ri
+                keep_refs.append(r)
                 # images 资源配推理默认 → 警告并忽略（§4.7 ⑥，Q15）
                 if m.endpoint == "images" and r.reasoning is not None:
                     w.append(
@@ -342,5 +428,38 @@ class AppConfig(BaseModel):
                         "（Q15：推理参数仅 chat 类资源有效）"
                     )
                     r.reasoning = None
+            m.resources = keep_refs
 
         return self
+
+    # —— 映射开关的唯一取数入口（Q33-①）——
+
+    def product_mapping(self, product: str, model: str) -> "ProductModelMapping | None":
+        """按 `(产品, 厂商模型)` 取产品位；无该产品位返回 `None`（= 旧配置回落路径）。"""
+        if not product:
+            return None
+        for pm in self.product_models:
+            if pm.product == product and pm.model == model:
+                return pm
+        return None
+
+    def mapping_enabled(self, resource: "Resource", entry: "ModelResource",
+                        system_model: str) -> bool:
+        """这条「资源 × 厂商模型 → 系统模型」映射**是否参与调度与对外声明**（唯一判据）。
+
+        - **厂商侧资源**（`product` 空）⇒ 条目位 `entry.enabled` 说了算（既有语义，零变化）；
+        - **账号侧资源** ⇒ 产品位说了算，四种情形：
+          · 有位、开关开、目标就是本系统模型 → 进；
+          · 有位、开关关 → 不进（该产品**全部账号**一起退出，含已停用的号——
+            这正是产品位独立存一份的理由：号开关是另一条正交轴，不能拿来当映射存在性的前置，
+            否则「产品开关对停用号的映射既关不掉也打不开」那个洞必然复发）；
+          · 有位、但目标指向别的系统模型 → 不进（手改 YAML 造成的不一致，
+            由 `rebuild` 侧出告警，不静默放行到错误的池里）；
+          · **无位**（旧配置零迁移）→ 回落到条目位 `entry.enabled`。
+        """
+        if not resource.product:
+            return entry.enabled
+        pm = self.product_mapping(resource.product, entry.model)
+        if pm is None:
+            return entry.enabled
+        return pm.enabled and pm.system_model == system_model

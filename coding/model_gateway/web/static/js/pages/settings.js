@@ -51,7 +51,7 @@ function execSection() {
     </div>
     <div class="sec-head sub"><span class="t">调度（x / y / m）</span></div>
     <div class="form-grid2">
-      ${num("x · 并发溢出生效集", "scheduling", "max_active_per_model", s.max_active_per_model, 1)}
+      ${num("x · 并行可用资源上限（两类接入合计）", "scheduling", "max_active_per_model", s.max_active_per_model, 1)}
       ${num("y · 连续失败阈值", "scheduling", "fail_threshold", s.fail_threshold, 1)}
       ${num("m · 单资源重试上限", "scheduling", "retry_per_request", s.retry_per_request, 0)}
       ${num("重试退避（秒，0 = 立即）", "scheduling", "retry_backoff_seconds", s.retry_backoff_seconds, 0)}

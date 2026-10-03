@@ -508,8 +508,14 @@ def test_recovery_clock_is_rendered_from_the_wall_clock_not_the_manager_clock():
 
     row = mgr.snapshot_by_resource(cfg)[0]
     rem_s = row["cooldown_remaining_ms"] / 1000
-    want = time.strftime("%H:%M", time.localtime(time.time() + rem_s))
-    assert row["last_error"].endswith(f"，至 {want}"), (row["last_error"], want)
+    target = time.time() + rem_s
+    want = time.strftime("%H:%M", time.localtime(target))
+    # 🔴 跨午夜那一档必须按**渲染规则**算，不能只比 `%H:%M`（本轮复跑在 23:3x 抓到）：
+    #    Q28-⑦① 定版「同日 `至 HH:MM` / 跨日 `至 明日 HH:MM`」，而旧写法在 23:30~00:00
+    #    这半小时窗口里必然红 —— 1800s 冷却跨过午夜，界面写「至 明日 00:0x」，
+    #    期望串却只算出「至 00:0x」。判据跟着被测口径走才算钉住，否则每天夜里假红一次。
+    day_prefix = "明日 " if time.localtime(target).tm_mday != time.localtime().tm_mday else ""
+    assert row["last_error"].endswith(f"，至 {day_prefix}{want}"), (row["last_error"], want)
     # 反向：单调钟的数值直接格式化会是 1970 年的某个清晨 —— 绝不能出现在界面上
     bogus = time.strftime("%H:%M", time.localtime(st.cooldown_until))
     assert not row["last_error"].endswith(bogus), row["last_error"]
@@ -541,8 +547,12 @@ def test_the_two_columns_never_disagree_about_the_recovery_instant():
 
     row = mgr.snapshot_by_resource(cfg)[0]
     assert row["status"] == "cooldown" and row["cooldown_remaining_ms"] > 1_700_000, row
-    want = time.strftime("%H:%M", time.localtime(time.time() + row["cooldown_remaining_ms"] / 1000))
-    assert row["last_error"].endswith(f"，至 {want}"), row["last_error"]
+    target = time.time() + row["cooldown_remaining_ms"] / 1000
+    want = time.strftime("%H:%M", time.localtime(target))
+    # 🔴 同上一条：跨午夜那半小时里渲染是「至 明日 HH:MM」，期望串必须跟渲染规则一起算，
+    #    否则这个判据每天夜里假红一次（本轮 23:4x 复跑抓到，与本用例的立意无关）。
+    day_prefix = "明日 " if time.localtime(target).tm_mday != time.localtime().tm_mday else ""
+    assert row["last_error"].endswith(f"，至 {day_prefix}{want}"), row["last_error"]
     assert "60s" not in row["last_error"], row["last_error"]      # 不得用短冷却的钟点
 
 

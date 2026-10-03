@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import logging
 import inspect
 import json
 import time
@@ -28,11 +29,15 @@ from model_gateway.core.ir import (
     IRRequest,
     _iter_deltas,
     apply_model_params,
+    apply_spec_defaults,
     chunk_is_content,
     inject_reasoning_into_body,
     merge_reasoning,
 )
 from model_gateway.stats.aggregate import estimate_usage
+
+logger = logging.getLogger("model_gateway")
+
 
 ERROR_EVENT = "_error"  # 流内错误标记（committed 后的中途失败，编码层转 error 帧）
 
@@ -81,6 +86,7 @@ class GatewayError(Exception):
                 "BUDGET_EXHAUSTED": "请求总预算耗尽",
                 "RETRY_EXHAUSTED": "重试额度耗尽",
                 "NO_RESOURCE": "无可用资源",
+                "ALL_OVER_CAPACITY": "没有可用资源承载得了本次请求所需的输出上限（已知装不下的候选已跳过，且当时没有其余可用候选）",
             }.get(self.exhausted_reason, self.exhausted_reason)
             parts.append(f"原因：{reason_txt}")
         if self.attempts:
@@ -235,7 +241,16 @@ class Scheduler:
         body["model"] = resource.vendor_model
         if ir.endpoint == "chat":
             apply_model_params(body, self.runtime.model_params.get(ir.system_model))
-        merged = merge_reasoning(ir.reasoning, self.runtime.resource_reasoning.get(resource.resource_id))
+            # 🔴 Q33-④：调用方与网关设置都没写输出上限时，按统一规格的**最大输出**注入。
+            # 取的是**这条资源自己**的那份规格（`resource_specs`），不是模型级的池内最大
+            # （R1-⑤：拿池内最大去请求一个上限更小的号 = 我主动制造 400）；
+            # 规格里没有这个数就什么都不注入，继续走厂商内置默认（不编数）。
+            apply_spec_defaults(body, getattr(self.runtime, "resource_specs", {})
+                                .get((resource.rid, resource.vendor_model)))
+        # 🔴 查表带**系统模型**这一维（评审 R9-B-1'）：推理默认住在条目上
+        #    （`(系统模型, 资源, 厂商模型)`），别名时两个系统模型各填各的，少一维就会后写覆盖。
+        merged = merge_reasoning(ir.reasoning, self.runtime.resource_reasoning.get(
+            (ir.system_model, resource.rid, resource.vendor_model)))
         # 网关层档位兜底（v2.0 §13.2）：**只降不升**，就近取值。
         # 🔴 仅在"请求的档位不在该模型支持列表内"时才动 —— 工具已 clamp（值本身受支持）
         #    时原样透传，**不做二次 clamp**（§13.2 明确要求）。规范外档位原样保留。
@@ -334,6 +349,41 @@ class Scheduler:
         finally:
             self._log(ctx, meta)
 
+    def _capacity_reject(self, ir: IRRequest, resource) -> str | None:
+        """已知这条资源**承载不了**本次请求 ⇒ 返回可读原因（选路换下一条），否则 `None`。
+
+        🔴 债务 Q33-债6-② 的落地口径（tech §22.5-9 第①条）——只用"我们真的知道的数"：
+        - 只看 chat（图像/嵌入没有输出上限这回事）；
+        - 请求里最终会带上的输出上限（调用方给的 `max_tokens` / `max_completion_tokens`，
+          或网关设置 `params` 注入的）才是比较对象；
+        - 该资源规格 `max_output` 为 `None`（目录没说、缓存也没有）⇒ **不知道 = 不拦**，
+          照发。宁可吃上游一个可见的 400，也不凭空否决一条可能可用的资源 ——
+          与 §12「消灭无报错的失败」同一条立意；
+        - 缺省注入的那一份本来就取自**这条资源自己**的规格（R1-⑤），等值 ⇒ 不会自我否决。
+        拦下时**不记失败、不计入 y、不冷却**：这不是上游故障，是网关已知的容量事实。
+        """
+        if ir.endpoint != "chat":
+            return None
+        body = dict(ir.body or {})
+        apply_model_params(body, self.runtime.model_params.get(ir.system_model))
+        # 🔴 复验轮 R5-2：`body.get("max_tokens", body.get(...))` 的默认值只在**键缺失**时生效，
+        #    而工具/客户端会显式发 `"max_tokens": null` —— 那种情况下真正的上限在
+        #    `max_completion_tokens` 上，旧写法读出 None ⇒ 该拦的不拦，白烧一次额度吃 400。
+        asked = next((body.get(k) for k in ("max_tokens", "max_completion_tokens")
+                      if body.get(k) is not None), None)
+        if isinstance(asked, bool) or not isinstance(asked, int) or asked <= 0:
+            return None
+        spec = getattr(self.runtime, "resource_specs", {}).get(
+            (resource.rid, resource.vendor_model))
+        cap = getattr(spec, "max_output", None) if spec is not None else None
+        if cap is None or asked <= cap:
+            return None
+        # 🔴 用界面同一把尺的名字（`label/厂商模型`），不用裸 `res-xxxxxxxx`
+        #    （评审 R8-报备 R-9：同一条链路上日志前缀、`GatewayError` 的"已尝试：资源B/glm-5.2×1"、
+        #    请求日志与总览页都是 `resource_id_str`，这里掺裸 id 会让用户读到自己没起过的串）
+        return (f"{resource.resource_id_str} 的最大输出上限 {cap} < 本次请求的输出上限 {asked}"
+                f" ⇒ 承载不了，已换下一条（不记失败、不计入 y）")
+
     async def _execute_inner(self, ir: IRRequest, ctx: CallCtx,
                              call: Callable, meta: ExecMeta,
                              on_success: Callable[[dict, ExecMeta], None] | None = None) -> dict:
@@ -342,6 +392,14 @@ class Scheduler:
         m = snap.scheduling.retry_per_request  # 全局唯一（Q18-③）
         y = snap.scheduling.fail_threshold
         tried: set[tuple[str, str]] = set()
+        # 🔴 终局原因是 `ALL_OVER_CAPACITY` 的**唯一**形状：真的拦过至少一条（rejected）
+        #    且从头到尾一次真实尝试都没发生（not attempted）。真机复验 R5-F-2 判死的是
+        #    "初值 True"那种写法 —— 池空 / 产品位全关时第一轮 `pick_and_acquire` 直接返回
+        #    `None`，一个布尔初值就把「没号可用」谎报成「所有号都装不下」，用户会照文案去
+        #    调 `max_tokens` 而不是去把账号启用；这同时违反本节自己那句"故障与容量是两件事"。
+        #    ⇒ 两个事实分开记，不靠一个初值替两者代言。
+        capacity_rejected = False
+        attempted = False
         exits: list[str] = []
         exhausted: str | None = None
         terminal = False  # 终止外层循环（预算耗尽 / no_failover 的 m 耗尽）
@@ -364,9 +422,31 @@ class Scheduler:
                                   pending_switch[1], pending_switch[2], pending_switch[3])
                 pending_switch = None
             if resource is None:
-                exhausted = exhausted or "NO_RESOURCE"
+                exhausted = exhausted or (
+                    "ALL_OVER_CAPACITY" if (capacity_rejected and not attempted)
+                    else "NO_RESOURCE")
                 break
             tried.add(resource.resource_id)
+            # 🔴 出站承载校验（债务 Q33-债6-②，tech §22.5-9 第①条）：已知这条资源装不下
+            #    本次请求 ⇒ 立刻归还、换下一条，**不产生任何失败记账**（一次成功的避开
+            #    不该被算成一次故障，否则 y 会把用户刚配好的大窗口请求越用越窄地冷却掉）。
+            reject = self._capacity_reject(ir, resource)
+            if reject is not None:
+                # 🔴 R5-1：`pick_and_acquire` 在同一个同步段里既 +1 在途**又预留了额度**
+                #    （`reserve_quota`），所以避开这条腿必须成对归还两样东西。少归还预留 =
+                #    每避开一次就有一个号被"已预留"吃满，最终谁也不派得到活，
+                #    而界面还指着 `ALL_OVER_CAPACITY` 说谎（实测 reserved 1→2→3、hits 恒 0）。
+                # 🔴 R5-4：**不往 `exits` 里塞中文说明** —— 那个列表是机器码集合
+                #    （`_exit_status_code` 用 `all(e == "AUTH"/"QUOTA"/"NOT_FOUND")` 定 401/429/404），
+                #    混进人类文案会让任何一次避开都退化成 503，把客户端的退避策略带偏。
+                #    原因进日志与终局错误码，不进机器码集合。
+                self.runtime.resources.release_quota(resource)
+                self.runtime.resources.release(resource)
+                logger.info("[选路] %s/%s：%s", ctx.system_model,
+                            resource.resource_id_str, reject)
+                capacity_rejected = True
+                continue
+            attempted = True
             rec = _ResourceAttempt(resource.resource_id_str)
             meta.attempts.append(rec)
             quota_retries = 0
@@ -548,6 +628,14 @@ class Scheduler:
         y = snap.scheduling.fail_threshold
         meta = ExecMeta()
         tried: set[tuple[str, str]] = set()
+        # 🔴 终局原因是 `ALL_OVER_CAPACITY` 的**唯一**形状：真的拦过至少一条（rejected）
+        #    且从头到尾一次真实尝试都没发生（not attempted）。真机复验 R5-F-2 判死的是
+        #    "初值 True"那种写法 —— 池空 / 产品位全关时第一轮 `pick_and_acquire` 直接返回
+        #    `None`，一个布尔初值就把「没号可用」谎报成「所有号都装不下」，用户会照文案去
+        #    调 `max_tokens` 而不是去把账号启用；这同时违反本节自己那句"故障与容量是两件事"。
+        #    ⇒ 两个事实分开记，不靠一个初值替两者代言。
+        capacity_rejected = False
+        attempted = False
         exits: list[str] = []
         exhausted: str | None = None
         terminal = False  # 终止外层循环（预算耗尽 / no_failover 的 m 耗尽）
@@ -573,9 +661,23 @@ class Scheduler:
                                       pending_switch[1], pending_switch[2], pending_switch[3])
                     pending_switch = None
                 if resource is None:
-                    exhausted = exhausted or "NO_RESOURCE"
+                    exhausted = exhausted or (
+                        "ALL_OVER_CAPACITY" if (capacity_rejected and not attempted)
+                        else "NO_RESOURCE")
                     break
                 tried.add(resource.resource_id)
+                # 🔴 承载校验与**非流那条同一条判据**（`_capacity_reject`），不在此重复
+                #    规则；流式侧必须在**任何字节提交前**避开，否则失败无法回退。
+                reject = self._capacity_reject(ir, resource)
+                if reject is not None:
+                    # 与上面非流那条**同一组归还动作**（额度预留 + 在途），且不写进机器码集合。
+                    self.runtime.resources.release_quota(resource)
+                    self.runtime.resources.release(resource)
+                    logger.info("[选路·流式] %s/%s：%s", ctx.system_model,
+                                resource.resource_id_str, reject)
+                    capacity_rejected = True
+                    continue
+                attempted = True
                 rec = _ResourceAttempt(resource.resource_id_str)
                 meta.attempts.append(rec)
                 quota_retries = 0

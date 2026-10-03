@@ -27,6 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from model_gateway import __version__
+from model_gateway.accounts import catalog_cache
 from model_gateway.adapters import build_adapter
 from model_gateway.api.admin import router as admin_router
 from model_gateway.api.admin_accounts import cron_enabled_of
@@ -34,8 +35,10 @@ from model_gateway.api.anthropic import router as anthropic_router
 from model_gateway.api.auth import AuthMiddleware
 from model_gateway.api.openai_compat import router as openai_router
 from model_gateway.config.loader import ConfigError, load_config
+from model_gateway.core.resources import display_label
 from model_gateway.config.schemas import AppConfig
 from model_gateway.core.cancel import CancelRegistry
+from model_gateway.core import model_spec
 from model_gateway.core.dialects import DialectTable
 from model_gateway.core import paths
 from model_gateway.core.errors import ErrorClassifier, register_secret_values
@@ -329,8 +332,14 @@ class Runtime:
         #    事实源（`ops.runner.unread_failures`）—— 进程内计数器既看不见 CLI 进程写的
         #    失败，又会在网关重启时把"还没人看过"的记录清零（验收 S-5）。
         self.key_values: dict[str, str] = {}
-        self.resource_reasoning: dict[tuple[str, str], ReasoningSpec | None] = {}
+        self.resource_reasoning: dict[tuple[str, str, str], ReasoningSpec | None] = {}
         self.model_params: dict[str, dict] = {}  # 网关级模型参数（Q24）：模型名 → 注入参数
+        #: 🔴 统一规格（Q33-④）：系统模型名 → `core/model_spec.ModelSpec`。
+        #: 在 `_apply` 里一次算好（账号侧只读本地目录缓存，**请求期零网络零读盘**），
+        #: `/v1/models`、`mgw setup` 与出站默认注入三处读同一份，不各算各的。
+        self.model_specs: dict[str, Any] = {}
+        #: 资源级规格：`(资源 id, 厂商模型) -> ModelSpec`（出站默认注入的唯一依据）
+        self.resource_specs: dict[tuple[str, str], Any] = {}
         self.events = EventLogger(self.usage_dir, retention_days=config.gateway.retention_days)
         self.cancel_registry = CancelRegistry()
         self.switch_ring: deque = deque(maxlen=200)
@@ -374,15 +383,48 @@ class Runtime:
         # —— 阶段 1：纯构造（可抛；抛出 = 调用方保持旧运行态，见 reload_from_file）——
         classifier = ErrorClassifier(config.error_rules)
         enum_pool = load_enum_pool(self.enums_path)
-        # 资源级推理默认（Q15）：(resource_id, vendor_model) → 默认值
-        reasoning_map: dict[tuple[str, str], ReasoningSpec | None] = {}
+        # 资源级推理默认（Q15）：**(系统模型, 资源, 厂商模型) → 默认值**
+        # 🔴 键必须带系统模型维度（评审 R9-B-1'：与本轮刚修掉的 `resource_specs` 是同一类缺陷，
+        #    而且就在下面那条红线注释的**上面二十行**）：`reasoning` 住在 `models[].resources[]` 这条
+        #    条目上，同一个 `(资源, 厂商模型)` 被别名挂到第二个系统模型时，两边完全可以填不同的默认；
+        #    旧键 `(rid, vendor_model)` 是"后写覆盖" ⇒ 顺序决定哪一边的默认活下来，另一边
+        #    **整份消失或凭空串到另一个网关名上**，且定向判据零红（实测见台账 §10）。
+        reasoning_map: dict[tuple[str, str, str], ReasoningSpec | None] = {}
         for m in config.models:
             for r in m.resources:
                 rd = r.reasoning
-                reasoning_map[(r.resource, r.model)] = (
+                reasoning_map[(m.name, r.resource, r.model)] = (
                     ReasoningSpec(enabled=rd.enabled, effort=rd.effort) if rd else None)
         # 网关级模型参数（Q24）：系统模型名 → 出站注入参数（请求级同名字段优先，仅 chat）
         model_params = {m.name: dict(m.params) for m in config.models if m.params}
+        # 🔴 Q33-④：统一规格（系统模型名 → 合并后的 ModelSpec）。
+        # 一次热重载算一份，**不在请求期读盘/联网**（§22.5-6 同口径）：
+        # 账号侧规格来自 `accounts/catalog_cache.py` 的本地落盘目录缓存。
+        _spec_cache: dict = {}          # 同一次热重载里按产品复用的目录缓存读（零网络）
+        # 🔴 账号侧取数**由装配侧注入**（债务 Q33-债2）：`core/model_spec.py` 不再 import
+        #    `accounts/`，与 `circuit_active` / `credential_fingerprint` 同一个分层口径。
+        _spec_reader = catalog_cache.read_cache
+        model_specs = {m.name: model_spec.resolve(config, m, enum_pool, cache=_spec_cache,
+                                                 reader=_spec_reader)
+                       for m in config.models}
+        # 🔴 资源级规格（Q33 评审 R1-⑤）：出站默认必须按**实际选中的那条资源**注入，
+        # 拿模型级"池内最大"去请求一个上限更小的号 = 我主动制造 400。
+        # 🔴 键是 `(rid, vendor_model)` ⇒ 值**不许**带系统模型维度（评审 R8-B-1 判死）：
+        #    同一组合被别名挂到第二个系统模型上（既有设计，UT-84 留了反证腿）而那一头关着时，
+        #    带映射判据的算法会让后一条**覆盖**前一条，承载判据与缺省注入双双静默失效（fail-open），
+        #    且红不红取决于配置书写顺序。"进不进池"归 `mapping_enabled`，这里只算"这条资源自己多大"。
+        _res_by_id = {r.id: r for r in config.resources}
+        resource_specs: dict[tuple[str, str], Any] = {}
+        for m in config.models:
+            for e in m.resources:
+                key = (e.resource, e.model)
+                if key in resource_specs:
+                    continue          # 🔴 幂等：值只由 (资源, 厂商模型) 决定，别名不再互相覆盖
+                # 直接取：`(资源, 厂商模型)` 必在 `resources[]` 在册是**跨节校验的既有契约**
+                #    （缺资源即 `ConfigError`，UT-84 第三腿钉着），这里不再写"不可能发生"的分支
+                resource_specs[key] = model_spec.resource_spec(
+                    _res_by_id[e.resource], e.model, enum_pool,
+                    cache=_spec_cache, reader=_spec_reader)
         new_adapters, new_keys, adapter_errors = self._build_adapters(config, enum_pool)
         # F3（面板修复轮-2）：把本网关自己的 Key 登记进脱敏表（只进内存，不落盘/不进日志）
         # —— 上游裸回显（无 `Bearer`/`sk-` 形态）时只有字面值匹配能遮住。
@@ -397,6 +439,8 @@ class Runtime:
         self.key_values = {r.id: r.api_key for r in config.resources}
         self.resource_reasoning = reasoning_map
         self.model_params = model_params
+        self.model_specs = model_specs
+        self.resource_specs = resource_specs
         # 🔴 被换下/删掉的那些**不能直接丢**（旧账 #48，2026-09-29 实测取证）：
         #    下面这行一执行，旧适配器就没人引用了，而它的 `httpx.AsyncClient` 只有在被
         #    `aclose()` 时才释放连接池 —— 原先整条路径都没有这一步，`Runtime.aclose()`
@@ -686,7 +730,12 @@ class Runtime:
         #    ⚠️ 本段刻意不写页名书名号形式：指路门 test_v2_cli 的正则不剥注释，
         #    写了会被当成用户文案判红（既有门缺陷，见 .cursor/memory/pitfalls.md）。
         def _live(m) -> bool:
-            return any(e.enabled for e in m.resources)
+            # 🔴 同一个 `mapping_enabled`（Q33 评审 R1-② / R2-③：这里曾是"四处同源"之外
+            #    的第 5 处）—— 账号侧只看产品位。按条目位判会导致位已关、横幅却仍说
+            #    "该模型有生效映射"（或反过来在应该指路时沉默），指路文案就成假话。
+            return any(self.config.mapping_enabled(res_by_id[e.resource], e, m.name)
+                       for e in m.resources)
+        res_by_id = {r.id: r for r in self.config.resources}
         empty_models = [m.name for m in self.config.models if m.enabled and not _live(m)]
         if empty_models:
             out.append({
@@ -700,8 +749,8 @@ class Runtime:
             })
         # ② 资源已启用但无任何模型引用 → 该资源不会被使用（配置冗余，非故障）
         referenced = {r.resource for m in self.config.models for r in m.resources}
-        orphan = [r.name or r.id for r in self.config.resources
-                  if r.enabled and r.id not in referenced]
+        orphan = [display_label(r) for r in self.config.resources
+                  if r.enabled and r.id not in referenced]   # 同一把尺（评审 R11）
         if orphan:
             out.append({
                 "kind": "resource_without_model",
@@ -836,10 +885,15 @@ class Runtime:
         return reasons
 
     def _resource_label(self, rid: str) -> str:
-        """资源显示名（备注 → id），供告警文案指认。"""
+        """资源显示名（备注 → **账号名** → id），供告警文案指认。
+
+        🔴 转调 `core/resources.display_label`，与 `resource_id_str`、总览页那一列同一把尺
+        （评审 R11-报备：账号侧资源没有备注名时，旧回落让告警文案里出现 `res-9a17353a`
+        这种用户从没起过的串，而同一条链路的其它文案都用可读 label）。
+        """
         for r in self.config.resources:
             if r.id == rid:
-                return r.name or r.id
+                return display_label(r)
         return rid
 
     def _shadowed_params(self) -> list[str]:
@@ -861,7 +915,7 @@ class Runtime:
                 if ref.reasoning.effort or ref.reasoning.enabled is not None:
                     dft = ref.reasoning.effort or ("关闭" if ref.reasoning.enabled is False
                                                   else "开启")
-                    hit.append(f"资源「{r.name or r.id}」默认 {dft}")
+                    hit.append(f"资源「{display_label(r)}」默认 {dft}")
             if hit:
                 card_vals = "、".join(f"{k}={m.params.get(k)}" for k in shadow_keys)
                 res_vals = "；".join(hit[:2])

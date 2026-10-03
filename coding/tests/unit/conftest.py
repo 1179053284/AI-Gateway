@@ -104,11 +104,13 @@ def chat_model(name: str = "test-model", keys: str = "AB", **over) -> dict:
 def build_runtime(cfg_dict: dict, adapter: FakeAdapter, clock=None):
     cfg = AppConfig.model_validate(cfg_dict)
     key_values = {r.id: r.api_key for r in cfg.resources}
-    resource_reasoning: dict[tuple[str, str], ReasoningSpec | None] = {}
+    # 键与生产同形：**(系统模型, 资源, 厂商模型)**（评审 R9-B-1'；替身少一维就等于替身
+    # 替实现编了一个不存在的世界，别名那条判据会静默失效）
+    resource_reasoning: dict[tuple[str, str, str], ReasoningSpec | None] = {}
     for m in cfg.models:
         for r in m.resources:
             rd = r.reasoning
-            resource_reasoning[(r.resource, r.model)] = (
+            resource_reasoning[(m.name, r.resource, r.model)] = (
                 ReasoningSpec(enabled=rd.enabled, effort=rd.effort) if rd else None)
     rt = SimpleNamespace(
         config=cfg,

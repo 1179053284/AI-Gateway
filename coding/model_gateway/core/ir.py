@@ -70,6 +70,28 @@ def apply_model_params(body: dict[str, Any], params: dict[str, Any] | None) -> d
     return body
 
 
+def apply_spec_defaults(body: dict[str, Any], spec: Any) -> dict[str, Any]:
+    """把**统一规格**落成出站默认（Q33-④）：调用方没给输出上限时，按该模型的**最大输出**注入。
+
+    用户 2026-10-02 定的口径 = 「模型输入和输出上下文大小，默认通过网关维度都去最大输入和
+    最大输出，固定最大标准」。落地成三条纪律：
+
+    - **只在缺省时填**：`max_tokens` / `max_completion_tokens` 任一已被调用方或网关设置
+      （`params`）写过的，一律不动 —— 优先级仍是 工具传参 > 网关设置 > 统一规格 > 厂商内置；
+    - **`None` 不编数**：规格里没有这个数（`spec=None` 或 `max_output=None`）就什么都不注入，
+      继续走厂商内置默认（把 `None` 猜成一个具体数字正是铁律 2 禁止的那种"看起来对"）；
+    - 原地改并返回同一个 dict（与 `apply_model_params` 同形，调用方无需分支）。
+    """
+    if spec is None:
+        return body
+    max_output = getattr(spec, "max_output", None)
+    if not max_output:
+        return body
+    if body.get("max_tokens") is None and body.get("max_completion_tokens") is None:
+        body["max_tokens"] = int(max_output)
+    return body
+
+
 def lift_reasoning_from_body(body: dict[str, Any]) -> ReasoningSpec | None:
     """入站提升：把请求体中的推理字段取出为显式值（防出站双重注入）。
 

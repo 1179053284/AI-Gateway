@@ -299,3 +299,83 @@ class TestClientDisconnect:
         assert ev["switch_count"] == 0  # 不再继续重试/切换
         assert all(r.key != "sk-B" for r in vendor.requests)  # B 从未被触达
         assert gw.resource("res-A").C == 0
+
+
+class TestCapacityAwareRoutingStream:
+    """🔴 INT-90 · 承载校验的**流式那条循环**（债务 Q33-债9 的补齐）。
+
+    `model_spec.py` 的头注释与台账一直写着"非流与流式两条循环共用同一个判据函数"，
+    但这条腿**从来没有一条实测判据**（真机复验 R5 把它列进"未验证"）。
+    注释说满了而实现没测 = 下一波重构流式循环时随时会掉。
+    流式侧的额外红线是**时序**：必须在**任何字节提交之前**避开（首内容事件前一个字节
+    都不发，见 §4.5 / INT-21），否则那条失败就无法回退成非 200。
+    所以判据不止"换了号"，还要三件：响应 200 且内容来自能承载的号、
+    装不下的那个号**零请求**、它的记账干净（`C=0`、不冷却、`in_flight=0`）。
+    """
+
+    def _cfg(self, port):
+        return gateway_config(port, models=[{
+            "name": "test-model", "endpoint": "chat",
+            # 目录里这两条的上限 = 65536 / 131072（`chat_res` 的 `vm-A/vm-B` 不在目录 ⇒
+            # "不知道 = 不拦"会让这条判据变成空的）
+            "resources": [{"resource": "res-A", "model": "sensenova-6.8-flash-lite"},
+                          {"resource": "res-B", "model": "glm-5.2"}]}])
+
+    async def test_stream_avoids_the_underr_capacity_account(self, vendor, make_gateway,
+                                                             client):
+        vendor.set("sk-A", StreamOk(chunks=["from-small"]))
+        vendor.set("sk-B", StreamOk(chunks=["from-wide"]))
+        gw = await make_gateway(self._cfg(vendor.port))
+        resp = await client.post(f"{gw.base_url}{CHAT_URL}",
+                                 json=_body(max_tokens=100000))
+        assert resp.status_code == 200, resp.text
+        assert "from-wide" in resp.text and "from-small" not in resp.text
+        assert vendor.bodies_for("sk-A") == [], "已知装不下却仍打出去了（白烧额度）"
+        assert vendor.bodies_for("sk-B")[0]["max_tokens"] == 100000
+
+        st = gw.runtime.resources.registry[("res-A", "sensenova-6.8-flash-lite")]
+        assert st.C == 0 and st.status == "active", (st.C, st.status)   # 避开 ≠ 故障
+        assert st.in_flight == 0, "避开腿漏还在途"
+
+    async def test_stream_with_no_carrier_returns_non_200(self, vendor, make_gateway,
+                                                          client):
+        """每条都装不下 ⇒ 终局必须是**真 503 + `ALL_OVER_CAPACITY`**，
+        绝不能"200 + 内嵌 error"（INT-35 同一条纪律：字节没提交过，状态码就说实话）。"""
+        gw = await make_gateway(self._cfg(vendor.port))
+        resp = await client.post(f"{gw.base_url}{CHAT_URL}", json=_body(max_tokens=200000))
+        assert resp.status_code == 503, resp.text
+        assert resp.json()["error"]["code"] == "ALL_OVER_CAPACITY", resp.text
+        assert vendor.requests == [], "一条都不该打出去"
+
+    async def test_stream_after_one_avoid_and_one_real_try_is_not_capacity(
+            self, vendor, make_gateway, client):
+        """🔴 评审 R8 报备 R-1：流式那条循环的**终局标记**也必须有判据。
+
+        非流的 INT-88② 钉的是"`attempted` 一旦置位就不许报容量"，而流式那段是**另一次赋值**
+        （两条循环各写各的）⇒ 只测正例（全部被拦）时，把流式的 `attempted` 那行删掉照样全绿。
+        形状：res-A 装不下被避开、res-B 承载得了但上游回 500 ⇒ 终局必须是**故障**口径，
+        不得是 `ALL_OVER_CAPACITY`（否则用户照着文案去调 `max_tokens`，真问题在上游）。
+        """
+        vendor.set("sk-A", StreamOk(chunks=["should-never-run"]))
+        vendor.set("sk-B", Err(status=500, message="upstream boom"))
+        gw = await make_gateway(self._cfg(vendor.port))
+        resp = await client.post(f"{gw.base_url}{CHAT_URL}",
+                                 json=_body(max_tokens=100000))
+        assert len(vendor.bodies_for("sk-A")) == 0        # 避开腿真的发生过（前提腿）
+        assert len(vendor.bodies_for("sk-B")) >= 1        # 真试过这条腿也成立
+        assert resp.json()["error"]["code"] != "ALL_OVER_CAPACITY", resp.text
+
+    async def test_stream_empty_pool_is_no_resource_not_capacity(self, vendor, make_gateway,
+                                                                 client):
+        """🔴 评审 R9-报备 R-1 的下半句：流式那条循环的**初值**也必须有判据。
+
+        上一轮补的是"避开 + 真试过"（钉 `attempted`），而 `capacity_rejected` 的**初值**若是 True，
+        空池（号停用 / 位全关）这条形状在流式腿上仍然谎报容量 —— 非流的 INT-88① 打不到流式那段
+        代码（两条循环各写各的赋值）。
+        """
+        cfg = gateway_config(vendor.port, models=[chat_res("A")])
+        cfg["resources"][0]["enabled"] = False
+        gw = await make_gateway(cfg)
+        resp = await client.post(f"{gw.base_url}{CHAT_URL}", json=_body())
+        assert resp.status_code == 503, resp.text
+        assert resp.json()["error"]["code"] == "NO_RESOURCE", resp.text

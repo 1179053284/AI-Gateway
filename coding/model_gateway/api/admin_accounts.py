@@ -74,6 +74,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import functools
 import importlib
@@ -82,6 +83,8 @@ import logging
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
+from model_gateway.accounts import catalog_cache
+from model_gateway.accounts.materialize import order_lock as materialize_order_lock
 from model_gateway.accounts import credexp
 from model_gateway.accounts import login
 from model_gateway.accounts import registry as account_registry
@@ -97,7 +100,7 @@ from model_gateway.accounts.types import (
     ProductMeta,
 )
 from model_gateway.config.loader import ConfigError, load_config, save_config
-from model_gateway.config.schemas import ModelResource, SystemModel
+from model_gateway.config.schemas import ModelResource, ProductModelMapping, SystemModel
 from model_gateway.ops import runner as ops_runner
 from model_gateway.ops.base import OpReport, OpResult
 from model_gateway.ops.bridge import outcome_to_op_result
@@ -366,19 +369,30 @@ async def _set_enabled(request: Request, product: str, name: str, enabled: bool)
     root = _require_account(product, name)
     meta = store.load_meta(root, name)
     if _enabled_of(meta) == enabled:
+        # 两条腿键集必须一致（多一个键就是契约漂移）：没改动 ⇒ 运行态本就是对的，
+        # `reload` 报 True 而不是省略它 —— 界面据此判断"要不要提示等下一轮生效"。
         return {"status": "ok", "product": product, "account": name,
-                "enabled": enabled, "changed": False}
+                "enabled": enabled, "changed": False, "reload": True,
+                "mapping_skipped": []}
     # 🔴 顺序与回滚（2026-10-02 裁决「一个开关一个主人」）：先同步派生资源的启用位，
     #    再写账号 meta —— 资源位写失败 ⇒ meta 未动，两把位不会分叉；
     #    meta 写失败 ⇒ 把资源位拨回原值（否则出现"账号启用着但资源被停用"的隐性不可服务）。
-    from model_gateway.accounts.materialize import (MaterializeError,
-                                                    set_resource_enabled)
+    from model_gateway.accounts.materialize import (
+        MaterializeError, ensure_resource_async, set_resource_enabled_async,
+        sync_product_models_async)
     runtime = getattr(request.app.state, "runtime", None)
     cfg_path = getattr(runtime, "config_path", None)   # 与映射/物化同一份配置，不另找
     if cfg_path is None:
         raise _ApiError(503, "运行态不可用（无配置路径），启停会只写一半，拒绝执行")
     try:
-        synced = set_resource_enabled(product, name, enabled, config_path=cfg_path)
+        if enabled:
+            # 号被启用时资源可能**还不存在**（停用期间接入/导入的号不会被物化），
+            # 先补物化再拨位 —— 否则"启停了但配置里根本没有这条资源"= 界面显示启用、
+            # 实际永远不进池。`ensure_resource` 幂等：已存在时原样返回、**不拨回开关**（纪律 1）。
+            # 🔴 三条写盘腿一律走 `*_async`（复验轮 R4 阻塞项 C）：它们是"读整份配置 → 改 →
+            #    原子写 + 锁等待"，同步调用会把事件循环整段按住（实测 52ms，同 A-1 那条教训）。
+            await ensure_resource_async(product, name, config_path=cfg_path)
+        synced = await set_resource_enabled_async(product, name, enabled, config_path=cfg_path)
     except MaterializeError as e:
         raise _ApiError(500, f"账号 {product}/{name} 的启停未生效：其派生资源的启用位写不动"
                              f"（配置校验失败，不覆盖坏配置）：{e}") from None
@@ -390,15 +404,41 @@ async def _set_enabled(request: Request, product: str, name: str, enabled: bool)
     except Exception:
         if synced:
             try:      # 回滚尽力而为；失败只记日志（meta 未写 ⇒ 资源位与账号态分叉，必须留痕）
-                set_resource_enabled(product, name, not enabled, config_path=cfg_path)
+                await set_resource_enabled_async(product, name, not enabled, config_path=cfg_path)
             except Exception as back:  # noqa: BLE001
                 logger.error("账号 %s/%s 启停回滚失败（资源启用位已与账号态分叉，需手工核对配置）：%s",
                              product, name, back)
         raise
-    # 响应键集**不扩**（`changed=False` 那条腿的字典被测试逐键钉住，多一个键就是契约漂移）；
-    # 同步条数只进日志，界面看账号行与资源态即可，不需要第三个数。
+    # 🔴 Q33-①②：号被**启用**时按产品位继承映射条目（停用/删除不需要，条目照旧留着）。
+    # 时机放在 meta 落盘成功之后：这一步只做"补缺失的条目"，失败不影响启停本身成立
+    # （与 `store.commit_login` 尾部那次 best-effort 物化同一个取舍：事实是"账号已启用"，
+    # 扇出只是让它立刻能被调用，不能反过来把已生效的启停撤销掉）。
+    # 🔴 启停必须**即时**反映到运行态（Q33 评审 R3 F-4：实测 `disable` 返回 200 后仍有
+    #    ≥3 秒窗口照常派发流量到该号）：配置是 1s mtime 轮询才落地，而"停用这个号"是
+    #    用户刚刚的显式动作，不能靠轮询碰运气。与映射写面同一个收口 `reload_from_file()`。
+    #    重载失败不回滚启停（盘上是事实），但必须在响应里如实说明未即时生效。
+    reload_ok: bool | None = None
+    inherited_skipped: list[str] = []     # 按号权益闸门拦下的厂商模型（R5-⑧：必须让用户看见）
+    if enabled:
+        try:
+            await sync_product_models_async(product, name, config_path=cfg_path,
+                                            skipped_out=inherited_skipped)
+        except Exception as e:  # noqa: BLE001 — 继承失败只记日志，启停结果不回滚
+            logger.warning("账号 %s/%s 已启用，但按产品位继承映射失败（需到接入账号资源页的模型映射"
+                           "弹窗重新保存一次）：%s: %s", product, name, type(e).__name__, e)
+    try:
+        reload_ok, _errs = await runtime.reload_from_file()
+    except Exception as e:  # noqa: BLE001 — 重载失败不改启停结果，只如实标注
+        logger.warning("账号 %s/%s 启停已落盘但热重载失败（等 mtime 轮询兜底）：%s",
+                       product, name, e)
+        reload_ok = False
+    # 两条腿**同一键集**（`changed=False` 那条的字典被测试逐键钉住，多一个键就是契约漂移）：
+    # `reload` = 启停是否即时落到运行态；`mapping_skipped` = 启用时**按号权益闸门**
+    # 拦下的厂商模型名（R5-⑧：这条腿原先只写日志，回执 200 而映射一条没落地 =
+    # "看着已启用、盘上没写"的假态）。空列表 = 没有被拦，界面据此决定要不要提示。
     return {"status": "ok", "product": product, "account": name,
-            "enabled": enabled, "changed": True}
+            "enabled": enabled, "changed": True, "reload": reload_ok is True,
+            "mapping_skipped": inherited_skipped}
 
 
 # ---------- 视图（账号 / 能力矩阵）----------
@@ -1159,6 +1199,12 @@ async def account_models(product: str, name: str):
     for m in models:
         if not isinstance(m, ModelInfo):
             raise _ApiError(502, f"模型目录条目类型异常：{type(m).__name__}（期望 ModelInfo）")
+    if models:
+        # 🔴 按号证据（债务 Q33-债6-②）：这一条腿取的就是**这个号**的凭据 ⇒ 落一份按号副本
+        #    （`_catalog_cache.<号>-<短哈希>.json`）。判定式第四项「该号目录确实有此模型」只认这份证据；
+        #    产品级缓存说"这个产品有这些模型"，代表不了单个号的权益（同产品不同号套餐可不同）。
+        #    写失败只记日志（`write_cache` 内部兜住），不改动本次已经成功的目录结果。
+        catalog_cache.write_cache(product, models, source_account=name)
     return {**payload, "state": "ok", "models": [dataclasses.asdict(m) for m in models]}
 
 
@@ -1198,28 +1244,37 @@ def _enum_suggest(pool, cfg_names: set[str], mid: str) -> dict | None:
     return None
 
 
-def _mapped_to(cfg, product_rids: set[str], mid: str) -> list[str]:
+def _mapped_to(cfg, product: str, product_rids: set[str], mid: str) -> list[str]:
     """该条目已挂上的系统模型名（映射条目 `resource ∈ 本产品资源` 且 `model == mid`）。
 
     扫**生效配置**（`runtime.config`）——与「初始化映射」的去重判据同源
-    （(resource, model) 组合不重复挂载）。弹窗据此把已映射条目显示为"已挂到 X"。
+    ((resource, model) 组合不重复挂载）。弹窗据此把已映射条目显示为"已挂到 X"。
     """
     out: list[str] = []
     for m in getattr(cfg, "models", None) or []:
         if any(e.resource in product_rids and e.model == mid for e in m.resources):
             out.append(m.name)
+    if not out:
+        # 条目一条都没有、但产品位存在 ⇒ 位是真相（扇出还没落到号上，例如号全被删过）。
+        # 不显示成"未映射"，否则用户看不到自己刚设的那个开关指向哪里。
+        bit = cfg.product_mapping(product, mid) if hasattr(cfg, "product_mapping") else None
+        if bit is not None:
+            out.append(bit.system_model)
     return out
 
 
-def _map_enabled(cfg, product_rids: set[str], mid: str):
-    """该目录条目的**映射级开关**状态：`None` = 未映射；`True` = 组内至少一条进池；
-    `False` = 已映射但整组都关着（不参与资源池、不出现在 `/v1/models`）。
+def _map_enabled(cfg, product: str, product_rids: set[str], mid: str):
+    """该目录条目的**映射开关**状态：`None` = 未映射；`True` = 进池可对外调用；
+    `False` = 已映射但关着（不参与资源池、不出现在 `/v1/models`）。
 
-    🔴 与 `mapped_to` 分开成两个字段，因为"挂过"与"在生效"是两件事：
-    关掉的映射仍然 `mapped_to=["glm-5.3"]`（否则用户会以为映射丢了），
-    但 `map_enabled=false` 才决定它能不能被调用到。判据与 `servable_models`
-    /`ResourceManager.rebuild` 读的同一个位（`ModelResource.enabled`）。
+    🔴 取数优先级与调度侧**逐字同一条**（`AppConfig.mapping_enabled`，Q33-①）：
+    账号侧先看**产品位**（`(产品, 厂商模型)` 的唯一真相），无位才回落到条目位聚合
+    （旧配置零迁移）。若这里继续按「组内至少一条开着就算开着」聚合，就会与调度分叉 ——
+    弹窗显示进池、实际不进池（或反过来），正是本轮要消灭的那类"两套真相"。
     """
+    bit = cfg.product_mapping(product, mid) if hasattr(cfg, "product_mapping") else None
+    if bit is not None:
+        return bool(bit.enabled)
     seen = False
     for m in getattr(cfg, "models", None) or []:
         for e in m.resources:
@@ -1228,6 +1283,22 @@ def _map_enabled(cfg, product_rids: set[str], mid: str):
                 if e.enabled:
                     return True
     return False if seen else None
+
+
+def _map_landing(cfg, product: str, product_rids: set[str], mid: str) -> bool:
+    """这条产品位**当前有没有落点** = 至少一条生效映射指向真实存在且启用的资源。
+
+    与 `servable_models` 同一判据（`mapping_enabled` + `Resource.enabled`），不另写一份。
+    """
+    by_id = {r.id: r for r in getattr(cfg, "resources", None) or []}
+    for m in getattr(cfg, "models", None) or []:
+        for e in m.resources:
+            r = by_id.get(e.resource)
+            if r is None or e.model != mid or str(getattr(r, "product", "") or "") != product:
+                continue
+            if r.enabled and e.resource in product_rids and cfg.mapping_enabled(r, e, m.name):
+                return True
+    return False
 
 
 def _catalog_accounts(runtime, product: str) -> list[dict]:
@@ -1282,6 +1353,11 @@ async def _catalog_models(hook, product: str, account_infos: list[dict]) -> tupl
                            product, name, type(e).__name__, e)
             continue
         if isinstance(models, list) and models and all(isinstance(m, ModelInfo) for m in models):
+            # 🔴 Q33-④：只有**实时账号目录**这一路才落缓存。缓存是统一规格层
+            # （`core/model_spec.py`）在调度与 `/v1/models` 上唯一的账号侧来源，
+            # 而这两条路径都不许发网络请求 —— 不在这里落盘，产品规格就永远进不了声明。
+            # 兜底表那一路**不落盘**：它是仓内静态数据，缓存它等于把"没有来源"伪装成"有来源"。
+            catalog_cache.write_cache(product, models, source_account=name)
             return (models,
                     {"kind": "account", "account": name,
                      "detail": f"来自账号 {name} 的实时目录"},
@@ -1336,8 +1412,12 @@ async def account_catalog(request: Request, product: str):
         item = dataclasses.asdict(m)
         mid = str(item.get("id") or "")
         item["suggest"] = _enum_suggest(pool, cfg_names, mid)
-        item["mapped_to"] = _mapped_to(cfg, product_rids, mid)
-        item["map_enabled"] = _map_enabled(cfg, product_rids, mid)   # None = 未映射
+        item["mapped_to"] = _mapped_to(cfg, product, product_rids, mid)
+        item["map_enabled"] = _map_enabled(cfg, product, product_rids, mid)   # None = 未映射
+        # 🔴 位开 ≠ 真能调用：产品位开着、但当前**没有任何启用号持有该条目**时，服务集是空的
+        #    （`servable_models` 判 False）。界面必须能把这句说明白，否则"开关是开的"与
+        #    "调用必 503"同时成立 = 又一套两真相（R2-④）。
+        item["map_landing"] = _map_landing(cfg, product, product_rids, mid)
         entries.append(item)
     payload = {"product": product, "title": meta.title,
                "checkin": meta.capabilities.checkin,
@@ -1395,6 +1475,112 @@ def _mapping_holder(config, rid: str, mid: str):
             if e.resource == rid and e.model == mid:
                 return m, e
     return None
+
+
+def _write_mappings_phase3(path, product: str, parsed, rids: dict[str, str],
+                           names: list[str], pool):
+    """映射写面的阶段 3：**读整份配置 → 预检 → 写产品位 → 扇出条目 → 原子保存**，返回回执计数。
+
+    🔴 为什么是**独立同步函数**而不是端点里的一段（债务 Q33-债3，复验轮 R4-⑦）：
+    这段含 `_load_config_for_write`（读盘）+ `save_config`（tempfile + **fsync** + replace）
+    与跨线程的 `_ORDER_LOCK` 等待。原先它跑在**事件循环线程**里，一次保存就把整个网关
+    按住（同文件 `store.commit_login_async` 的 A-1 教训实测 1007ms）；
+    现在端点用 `asyncio.to_thread` 把**整段**下放工作线程 —— 必须是整段：
+    锁是 `threading.Lock`，**在哪个线程取就在哪个线程放**，把读盘和写盘拆成两次 `to_thread`
+    会既踩错锁、又留出"两个写者各拿一份过期快照"的窗口。
+
+    ⚠️ 口径如实说明（复验轮 R4-⑨）：这把锁只串行化**同进程内**的写者；
+    跨进程（`mgw` CLI / cron）之间的互斥靠的是既有的 `data/locks/accounts.lock`，不是它。
+    热重载 `reload_from_file()` 留在锁外、也留在本函数外（它是运行态换代，不是配置写者）。
+    """
+    with materialize_order_lock():
+        config = _load_config_for_write(path)
+        created: list[str] = []
+        added = already = turned_on = turned_off = 0
+        skipped: list[dict] = []
+        bits: list[dict] = []
+        for mid, target, enabled in parsed:
+            if not target:
+                continue
+            # ⓪ 🔴 **整体预检在先，写盘在后**（Q33 评审 R1-① 判死后的修正）：
+            #    原先的顺序是"先写产品位 → 再逐号扇出 → 扇出发现该 (资源, 厂商模型) 已挂在别的
+            #    系统模型上就跳过" ⇒ 位已经改指新目标了，条目却还留在旧模型下，而**旧模型就此
+            #    静默掉出 `/v1/models`**，回执却仍是 200。要么位和条目一起改，要么一个都不动。
+            #    🔴 扫描面 = 该产品**全部**派生资源，含**停用号**（复验轮 R4 阻塞项 2）：
+            #    只扫启用号会漏掉"停用号身上还挂着旧条目"那一支 —— 改挂时预检放行，
+            #    号被重新启用时 `sync_product_models` 按新位再补一条 ⇒ 同一
+            #    `(资源, 厂商模型)` 同时挂两个系统模型，正是本端点自己宣布禁止的形状
+            #    （`_mapping_holder` 的组合唯一判据），且此后该组合再映射永远进 `skipped`。
+            conflicts = []
+            for prod_res in config.resources:
+                if (prod_res.product or "").strip() != product:
+                    continue
+                found = _mapping_holder(config, prod_res.id, mid)
+                if found is not None and found[0].name != target:
+                    who = (prod_res.account_ref or prod_res.account or prod_res.id).strip()
+                    conflicts.append((who or prod_res.id, found[0].name))
+            if conflicts:
+                for who, holder in conflicts:
+                    skipped.append({
+                        "model": mid, "target": target,
+                        "reason": f"账号 {who} 的 {mid} 已挂在系统模型 {holder}"
+                                  f"（同一组合不重复挂载）—— 本条整体未生效：产品位与任何条目都没改动"
+                                  f"；确要改挂到 {target}，先在「网关模型管理」页把 {holder} 的该映射移除"})
+                continue
+            # ① 再写**产品位**（Q33-① 的唯一真相）：一次点击 = 一个 (产品, 厂商模型) 的开关，
+            #    不再"往每个号上各刷一遍然后靠聚合猜产品状态"。
+            bit = config.product_mapping(product, mid)
+            if bit is None:
+                config.product_models.append(ProductModelMapping(
+                    product=product, model=mid, system_model=target, enabled=enabled))
+            else:                                    # 已有位（含此前关着的）：改目标 + 改开关
+                bit.system_model = target
+                bit.enabled = enabled
+            bits.append({"model": mid, "target": target, "enabled": enabled})
+
+            model = next((m for m in config.models if m.name == target), None)
+            if model is None:
+                model = _create_system_model(config, pool, target)
+                created.append(target)
+            # ② 条目扇出：启用号（停用号由"号被启用时按产品位自动继承"覆盖，见阶段 2 注释）。
+            #    ⓪ 预检已把"挂在别的模型上"的号整条拦下 ⇒ 这里不再重复那道判断（判据只留一份）。
+            for name in names:
+                rid = rids[name]
+                found = _mapping_holder(config, rid, mid)
+                if found is not None:
+                    entry = found[1]
+                    if entry.enabled == enabled:
+                        already += 1                  # 幂等命中：目标与开关都没变
+                    elif enabled:
+                        entry.enabled = True
+                        turned_on += 1                # 关 → 开：重新进池、重新对外声明
+                    else:
+                        entry.enabled = False
+                        turned_off += 1               # 开 → 关：条目留在配置里（保运行态），但不进池
+                    continue
+                if not enabled:
+                    continue     # 产品位已记为关，条目本就不存在 ⇒ 无需为一个"关"去创建条目
+                # 🔴 判定式第四项「该号目录确实有此模型」（债务 Q33-债6-②）：
+                #    只在这个号**自己的新鲜目录缓存**明说没有时才不给它建条目；
+                #    这是**逐号事实**，不是整条冲突 ⇒ 产品位照写、别的号照挂，
+                #    这里只把这个号如实报进 `skipped`（绝不静默跳过）。
+                if catalog_cache.account_lacks(product, name, mid):
+                    skipped.append({
+                        "model": mid, "target": target,
+                        "reason": f"账号 {name} 的模型目录（今天取到的）里没有 {mid}"
+                                  "—— 位与其余账号已生效，只跳过这个号；"
+                                  "要让它接这个模型，先到该号上刷新一次模型目录再保存"})
+                    continue
+                model.resources.append(ModelResource(resource=rid, model=mid,
+                                                      reasoning=None, enabled=True))
+                added += 1
+        try:
+            save_config(config, path)
+        except OSError as e:
+            raise _ApiError(500, f"配置写入失败：{e}") from None
+    return {"created": created, "added": added, "already": already,
+            "turned_on": turned_on, "turned_off": turned_off,
+            "skipped": skipped, "bits": bits}
 
 
 @router.post("/admin/api/accounts/mappings")
@@ -1469,7 +1655,15 @@ async def account_mappings(request: Request):
 
     # 阶段 2：已启用账号 → 物化资源（幂等，§22.5-1）。物化面在自身临界区内
     # "读 → 改 → 写"同一份 `runtime.config_path`；本端点的映射写入紧随其后。
-    from model_gateway.accounts.materialize import MaterializeError, ensure_resource
+    #
+    # 🔴 条目只落在**启用号**上，但**产品位（`config.product_models`）是无条件写的真相**
+    # （Q33-①）。停用号不留条目不是缺陷而是取舍：号一停，它的资源位就跟着停（一个开关一个主人），
+    # 条目留在配置里也只是 35 行死数据；等号被启用时由 `materialize.ensure_resource`
+    # 按产品位**自动继承**映射（见该函数 `_backfill_product_models`），
+    # 所以旧的那两个洞都不存在了 —— 既不会出现"产品开关对停用号既关不掉也打不开"
+    # （判据读的是产品位，不看条目），也不会出现"号启用后进不了池"。
+    from model_gateway.accounts.materialize import (
+        MaterializeError, ensure_resource_async)
 
     root = store.product_root(product)
     names = [n for n in store.list_accounts(product, root=root)
@@ -1481,61 +1675,32 @@ async def account_mappings(request: Request):
     rids: dict[str, str] = {}
     for name in names:
         try:
-            rid = ensure_resource(product, name, config_path=path)
+            rid = await ensure_resource_async(product, name, config_path=path)
         except MaterializeError as e:
             raise _ApiError(400, f"资源物化被拒（{product}/{name}）：{e}") from None
         rids[name] = rid
         accounts_out.append({"name": name, "enabled": True, "resource_id": rid})
 
-    # 阶段 3：读**写后**磁盘快照（含刚物化的资源行）→ 建/找目标模型 → 追加映射 → 保存 → 重载。
-    config = _load_config_for_write(path)
-    created: list[str] = []
-    added = already = turned_on = turned_off = 0
-    skipped: list[dict] = []
-    for mid, target, enabled in parsed:
-        if not target:
-            continue
-        model = next((m for m in config.models if m.name == target), None)
-        if model is None:
-            model = _create_system_model(config, pool, target)
-            created.append(target)
-        for name in names:
-            rid = rids[name]
-            found = _mapping_holder(config, rid, mid)
-            if found is not None:
-                holder, entry = found
-                if holder.name != target:
-                    skipped.append({
-                        "model": mid, "target": target,
-                        "reason": f"账号 {name} 的资源 {rid} 与厂商模型 {mid} 已挂在系统模型 "
-                                  f"{holder.name}（同一组合不重复挂载）"})
-                    continue
-                if entry.enabled == enabled:
-                    already += 1                  # 幂等命中：目标与开关都没变
-                elif enabled:
-                    entry.enabled = True
-                    turned_on += 1                # 关 → 开：重新进池、重新对外声明
-                else:
-                    entry.enabled = False
-                    turned_off += 1               # 开 → 关：条目留在配置里（保运行态），但不进池
-                continue
-            if not enabled:
-                skipped.append({
-                    "model": mid, "target": target,
-                    "reason": f"账号 {name} 的 {mid} 尚未建立映射，无需关闭"
-                              "（先选目标系统模型建立映射，才谈得上开关）"})
-                continue
-            model.resources.append(ModelResource(resource=rid, model=mid,
-                                                  reasoning=None, enabled=True))
-            added += 1
-    try:
-        save_config(config, path)
-    except OSError as e:
-        raise _ApiError(500, f"配置写入失败：{e}") from None
+    # 阶段 3：读**写后**磁盘快照 → 预检 → 写产品位 → 扇出条目 → 原子保存。
+    # 🔴 整段下放工作线程（债务 Q33-债3 / 复验轮 R4-⑦）：读盘 + `save_config` 的 fsync
+    #    + 配置写锁等待都是阻塞动作，留在事件循环里一次保存就把全网关按住
+    #    （同文件 `store.commit_login_async` 的 A-1 教训：实测 1007ms）。必须整段下放：
+    #    `threading.Lock` 在哪个线程取就在哪个线程放，拆成两次 `to_thread` 会既踩错锁、
+    #    又给两个写者各留一份过期快照。热重载留在锁外、也留在这里。
+    p3 = await asyncio.to_thread(_write_mappings_phase3,
+                                 path, product, parsed, rids, names, pool)
     ok, errors = await runtime.reload_from_file()
-    payload = {"product": product, "created_models": created, "accounts": accounts_out,
-               "added": added, "already": already, "skipped": skipped, "reload": ok,
-               "turned_on": turned_on, "turned_off": turned_off}
+    payload = {"product": product, "created_models": p3["created"],
+               "accounts": accounts_out,
+               "added": p3["added"], "already": p3["already"],
+               "skipped": p3["skipped"], "reload": ok,
+               "turned_on": p3["turned_on"], "turned_off": p3["turned_off"],
+               # 🔴 Q33-①：产品位是真相 ⇒ 回执如实报"写了哪些位"与"本次扇出到几个号"。
+               # 条目只落启用号（停用号在它被重新启用时按产品位自动继承，见 materialize
+               # `sync_product_models`），所以 `accounts_mapped` 计的是**本轮扇出的号数**，
+               # 不是"该产品全部账号"——两个数不一样时界面不得说成"已覆盖全部账号"。
+               "product_models": p3["bits"],
+               "accounts_mapped": len(names)}
     if not ok:
         payload["reload_errors"] = errors
     return payload
@@ -1548,8 +1713,9 @@ async def account_check_models(request: Request, product: str, name: str):
 
     取法（三条都必须是**同一份配置**，不得各读一处）：
     - 资源 = `_matched_resources(config, product, name)`（§22.5-2 的单一 join 谓词）；
-    - 映射 = `config.models[].resources[]` 中 `resource ∈ 上述资源 id` 且 **`enabled=true`**
-      的条目（映射级开关关掉的那些**不参与检测**，与调度/对外声明同一判据）；
+    - 映射 = `config.models[].resources[]` 中 `resource ∈ 上述资源 id` 且**按 Q33-① 判据开着**
+      的条目（账号侧看**产品位**、厂商侧看条目位 ⇒ 关掉的映射**不参与检测**，
+      与调度/对外声明读同一条判据，不各写一份）；
     - 输出 = `{vendor_model（发给上游的模型 id）, system_model（网关对外名）, resource_id}`。
 
     另带两个"能不能真发请求"的事实位，供界面如实说明（不制造点了没反应的按钮）：
@@ -1566,20 +1732,32 @@ async def account_check_models(request: Request, product: str, name: str):
         raise _ApiError(503, "运行态不可用（无配置快照），无法列出可检测模型")
     resources = _matched_resources(cfg, product, clean)
     rids = {r.id for r in resources}
+    by_id = {r.id: r for r in resources}
     items = []
     for m in cfg.models:
         for ref in m.resources:
-            if ref.resource in rids and ref.enabled:
-                items.append({"vendor_model": ref.model, "system_model": m.name,
-                              "resource_id": ref.resource})
+            if ref.resource not in rids:
+                continue
+            # 🔴 与调度/对外声明**同一条判据**（Q33-①）：账号侧看产品位、厂商侧看条目位。
+            # 检测是"真会发请求的那些模型"的清单，判据若与选路不一致，界面就会
+            # 要么漏掉能测的、要么列出根本进不了池的。
+            if not cfg.mapping_enabled(by_id[ref.resource], ref, m.name):
+                continue
+            items.append({"vendor_model": ref.model, "system_model": m.name,
+                          "resource_id": ref.resource})
     adapters = getattr(runtime, "adapters", {}) or {}
     return {
         "product": product, "name": clean,
         "models": items,
         "resource_enabled": any(r.enabled for r in resources) if resources else False,
         "has_adapter": any(adapters.get(rid) is not None for rid in rids),
+        # 🔴 第七处判据同一条（复验轮 R4-②：旧写法 `not ref.enabled` 是"另一把尺"）：
+        #    "关着"= 按统一判据**此刻不生效**，含"产品位关了"与"位改指别处"两种形状。
+        #    旧写法会在这两个形状下说谎 —— 条目位还开着但位已关 ⇒ 上面 `models` 里没有它，
+        #    这一行却报 0 ⇒ 界面既说"没得测"又说"没有关着的映射"，同一屏两套真相。
         "mapped_off": sum(1 for m in cfg.models for ref in m.resources
-                          if ref.resource in rids and not ref.enabled),
+                          if ref.resource in rids
+                          and not cfg.mapping_enabled(by_id[ref.resource], ref, m.name)),
     }
 
 

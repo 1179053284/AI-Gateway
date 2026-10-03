@@ -1451,18 +1451,29 @@ async function runChecks(root, overviewPath) {
       .replace(/"""[\s\S]*?"""/g, "").replace(/'''[\s\S]*?'''/g, "");
     let out = "", i = 0;
     const n = src.length;
-    let mode = "code";            // code | line | block | squote | dquote | template
-    let depth = 0;                // 模板串 ${} 里又回到代码态
-    const tplStack = [];
+    // 🔴 第十三轮修**状态机本身**（旧实现在 `models.js` 上就会失步）：旧写法用一个全局
+    //    `depth` 记 `${}`、`}` 只做 `depth--`，**从不弹 `tplStack`** —— 模板串里每个
+    //    `${…}` 都留下一帧陈旧 "template"，下一次反引号 `tplStack.pop()` 就弹到错的帧上
+    //    （该回 code 却回 template），此后整个文件的相位反过来了：真代码被当模板正文、
+    //    真模板正文被当代码。于是第八轮 B-4 判的那个坏形态**换了触发点又回来了** ——
+    //    实测旧机扫 `models.js` 到 413 行时 mode=template，413 那个开串反引号被当成**闭**
+    //    串，紧跟的 `// 到「X」页…` 落进假 code 态被当行注释删掉 ⇒ 用户看得见的指路从
+    //    扫描面消失、J2 纹丝不动（变异自证 183/184 的那一条红就是它）。
+    //    现在按**帧栈**记账：每个代码态帧带自己的花括号深度，`{` 入深度、只有深度归零的
+    //    那个 `}` 才结束插值；反引号只弹自己那一帧。
+    const stack = [{ k: "code", braces: 0 }];  // 帧：{k:"code",braces} | {k:"template"}
+    let mode = "code";
+    const top = () => stack[stack.length - 1];
+    const resume = () => { mode = top().k === "template" ? "template" : "code"; };
     while (i < n) {
       const two = src.slice(i, i + 2);
       if (mode === "line") {
-        if (two[0] === "\n") { mode = tplStack.length ? "template" : "code"; out += two[0]; i++; }
+        if (two[0] === "\n") { out += "\n"; i++; mode = "code"; resume(); }
         else i++;
         continue;
       }
       if (mode === "block") {
-        if (two === "*/") { i += 2; mode = tplStack.length ? "template" : "code"; }
+        if (two === "*/") { i += 2; mode = "code"; resume(); }
         else { if (src[i] === "\n") out += "\n"; i++; }
         continue;
       }
@@ -1476,17 +1487,21 @@ async function runChecks(root, overviewPath) {
       }
       if (mode === "template") {
         if (src[i] === "\\") { out += src.slice(i, i + 2); i += 2; continue; }
-        if (src[i] === "`") { mode = tplStack.pop() || "code"; out += src[i]; i++; continue; }
-        if (two === "${") { tplStack.push(mode); mode = "code"; depth++; out += two; i += 2; continue; }
+        if (src[i] === "`") { stack.pop(); out += src[i]; i++; mode = "code"; resume(); continue; }
+        if (two === "${") { stack.push({ k: "code", braces: 0 }); mode = "code"; out += two; i += 2; continue; }
         out += src[i]; i++; continue;
       }
       // code 态
       if (two === "//") { mode = "line"; i += 2; continue; }
       if (two === "/*") { mode = "block"; i += 2; continue; }
-      if (src[i] === "`") { tplStack.push("code"); mode = "template"; out += src[i]; i++; continue; }
+      if (src[i] === "`") { stack.push({ k: "template" }); mode = "template"; out += src[i]; i++; continue; }
       if (src[i] === "'") { mode = "squote"; out += src[i]; i++; continue; }
       if (src[i] === '"') { mode = "dquote"; out += src[i]; i++; continue; }
-      if (src[i] === "}" && depth > 0 && tplStack.length) { depth--; mode = "template"; }
+      if (src[i] === "{") top().braces += 1;
+      if (src[i] === "}") {
+        if (top().braces > 0) top().braces -= 1;         // 对象/代码块的 `}`：留在代码态
+        else if (stack.length > 1) { stack.pop(); mode = "template"; }  // 配平的插值结尾
+      }
       out += src[i]; i++;
     }
     return out.split("\n")
@@ -3232,6 +3247,10 @@ const MUTATIONS = [
     // 2026-10-02 重锚：那句指路文案加了"供应商侧 / 账号侧"分流（`models.js:407`），
     // 旧字面（只到「添加映射」）命中 0 次。判据原意不变：把坏页名放进模板串里以 `//`
     // 开头的那一行，剥注释若按"行首 `//` 即注释"判，用户看得见的指路就从扫描面消失。
+    // 2026-10-03 复核：锚点没过期（`models.js:413` 就是那句、命中 1 次），红的是**剥离器
+    // 自己的插值栈**——旧 `stripComments` 的 `}` 只 `depth--` 不弹栈，扫到 413 行时已经
+    // 反相（mode=template ⇒ 开串反引号被当闭串，随后 `//` 落进假 code 态被当注释删），
+    // 坏形态与 B-4 原意同族。已按帧栈修好（本文件 `stripComments`），本条恢复能打红。
     from: "无资源（调用将无可用资源 503）——供应商侧到「接入模型资源」页添加映射，账号侧到「接入账号资源」页做「模型映射」",
     to: "无资源（调用将无可用资源 503）——\n      // 到「运维面板」页编辑资源添加映射",
     kills: ["J2"] },

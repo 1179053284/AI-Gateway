@@ -299,7 +299,13 @@ class TestMappings:
 
     async def test_skip_when_pair_is_mapped_on_another_model(self, vendor, make_gateway, client):
         """(resource, model) 组合已在**别的**系统模型上 → 进 `skipped`（附账号与占位模型名），
-        目标模型照常创建但**一条映射都不挂**（如实回报，不静默挂第二份）。"""
+        且**整体不生效**：产品位不写、目标模型不建、一条映射都不挂。
+
+        🔴 Q33 评审 R1-① 判死后的契约翻转（旧行为 = 半落地，已作废）：原先这条会
+        ① 把产品位改成新目标、② 新建一个空的目标模型，只在扇出那一步跳过 ——
+        结果是"位说 vm-z 挂在 kimi-k3、条目实际还留在 other 上"，而 other 就此静默
+        掉出 `/v1/models`，回执仍是 200。现在预检在先：要么位和条目一起改，要么一个都不动。
+        """
         gw = await make_gateway(_cfg(vendor.port, models=[{
             "name": "other", "endpoint": "chat",
             "resources": [{"resource": "res-Q", "model": "vm-z"}]}],
@@ -315,15 +321,21 @@ class TestMappings:
         assert r.status_code == 200, r.text
         out = r.json()
         assert out["added"] == 0 and out["already"] == 0
-        assert out["created_models"] == ["kimi-k3"] and out["reload"] is True
+        assert out["created_models"] == [] and out["product_models"] == []   # 半落地判据
+        assert out["reload"] is True
         assert out["accounts"] == [{"name": "map-s2", "enabled": True,
                                     "resource_id": "res-Q"}]   # 命中既有物化行（幂等复用）
         assert len(out["skipped"]) == 1
         item = out["skipped"][0]
         assert item["model"] == "vm-z" and item["target"] == "kimi-k3"
         assert "map-s2" in item["reason"] and "other" in item["reason"]
+        assert "整体未生效" in item["reason"]                     # 回执如实说明"什么都没动"
         saved = _saved(gw)
-        assert next(m for m in saved["models"] if m["name"] == "kimi-k3")["resources"] == []
+        assert "kimi-k3" not in {m["name"] for m in saved["models"]}   # 不留下空模型
+        assert saved.get("product_models") in (None, [])               # 产品位没被改写
+        other_refs = next(m for m in saved["models"] if m["name"] == "other")["resources"]
+        assert [(e["resource"], e["model"], e["enabled"]) for e in other_refs] == [
+            ("res-Q", "vm-z", True)]                            # 旧挂载原样保留
 
     async def test_refusals_leave_disk_untouched(self, vendor, make_gateway, client):
         """拒绝分支（未知产品 / 参数形态 / 目标不可追溯 / 无已启用账号）→ 400 可读原因，

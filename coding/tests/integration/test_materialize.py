@@ -120,6 +120,29 @@ def test_ensure_resource_keeps_an_existing_disabled_switch(tmp_path):
     assert _row(cfg, rid).enabled is False
 
 
+def test_ensure_resource_on_a_disabled_account_lands_disabled(tmp_path):
+    """🔴 **新建**资源的启用位 = 账号自己的启用位（Q33 评审 R1-④ 判死后的判据）。
+
+    旧实现一律写 `enabled=True`，而这条路径是真实存在的（导入/重登一个停用号、
+    `_set_enabled` 的启用前置物化、`commit_login` 尾部的 best-effort 物化）——
+    一律 True 就等于凭空造出"账号停用、资源启用、条目齐全"的**可调用号**，
+    号开关被绕过（违反 Q33-①②「一个开关一个主人」）。
+    红证（把 `enabled=_account_enabled(...)` 撤成 `enabled=True`）：本用例第一条断言即红。
+    """
+    cfg = tmp_path / "conf" / "config.yaml"
+    _write(cfg, resources=[LEGACY])
+
+    store.commit_login("buddy", "acc-off", {"access_token": "T-off"}, {"enabled": False})
+    assert store.load_meta(store.product_root("buddy"), "acc-off")["enabled"] is False
+    rid_off = ensure_resource("buddy", "acc-off", config_path=cfg)
+    assert _row(cfg, rid_off).enabled is False
+
+    # 对照腿：账号没有显式停用（缺省 = 启用）⇒ 新建资源照旧启用，不把停用语义扩大化
+    store.commit_login("buddy", "acc-on", {"access_token": "T-on"}, {})
+    rid_on = ensure_resource("buddy", "acc-on", config_path=cfg)
+    assert _row(cfg, rid_on).enabled is True
+
+
 def test_ensure_resource_refuses_when_registry_has_no_base_url(tmp_path, monkeypatch):
     """🔴 基址取不到 → **拒建** + 可执行错误（不编造域名），且配置文件原样不动。"""
     meta = registry.get("buddy")
@@ -150,15 +173,31 @@ def test_ensure_resource_rejects_bad_account_names(tmp_path, bad):
 
 
 def test_ensure_resource_refuses_to_overwrite_a_corrupt_config(tmp_path):
-    """配置读不动 → 拒建：拿一份"缺了很多资源"的快照覆盖用户配置 = 数据丢失。"""
+    """配置读不动 → 拒建：拿一份"缺了很多资源"的快照覆盖用户配置 = 数据丢失。
+
+    🔴 消息必须是**真实成因**（复验轮 R4 阻塞项 B 的处置）：哪份文件、校验说了什么、
+    下一步怎么办。⚠️ 同轮复验裁定：R4 说 `ValidationError` 会以 `ValueError` 穿出
+    `load_config` —— 九种坏形状逐一复跑**全部只出 `ConfigError`**（`config/loader.py:49-54`
+    统一包装），所以实现里**不留** `except ValueError` 死分支；这里第二腿用
+    `resources: [{a: 1, b: 2}]`（缺必填字段）而不是 `{"a":1,"b":2}`（后者是"合法的空配置"，
+    根本不抛 —— 记进 pitfalls：**拒绝式判据的前提必须实测存在**）。
+    """
     cfg = tmp_path / "conf" / "config.yaml"
     cfg.parent.mkdir(parents=True, exist_ok=True)
     cfg.write_text("resources:\n  - id: res-x\n    product: buddy\n    api_key: ''\n",
                    encoding="utf-8")
     before = cfg.read_bytes()
-    with pytest.raises(MaterializeError, match="配置校验失败"):
+    with pytest.raises(MaterializeError, match="配置读不动") as e:
         ensure_resource("buddy", "acc-1", config_path=cfg)
+    message = str(e.value)
+    assert "不覆盖坏配置" in message and "下一步" in message
+    assert str(cfg) in message                        # 指到**哪份文件**，不是泛泛"校验失败"
+    assert "未登记" not in message                    # 成因是"读不动"，不借产品名义
     assert cfg.read_bytes() == before
+
+    cfg.write_text("resources:\n  - {a: 1, b: 2}\n", encoding="utf-8")
+    with pytest.raises(MaterializeError, match="配置读不动"):
+        ensure_resource("buddy", "acc-1", config_path=cfg)
 
 
 def test_ensure_resource_does_not_touch_model_mappings(tmp_path):

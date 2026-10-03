@@ -110,6 +110,19 @@ class QuotaPool:
         return f"QuotaPool(remaining={self.remaining}, reserved={self.reserved})"
 
 
+def display_label(r: "Resource") -> str:
+    """资源在**人读的那一尺**上的名字（评审 R9-报备 R-9 的下半句）。
+
+    旧回落是 `name or id` ⇒ 账号侧资源（`materialize` 不填备注名）永远显示成
+    `res-9a17353a` 这种自动生成的 id：用户在请求日志、切换事件与"装不下已换号"这类
+    理由串里读到的是自己从没起过的串，与同一条链路上其它文案（资源页备注、
+    `GatewayError` 的"已尝试：资源B/glm-5.2×1"）不同尺。
+    回落顺序 = 备注名 → **账号名**（账号侧资源一定有 `account_ref`，且它就是界面上那一行）→ id。
+    厂商侧资源没有账号名 ⇒ 与改动前逐字一致，零行为变化。
+    """
+    return r.name or r.account_ref or r.id
+
+
 class ResourceState:
     """单资源运行态（跨配置快照持久，按 resource_id 关联，tech §8-4）。"""
 
@@ -310,10 +323,13 @@ def servable_models(config: AppConfig, registry: dict | None = None) -> set[str]
         if not m.enabled:
             continue
         for ref in m.resources:
-            if not ref.enabled:
-                continue          # 🔴 映射级开关关闭 ⇒ 这条映射不对外声明（/v1/models 与 setup 都不出）
             r = by_id.get(ref.resource)
             if r is None or not r.enabled:
+                continue
+            # 🔴 映射关 ⇒ 不对外声明（/v1/models 与 setup 都不出）。判据与 `rebuild`
+            # **同一条**（`AppConfig.mapping_enabled`，Q33-①）：两处各写一份就会分叉 ——
+            # 账号侧看产品位、厂商侧看条目位。
+            if not config.mapping_enabled(r, ref, m.name):
                 continue
             if premise is not None:
                 try:
@@ -339,6 +355,19 @@ class ResourceManager:
         #: 额度池（按 rid 共享；跨热重载保留，与 registry 同口径）
         self.quotas: dict[str, QuotaPool] = {}
         self.x = 2  # 全局并发溢出生效集（rebuild 时从配置刷新）
+        #: 🔴 号间轮转游标（Q33-③）：`系统模型 → 下一次选路的起点`（池内下标）。
+        #: 有界：键集 ⊆ `self.pools` 的键集，`rebuild` 里随池一起回收（§22.8-9「无全局列表无界增长」）。
+        #: 只影响"平局给谁"，不影响能不能被选中 —— 冷启动等价于游标 0（池首优先，旧行为）。
+        self._cursor: dict[str, int] = {}
+        #: 🔴 **活跃组**（Q33-③ 的两级开关配套，评审 R2-① 判死后的修正）：
+        #: `系统模型 → 此刻正在承接流量的那批资源的 rid`，长度恒 ≤ x。
+        #: 为什么光有游标 + 窗口不够：窗口是"从游标起 x 条"，但**排空一个号就把游标推到它之后**，
+        #: 于是别的仍在途的号会落到窗口外，新流量照旧能在窗口里再开 x 个新号 ⇒
+        #: 同时承接者可达 x+1、x+2……"最多 x 个资源并行"（用户指令 1 里 x 的定义）当场失效。
+        #: 组把"当前这 x 条"固化成派发域：**只有组内成员能被派发**，组整体排空才让位给
+        #: 游标方向的下一组 ⇒ 并行上限硬成立，串行仍逐号轮转。
+        #: 有界：键集 ⊆ `self.pools` 的键集，值 ⊆ 该池的 rid ⇒ 与游标同在 `rebuild` 回收。
+        self._groups: dict[str, list[str]] = {}
         #: **读时重判**的判据：「全局风控熔断此刻是否仍成立」（2026-09-29 用户裁决）。
         #: 🔴 分层：`core/` 不 import `upstream/zcode/`，所以判据由装配侧注入
         #: （`main.py` 的 `Runtime` 把 `zq.get_circuit().active` 包一层传进来）。
@@ -418,14 +447,17 @@ class ResourceManager:
             for ref in m.resources:
                 rid = (ref.resource, ref.model)
                 referenced.add(rid)      # 仍算"被引用"：关掉的映射不回收状态，打开即恢复
-                if not ref.enabled:
-                    continue             # 🔴 映射级开关关闭 ⇒ **不进资源池**（调度取不到它）
-                state = self.registry.get(rid)
                 r = res_index[ref.resource]
+                # 🔴 映射关 ⇒ **不进资源池**（调度取不到它）。判据唯一入口 =
+                # `AppConfig.mapping_enabled`（Q33-①）：厂商侧看条目位、
+                # 账号侧看**产品位**（含已停用的号，产品开关对它们同样有效）。
+                if not config.mapping_enabled(r, ref, m.name):
+                    continue
+                state = self.registry.get(rid)
                 fp = _conn_fingerprint(r, self._credential_fp(r))
                 if state is None:
                     state = ResourceState(ref.resource, ref.model,
-                                          label=r.name or r.id,
+                                          label=display_label(r),
                                           vendor=vendor_label(r.preset, r.vendor, r.name, r.id),
                                           account=r.account,
                                           access_mode=r.access_mode,
@@ -434,7 +466,7 @@ class ResourceManager:
                                           src_fp=fp)
                     self.registry[rid] = state
                 else:  # 状态保留（C/冷却/in_flight），仅刷新可变属性
-                    state.label = r.name or r.id
+                    state.label = display_label(r)
                     state.vendor = vendor_label(r.preset, r.vendor, r.name, r.id)
                     state.account = r.account
                     state.enabled = r.enabled
@@ -476,24 +508,69 @@ class ResourceManager:
                                           for rr in m.resources)}
         self.pools = new_pools
         self.x = config.scheduling.max_active_per_model
+        # 轮转游标随池回收（§22.8-9 内存有界）：模型被删/改名后不留孤儿键。
+        # 仍在的模型**保留游标** —— 热重载不该把轮转位置重置成"又从第一个号开始"，
+        # 否则一次配置保存就把刚被用过的号排到队尾之后很久才再轮到，等于变相压低它。
+        for name in list(self._cursor):
+            if name not in new_pools:
+                del self._cursor[name]
+        # 活跃组同样随池回收，并且**成员必须在新的池里**（映射被关掉/资源被停用的成员
+        # 不能继续当"占坑者"，否则组永远凑不满 x 条，x 被变相调小）。
+        for name in list(self._groups):
+            pool = new_pools.get(name)
+            if pool is None:
+                del self._groups[name]
+                continue
+            live = {s.resource_id for s in pool}
+            kept = [rid for rid in self._groups[name] if rid in live]
+            if kept:
+                self._groups[name] = kept
+            else:
+                del self._groups[name]
 
-    # —— 选路（§5.3 并发溢出生效集；UT-22 七场景）——
+    # —— 选路（§5.3 生效集 + Q33-③ 号间轮转；UT-22 场景 + 轮转场景）——
     def pick_and_acquire(self, system_model: str, exclude: set) -> ResourceState | None:
         """选路并在同一同步段完成在途 +1 与**额度预留**（v2.0 §19 M5-3）。
 
         exclude：本请求已尝试过的资源（故障切换目标选取时排除）。
 
+        🔴 生效集 = **从轮转游标起、按池序取 x 条可用候选的滑动窗口**（Q33-③，
+        推翻 §5.3 原「低负载集中调用、不轮询」的定论）。为什么必须滑动而不是固定前缀：
+        一个模型下挂 10 个号、`x=2` 时，固定前缀会让**永远只有排在最前的 2 个号被用到**，
+        其余 8 个号额度再多功能也轮不上 —— 用户要的「4 个号轮流调用」直接落空，
+        而多号池化的真正收益是**额度与风控分摊**（§26 调研轮结论），不是并发上限。
+        "窗口"在实现上是**活跃组**（`self._groups`）：组内成员就是本轮可被派发的资源，
+        只有整组排空才让位 ⇒ 「任意时刻最多 x 个资源同时承接流量」这条既有定论成立
+        （用户指令 1：x = 两类接入合计的"总的并行可用资源"）。
+
+        集内取在途最少者（保留原「不堆同一个号」的性质）；**平局由游标决定**，
+        于是空闲号之间按池序轮转：连续四条请求打同一模型、四个号都空闲 ⇒ 1/2/3/4 各一条。
+
         🔴 预留必须与 `in_flight += 1` 在**同一同步段**：单线程事件循环内这段不 await，
         因此天然原子 —— 这正是我们比参考项目强的地方（`16` §④：它们的选路无租约，
         并发请求可全部撞在同一个"剩余额度=1"的账号上，事后才按 429 纠偏）。
+
+        🔴 **游标在"选中"时不推进，只在被选中的号**排空释放**时推进（见 `release`）**
+        （Q33 评审 R2-① 判死后的修正）。选中即推进 = 每条并发请求都换一个新号，
+        「任意时刻最多 x 个资源同时承接流量」这条既有定论直接被绕过
+        （实测 x=1 / x=2 / x=3 三种配之下四个号同时在途 ⇒ x 形同虚设）。
+        挪到排空时推进后两条要求同时成立：串行请求仍在一组号里轮着来（额度与风控分摊），
+        并发时超出 x 的请求继续复用组内最闲的那个，承接者数不超过 x。
         """
         pool = self.pools.get(system_model)
         if not pool:
             return None
         now = self.clock()
         circuit_cleared = self._circuit_cleared()
+        # 🔴 游标与旋转**只用一个索引空间 = 池下标**（Q33 自测抓出的实现错：先前把
+        # "池下标存的游标"去对"过滤后的候选列表"取模，冷却/停用号一多就会把某些号永久跳过）。
+        # 做法：先把**池**按游标环形旋转，再按既有顺序过滤可用者，窗口取过滤后前 x 条。
+        n = len(pool)
+        # 切换轮（`exclude` 非空）从池首开始：切换的语义是"刚试过 A，按优先级找替补"，
+        # 跟着滑动会跳到窗口尾部，把用户排好的 ↑↓ 主备次序劫持掉（§5.3a 第 3 条）。
+        start = 0 if exclude else self._cursor.get(system_model, 0) % n
         candidates = []
-        for r in pool:
+        for r in pool[start:] + pool[:start]:
             if r.resource_id in exclude:
                 continue
             # 冷却到期归位（UT-10）+ 熔断读时重判 —— 与快照走**同一组动作**，
@@ -503,20 +580,81 @@ class ResourceManager:
                 candidates.append(r)
         if not candidates:
             return None
-        active_set = candidates[:self.x]  # 生效集 = top-x 可用资源（x 全局）
-        # 集内在途最少者承接；平局取优先级高（min 返回首个最小值 = 列表序 = 优先级）
-        order = sorted(range(len(active_set)), key=lambda i: active_set[i].in_flight)
+        # —— 活跃组 = 本轮的**派发域**（≤ x 条并行）——
+        # 🔴 仍在途的成员**不得被逐出记账**（复验轮 R4 阻塞项 A：先前只用"此刻可用候选"
+        #    重过滤组 ⇒ 切换轮的 `exclude` 与成员冷却/停用都会把仍在途的号从组里抹掉，
+        #    `release` 的"整组排空"因此看不见它，组重新凑满 x 条 ⇒ 承接者实测越出 x）。
+        #    占名额 ≠ 可派发：在途但此刻不可用/被排除的成员继续占着组里的坑，只是本轮不给它派活。
+        by_state = {s.resource_id: s for s in pool}
+        held = [rid for rid in self._groups.get(system_model, ())
+                if by_state.get(rid) is not None and by_state[rid].in_flight > 0]
+        avail = {c.resource_id: c for c in candidates}
+        group = list(held)
+        if not exclude:
+            # 常态轮：从游标方向（= `candidates` 的序）把组补齐到 x 条。
+            # 切换轮**不扩组**：它的语义是"给刚失败的请求找替补"，扩组会把替补位
+            # 永久占住在途之外，反而压低并行上限的严肃性。
+            for c in candidates:
+                if len(group) >= self.x:
+                    break
+                if c.resource_id not in group:
+                    group.append(c.resource_id)
+        in_group = set(group)
+        self._groups[system_model] = group
+        group_targets = [avail[rid] for rid in group if rid in avail]
+        # 🔴 组内没有可派发的替补时（整组都在 exclude 里 / 都冷却了），切换轮才允许用**池外备胎**：
+        #    宁可那一刻越出 x 一条，也不能让"明明有可用号"的请求吃 503
+        #    —— 这是"最多 x 条并行"的唯一例外，tech §5.3a 第 3 条已如实登记。
+        targets = group_targets
+        if exclude and not group_targets:
+            targets = [c for c in candidates if c.resource_id not in in_group]
+        if not targets:
+            return None
+        # 组内取在途最少者（保留原「不堆同一个号」的性质）；平局保持**轮转序**
+        # （`sorted` 稳定 ⇒ 首个最小值 = 游标方向最近的那个空闲号）
+        order = sorted(range(len(targets)), key=lambda i: targets[i].in_flight)
         for i in order:
-            best = active_set[i]
+            best = targets[i]
             if self.reserve_quota(best):
                 best.in_flight += 1
+                # 🔴 这里**不推进游标**（推进在 `release` 的排空时刻）：选中即推进等于
+                # 每条并发请求都换一个新号，x 的"最多 x 个资源同时承接"当场失效。
+                if best.resource_id not in in_group:
+                    group.append(best.resource_id)     # 备胎进组：它现在承接流量了
                 return best
             # 预留失败 = 选中即耗尽（同一 tick 内已被并发占满）→ 按同序换下一个
         return None
 
     def release(self, state: ResourceState) -> None:
+        """在途 -1；**活跃组整体排空时**才把轮转游标推到排空者之后并让组作废（Q33-③ 落点）。
+
+        为什么在释放侧而不是选中侧推进：见 `pick_and_acquire` 的 🔴 段。
+        🔴 为什么还要"整组排空"这个前提（评审 R2-①）：只要"某一个号排空"就换位，
+        仍在途的同号会落到新窗口之外，而新窗口照样能开满 x 条 ⇒ 同时承接者 = x + 残留，
+        "最多 x 个资源并行"被自己写的注释绕过。整组排空才换位 ⇒ 上限硬成立，
+        串行请求仍然逐号轮转（一次一条时组里只有一个成员，排空即换位）。
+        """
         if state.in_flight > 0:
             state.in_flight -= 1
+        if state.in_flight != 0:
+            return
+        for model in state.system_models:
+            pool = self.pools.get(model)
+            if not pool:
+                continue
+            try:
+                idx = pool.index(state)
+            except ValueError:
+                continue      # 映射已关 / 被移出池：没有位置可推进（不编一个位置出来）
+            group = self._groups.get(model)
+            if group is not None:
+                by_rid = {s.resource_id: s for s in pool}
+                # 组里还有谁在途 = 这一组还没服务完，不让位（新请求继续复用组内最闲的）
+                if any(by_rid.get(rid) is not None and by_rid[rid].in_flight > 0
+                       for rid in group):
+                    continue
+                del self._groups[model]
+            self._cursor[model] = (idx + 1) % len(pool)
 
     # —— 状态变更 ——
     def bench(self, state: ResourceState, seconds: float) -> bool:
@@ -769,7 +907,7 @@ class ResourceManager:
                                default=0)      # 「冷却剩余」列与恢复时刻**同一个数**（S-31）
             out.append({
                 "rid": r.id,
-                "name": r.name or r.id,
+                "name": display_label(r),      # 与 `resource_id_str` 同一把尺（评审 R11）
                 "vendor": vendor_label(r.preset, r.vendor, r.name, r.id),
                 "account": r.account,
                 "status": status,

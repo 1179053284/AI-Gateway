@@ -396,3 +396,47 @@ def test_route_copy_points_at_a_page_that_actually_hosts_the_control():
     # ③ 三条路线常量本身与这张表一致（常量写错 = 所有指路一起歪）
     assert RESOURCE_PAGE == "「接入模型资源」页" and ROUTE_POOL_PAGE == "「网关模型管理」页"
     assert OVERVIEW_HEALTH_PAGE == "「总览」页的资源健康表"
+
+
+def test_cli_models_feed_the_same_spec_into_the_caps_block(tmp_path, monkeypatch):
+    """🔴 UT-88 · `mgw setup` 写进工具配置文件的 `caps.thinkingLevelMap` 必须吃同一份规格。
+
+    复验轮 R5-③：`build_cli_models` 里 `build_model_caps(..., spec=...)` 传了规格，
+    而 `build_caps_block(m, enum_pool, dialects)` **漏传** ⇒ 不在内置枚举池、档位只存在于
+    按号目录缓存里的账号模型，写出来的七个键全是 null —— 工具侧推理档位变哑，
+    正是 `/v1/models` 那条路上刚消灭的原缺陷在**另一条出口**复活
+    （与本文件自己的"两条路径同一判据，不得各说各话"直接冲突）。
+    """
+    import yaml
+    from model_gateway.accounts import catalog_cache
+    from model_gateway.accounts.types import ModelInfo
+    from model_gateway.cli_setup import build_cli_models
+    from model_gateway.config.loader import load_config
+    from model_gateway.core.dialects import DialectTable
+    from model_gateway.enums.matcher import load_enum_pool
+
+    root = tmp_path / "up" / "buddy"
+    (root / "accounts").mkdir(parents=True)
+    monkeypatch.setenv("MGW_BUDDY_ACCOUNTS", str(root / "accounts"))
+    catalog_cache.write_cache("buddy", [ModelInfo(id="vm-x", context_window=200000,
+                                                  max_output=8000, reasoning=True,
+                                                  effort_levels=("low", "high"))],
+                              source_account="acc-1", root=root)
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.safe_dump({
+        "resources": [{"id": "res-p", "name": "号1", "product": "buddy", "account_ref": "acc-1",
+                       "account": "acc-1", "protocol": "openai",
+                       "base_url": "http://127.0.0.1:9/v1", "api_key": ""}],
+        "models": [{"name": "账号独有模型", "endpoint": "chat",
+                    "resources": [{"resource": "res-p", "model": "vm-x"}]}],
+    }, allow_unicode=True), encoding="utf-8")
+    config = load_config(cfg_path)
+    enums = load_enum_pool(tmp_path / "enums.yaml")
+    dialects = DialectTable.load(tmp_path / "d.yaml")
+
+    rows = build_cli_models(config, enums, dialects, "http://127.0.0.1:1/v1", "mg-t")
+    assert len(rows) == 1, rows
+    levels = rows[0]["caps"]["thinkingLevelMap"]
+    assert any(v for v in levels.values()), f"档位全 null（spec 没喂进 caps 块）：{levels}"
+    assert rows[0]["supportsReasoning"] is True
+    assert rows[0]["maxOutputTokens"] == 8000

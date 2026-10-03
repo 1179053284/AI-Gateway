@@ -716,9 +716,12 @@ class TestEnableDisableDelete:
         _seed("buddy", "acc-e1", {"token": SECRET}, {"plan": "free"})
 
         r = await _post(client, gw, "/admin/api/accounts/buddy/acc-e1/disable")
+        # 🔴 键集逐字钉住（Q33-①② 后两条腿同键）：`reload` = 启停是否**即时**落到运行态
+        #    （R3 F-4 实测原实现有 ≥3s 窗口照常派发流量，界面必须能如实说"已生效/待生效"）。
         assert r.status_code == 200 and r.json() == {"status": "ok", "product": "buddy",
                                                      "account": "acc-e1", "enabled": False,
-                                                     "changed": True}
+                                                     "changed": True, "reload": True,
+                                                     "mapping_skipped": []}
         assert SECRET not in r.text
         assert _meta_of("buddy", "acc-e1")["enabled"] is False
         assert _meta_of("buddy", "acc-e1")["via"] == "login"       # 来源标记不被改写

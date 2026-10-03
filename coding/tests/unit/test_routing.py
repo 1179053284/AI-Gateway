@@ -94,13 +94,23 @@ class TestRoutingScenarios:
         assert r.in_flight == 0
 
     def test_lazy_recovery_in_pick(self):
-        """冷却到期懒恢复（UT-10 逻辑位）：到期后 pick 直接归位 A。"""
+        """冷却到期懒恢复（UT-10 逻辑位）：到期后 A **回到候选集**并被轮到。
+
+        🔴 Q33-③ 改判：原先这条断的是"到期后下一次选路立刻回到 A"（§5.3 集中调用）。
+        号间轮转之后"立刻"不再成立 —— 游标已经走过 A 了，硬要立刻回 A 等于把轮转打掉。
+        所以这里断的是**懒恢复这件事本身**：状态从 cooldown 归位 active，且在有限几轮内
+        确实被选中一次（若到期不归位，A 会永远选不到，这条照样红）。
+        """
         rt = _build()
         a = _state(rt, "A")
         rt.resources.bench(a, 60)
         assert rt.resources.pick_and_acquire("test-model", set()).resource_id_str == "资源B/vm-B"
         rt.resources.release(rt.resources.registry[("res-B", "vm-B")])
         a.cooldown_until = rt.resources.clock() - 1  # 到期
-        r = rt.resources.pick_and_acquire("test-model", set())
-        assert r.resource_id_str == "资源A/vm-A" and a.status == "active"
-        rt.resources.release(r)
+        seen = set()
+        for _ in range(4):                            # 池 4 条 ⇒ 四轮内必轮到 A
+            r = rt.resources.pick_and_acquire("test-model", set())
+            assert r is not None
+            seen.add(r.resource_id_str)
+            rt.resources.release(r)
+        assert "资源A/vm-A" in seen and a.status == "active"

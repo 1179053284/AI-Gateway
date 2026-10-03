@@ -62,8 +62,11 @@ async def list_models(request: Request):
             "id": m.name, "object": "model", "created": 0, "owned_by": "model-gateway",
             "endpoint": m.endpoint, "group": m.group,
             # —— v2.0 能力位 ——
-            **build_model_caps(m, runtime.enum_pool),
-            "caps": build_caps_block(m, runtime.enum_pool, getattr(runtime, "dialects", None)),
+            **build_model_caps(m, runtime.enum_pool,
+                               spec=runtime.model_specs.get(m.name)),
+            "caps": build_caps_block(m, runtime.enum_pool,
+                                     getattr(runtime, "dialects", None),
+                                     spec=runtime.model_specs.get(m.name)),
         })
     return {"object": "list", "data": data}
 
