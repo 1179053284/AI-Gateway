@@ -238,6 +238,36 @@ function paramRow(m, e, key) {
     </div>`;
 }
 
+/** 网关侧合并规格的三态呈现（数据 = `GET /admin/api/config` 每条模型上的只读派生位 `spec`）。
+ *  未知 = 没有任何来源说过（**不印 0**）；陈旧 = 数取自超 TTL 的目录缓存（仍是可用的兜底值）；
+ *  实时 = 当天目录说过。三态不许折叠成两态（frontend-spec §7.18 通用律）。 */
+function specRows(m) {
+  const s = m.spec || null;
+  const fmt = (v) => (v === null || v === undefined) ? "未知" : fmtTok(v);
+  const hasNum = !!s && (s.max_input != null || s.max_output != null);
+  let badge, tip;
+  if (!s || !hasNum) {
+    badge = `<span class="badge b-gray">未知</span>`;
+    tip = "没有任何来源说过这个模型的规格：既没有内置目录条目，也没有生效资源的账号目录";
+  } else if (s.stale) {
+    tip = "数取自超过一天未刷新的目录缓存：仍是可用的兜底值，但不是当下的事实";
+    badge = `<span class="badge b-warn" title="${esc(tip)}">取自昨日目录</span>`;
+  } else {
+    tip = "规格来自当天取到的目录";
+    badge = `<span class="badge b-ok" title="${esc(tip)}">实时</span>`;
+  }
+  return `
+    <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px 12px">
+      <div class="form-row" style="margin-bottom:0"><label>最大上下文</label>
+        <div class="mono">${fmt(s && s.max_input)}</div></div>
+      <div class="form-row" style="margin-bottom:0"><label>最大输出</label>
+        <div class="mono">${fmt(s && s.max_output)}</div></div>
+      <div class="form-row" style="margin-bottom:0"><label title="${esc(tip)}">规格新鲜度</label>
+        <div>${badge}</div></div>
+    </div>
+    ${s && s.sources ? `<p class="form-hint" style="margin-top:10px">合并自 ${s.sources} 份来源（同一系统模型下所有生效资源的并集；数值取大 = 对外承诺上限）。</p>` : ""}`;
+}
+
 function drawDetail(root) {
   const box = root.querySelector("#md-detail");
   const m = cfg.models.find((x) => x.name === selected);
@@ -267,7 +297,9 @@ function drawDetail(root) {
         </div>
       </div>
       <div style="display:flex;flex:none;align-items:center;gap:8px">
-        <button class="btn" id="md-toggle">${disabled ? "启用" : "禁用"}</button>
+        <!-- 启停 = 开关（2026-10-03 用户指示：把「启用/禁用」那颗文字钮换成开关，拨一下就生效）。
+             挂载点由 bindDetail 每次重绘重绑（D3：绑在当下这颗开关上，不绑 id 找旧元素）。 -->
+        <span id="md-toggle" style="display:inline-flex;align-items:center"></span>
         ${SHOW_DELETE ? `<button class="icon-btn lg danger" id="md-del" aria-label="删除模型"
           title="删除该系统模型（工具端调用将立即 404）">${TRASH}</button>` : ""}
       </div>
@@ -282,6 +314,17 @@ function drawDetail(root) {
           <div style="font-size:12px;font-weight:500;color:var(--text-faint)">来源：内置模型目录（官网取证）· 只读</div>
         </div>
         ${e ? attrRows(e) : `<p class="form-hint" style="padding:2px 0">自定义模型：不在内置目录，暂无官方属性参考。</p>`}
+      </section>
+
+      <!-- 网关承诺（合并规格）：与上面「内置目录 · 官网取证」是**两个来源**，分开画。
+           对外声明（/v1/models）与出站缺省注入读的都是这一份 ⇒ 用户问"工具看到的窗口为什么是这个数"
+           要看这里，不是属性卡。三态分开画（未知 / 陈旧 / 实时），不许把"没有来源说过"印成 0。 -->
+      <section class="card" style="margin-top:12px">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px">
+          <div style="font-size:13px;font-weight:800;color:var(--text-soft)">网关承诺（合并规格）</div>
+          <div style="font-size:12px;font-weight:500;color:var(--text-faint)">来源：生效资源的统一规格 · 对外声明与出站默认都读它</div>
+        </div>
+        ${specRows(m)}
       </section>
 
       <!-- 资源池：有序映射（顺序 = 优先级） -->
@@ -374,7 +417,7 @@ function poolRows(m) {
           ? (presets.find((p) => p.id === u.res.preset)?.name || u.res.preset) : "自定义")) : "未知");
     const badgeTitle = isAcc
       ? `产品 ${u.prod} 的账号体系供给：该产品的 ${u.idxs.length} 个已启用账号各一条映射`
-        + "（增删/停用账号请到「接入账号资源」页的「模型映射」）"
+        + "（增删/停用账号请到「接入账号资源」页的模型映射弹窗）"
       : "";
     // 档位取组内首条；组内不一致时如实标出来（不静默按第一条显示）
     const efforts = new Set(u.idxs.map((i) => all[i].reasoning?.effort || ""));
@@ -429,11 +472,50 @@ function coerceParam(raw) {
   return s;
 }
 
-function bindDetail(root, m, e) {
-  root.querySelector("#md-toggle").onclick = async () => {
-    m.enabled = m.enabled === false;
-    await persist(root, m.enabled ? "模型已启用" : "模型已禁用（对外不可调用）");
+/** 本页自带开关（与 accounts.js 同一份契约：`role="switch"` + `aria-checked` + `aria-label`，
+ *  切换时同步 `aria-checked`；共享层 `components.js::switchEl` 无 aria 三件套，设计书 §6「明确不做」
+ *  把它单列一项，故不"顺手收敛"）。 */
+function switchEl(on, label, onToggle) {
+  const el = document.createElement("button");
+  el.className = "switch" + (on ? " on" : "");
+  el.setAttribute("role", "switch");
+  el.setAttribute("aria-checked", on ? "true" : "false");
+  el.setAttribute("aria-label", label);
+  el.onclick = async () => {
+    const next = !el.classList.contains("on");
+    const ok = onToggle ? await onToggle(next) : true;
+    if (ok !== false) {
+      el.classList.toggle("on", next);
+      el.setAttribute("aria-checked", next ? "true" : "false");
+    }
   };
+  return el;
+}
+
+/** 启停落库：🔴 写失败必须回滚本地态并**不翻牌**——界面说"已启用"而配置里没写，
+ *  就是 Q33 一直在消灭的那一类假态（`persist()` 把异常吞成 toast，这里不能复用它）。 */
+async function toggleEnabled(root, m, next) {
+  const prev = m.enabled;
+  m.enabled = next;
+  try {
+    await PUT("/admin/api/config", cfg);
+    toast(next ? "模型已启用" : "模型已禁用（对外不可调用）", "ok");
+  } catch (e) {
+    m.enabled = prev;
+    toast("保存失败：" + e.message, "err");
+  }
+  await renderModels(root);
+  return m.enabled === next;
+}
+
+function bindDetail(root, m, e) {
+  const slot = root.querySelector("#md-toggle");
+  if (slot) {
+    slot.innerHTML = "";                                 // 重绘前清空，杜绝开关叠开关
+    slot.append(switchEl(m.enabled !== false,
+      `启用 / 禁用模型 ${m.name}（关 = 对外不可调用：/v1/models 不再返回、调用一律 404 + model_disabled）`,
+      (next) => toggleEnabled(root, m, next)));
+  }
   if (SHOW_DELETE) root.querySelector("#md-del").onclick = async () => {
     if (!await confirmDialog("删除系统模型",
       `确定删除「${m.name}」？工具端调用将立即 404；资源与其 Key 不受影响（仅移除映射条目）。`)) return;
