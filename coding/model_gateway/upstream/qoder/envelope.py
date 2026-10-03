@@ -37,7 +37,20 @@ from model_gateway.core.errors import UpstreamError
 QUEUE_BUSINESS_CODE = "10605"
 #: 额度用尽业务码（`Billing daily count exceeded`；`model-queue.ts:73`）。
 BILLING_BUSINESS_CODE = "110"
+#: 🔴 额度类业务码的**全集**（信封内层 110 + 公开端点 HTTP 402 的 116）。
+#: 116 取自 2026-10-04 的实读响应（探针存档
+#: `docs/changes/e2e-records/E2E-20261004-qoder-quota-probe.md`）：额度为 0 的号打
+#: `POST https://api2-v2.qoder.sh/model/v1/chat/completions` 回
+#: `402 {"code":116,"error":"quota exceeded"}`。
+#: ⚠️ **口径限定（验收 PA-1 抓出来的）**：这一支只认「JSON `code` 字段 = 116」，
+#: **刻意不把 "quota exceeded" 加进下面的文案兜底** —— 文案判据扫的是整条响应体，
+#: 会让 `401 + 一句含 "quota exceeded" 的 body`（认证腿也可能回显这种句子）从 AUTH 翻成 QUOTA。
+#: 码表读的是结构化字段，不会误伤。同理**不宣称**「402 只可能是额度态」——那是从单个号
+#: 外推不出的全称命题；全局 `402 → QUOTA` 只是按字面把 Payment Required 归到额度类，
+#: 并且 `error_rules` 的 (http,type) 精确覆写排在它之前，将来要按厂商改回来是**有门的**。
+_BILLING_CODES = (BILLING_BUSINESS_CODE, "116")
 #: 额度文案兜底判据（**窄关键词**：泛词会误伤正文；`model-queue.ts:128-130`）。
+#: 只在**没有可识别业务码**时兜底；词表保持原样（理由见上面那条"别加新词"）。
 _BILLING_HINTS = ("billing daily count exceeded", "daily count exceeded", "billing_error")
 
 
@@ -147,6 +160,28 @@ def looks_like_billing_error(text: str) -> bool:
     return any(hint in low for hint in _BILLING_HINTS)
 
 
+def is_billing_code(code: Any) -> bool:
+    """业务码是否额度类（`110` 信封内层 / `116` 公开端点 HTTP 402）。"""
+    return str(code or "") in _BILLING_CODES
+
+
+def is_business_error(text: str) -> bool:
+    """响应体是不是 Qoder **可识别的业务错误**（排队 / 额度）—— 单一判据。
+
+    🔴 为什么要有这个函数而不是让调用方各自比码：出站层（`out._try_business_error`）原先
+    自己写了一遍 `code == 10605/110` 的硬编码比较，于是"新增一个额度码"要改两处 ——
+    本轮加 `116` 时就是这样：`business_error` 认了，出站那支却只靠**文案兜底**才认上
+    （撤证 M4 把文案关键词摘掉，出站立刻不认）。判据只有一份（本函数）+ 消费方一律走它。
+    """
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        parsed = None
+    code = str(parsed.get("code") or "") if isinstance(parsed, dict) else ""
+    return (code == QUEUE_BUSINESS_CODE or is_billing_code(code)
+            or parse_queue_info(text) is not None or looks_like_billing_error(text))
+
+
 def _with_retry_after(inner_text: str, wait: int | None) -> str:
     """把解析出的 `retry_after_seconds` **增量**写进错误体（原键一个不改）。
 
@@ -188,7 +223,7 @@ def business_error(inner_text: str) -> UpstreamError:
             text += f"，服务端建议等待 {wait}s"
         return QoderQueuedError(text, error_body=_with_retry_after(inner_text, wait),
                                 retry_after_seconds=wait)
-    if code == BILLING_BUSINESS_CODE or looks_like_billing_error(inner_text):
+    if code in _BILLING_CODES or looks_like_billing_error(inner_text):
         return QoderBusinessError(
             f"qoder 额度用尽（code={code or BILLING_BUSINESS_CODE}）：{message}",
             code=code or BILLING_BUSINESS_CODE, error_body=inner_text, status_code=429)

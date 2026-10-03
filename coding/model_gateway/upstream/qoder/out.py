@@ -16,7 +16,18 @@
   **本波次不具备该条件**（§22.8-1 禁止引入不明依赖；无网络）。
 - 因此本模块把「明文 ask → 签名后的 `{url, headers, body}`」定义为一个**注入点**：
   生产默认 `None`（**fail closed**：请求前当场报可读错误，绝不伪造签名、绝不静默降级
-  到公开端点 —— 公开端点**不认目录 key**，发过去只会回 `Unsupported model`）。
+  到公开端点 —— 公开端点**不认目录 key**，DSH 实测回 `Unsupported model`
+  （`qoder-product.ts:195-199` / `:317`），且它的通用名是**另一批模型**（`:338`），
+  降级过去等于换模型）。
+  ⚠️ 2026-10-04 我方补一条实读（探针存档
+  `docs/changes/e2e-records/E2E-20261004-qoder-quota-probe.md`）：**额度为 0 的号上，
+  公开端点的额度门跑在模型校验之前** —— 39 个去重后的候选名（含目录 key、展示名规范化、
+  `qwen-plus` 这类通用名）**加上空 model、缺 `messages` 的畸形体，全部回同一句
+  `402 {"code":116,"error":"quota exceeded"}`，一条 `Unsupported model` 都没拿到**。
+  ⇒ 该号没有额度时「哪个公开名可用」**根本无法取证**；名称表只能在有额度后一次真调用里拿。
+  ⇒ 所以本波次**没有实现公开端点腿**：分类层（402/116 → QUOTA）已就位，
+  Qoder 的出站腿仍未接线（`SIGNER_FACTORY is None`，加密腿一字节都不发），
+  **不许把这里读成"Qoder 转发已可用"**。
 - 测试与后续波次可注入实现（M6-5c 集成测试即用假签名器验证**信封 + 明文构造**全链路）。
 
 注入缝契约（与 DSH `prepareInfer(ask)` 同形）::
@@ -36,7 +47,6 @@
 from __future__ import annotations
 
 import inspect
-import json
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Awaitable, Callable
 
@@ -146,11 +156,15 @@ class QoderOut(ProductOutAdapter):
     def _raise_for_status(status: int, text: str) -> None:
         """非 200 → 分类抛错（403 的三种语义分开，`qoder-adapter.ts:743-749`）。
 
-        - 排队（`10605`，或带排队字段）与额度（`110`）→ `envelope.business_error`
-          （`code` 保真；排队 = 可重试、额度 = QUOTA）；
+        - 排队（`10605`，或带排队字段）与额度（`110` / 公开端点的 `116`）→
+          `envelope.business_error`（`code` 保真；排队 = 可重试、额度 = QUOTA）；
         - 其余（含 `105` 签名/认证失败）→ 原状态码抛出（交既有分类器 → AUTH 等）。
+
+        🔴 402 也要走这条：额度耗尽时 Qoder 回的是 `402 {"code":116,…}`（2026-10-04 实测），
+        只判 401/403 会让它落到 `errors.classify` 的 BAD_REQUEST 兜底 ⇒ **不冷却也不换号**，
+        用户看到一条像"请求写错了"的错误。`business_error` 会把状态码归一成 429（QUOTA）。
         """
-        if status in (401, 403):
+        if status in (401, 402, 403):
             err = _try_business_error(text)
             if err is not None:
                 raise err
@@ -224,23 +238,15 @@ class QoderOut(ProductOutAdapter):
 
 
 def _try_business_error(text: str) -> UpstreamError | None:
-    """HTTP 401/403 的响应体是否是可识别的**业务错误**（排队 / 额度）。
+    """HTTP 401/402/403 的响应体是否是可识别的**业务错误**（排队 / 额度）。
 
-    只认这两类（DSH 的三种 403 语义里前两种）；其余交给原状态码分类
-    （如 `Signature invalid (101)` / `auth_error (105)` → AUTH）。
+    🔴 判据**只有一份**：认不认归 `envelope.is_business_error`，本层只做"认了就分类、
+    没认就交回原状态码"。本函数原先自己又比了一遍码表（`10605`/`110`），于是加一个新码
+    （本轮的 `116`）要改两处，且漏改的那处只能靠文案兜底蒙对 —— 撤证 M4 就是这么抓出来的。
+
+    认不出来的（如 `Signature invalid (101)` / `auth_error (105)`）交给原状态码分类。
     """
-    try:
-        parsed = json.loads(text)
-    except (json.JSONDecodeError, ValueError):
-        parsed = None
-    code = str(parsed.get("code") or "") if isinstance(parsed, dict) else ""
-    if code == envelope.QUEUE_BUSINESS_CODE or code == envelope.BILLING_BUSINESS_CODE:
-        return envelope.business_error(text)
-    if envelope.parse_queue_info(text) is not None:
-        return envelope.business_error(text)
-    if envelope.looks_like_billing_error(text):
-        return envelope.business_error(text)
-    return None
+    return envelope.business_error(text) if envelope.is_business_error(text) else None
 
 
 def _family_guard():

@@ -204,6 +204,16 @@ class ErrorClassifier:
             return ErrorClass.NOT_FOUND
         if status == 429:
             return ErrorClass.QUOTA
+        # 402 Payment Required 按字面归**额度类**。为什么不算"请求写错了"：落到下面的
+        # BAD_REQUEST 分支 ⇒ 不冷却、不换号，用户拿到一条像客户端错的错误。
+        # 触发取证（2026-10-04，存档 `docs/changes/e2e-records/E2E-20261004-qoder-quota-probe.md`）：
+        # Qoder 公开端点在额度为 0 的号上回 `402 {"code":116,"error":"quota exceeded"}`，
+        # 且该响应在**空 model、缺 `messages` 的畸形体**下也一样 ⇒ 额度门跑在模型校验之前
+        # （这是**单个号**上的观察，不外推成"402 只可能是额度"）。
+        # 顺序保障：`error_rules` 的 (http,type) 精确覆写与本表都排在前面 ⇒
+        # 某厂商若用 402 表达别的语义，可在配置里精确覆写回来，不必改代码。
+        if status == 402:
+            return ErrorClass.QUOTA
         if status == 408:
             return ErrorClass.CANCELED
         if status >= 500:
