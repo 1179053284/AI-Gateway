@@ -30,7 +30,7 @@ def _scrub(text: str | None) -> str:
     return (scrub_upstream_text(text) or "").replace("\n", " ")
 
 
-def error_summary(err: UpstreamError | Exception | None) -> str | None:
+def error_summary(err: UpstreamError | Exception | None, limit: int = 160) -> str | None:
     """错误摘要（不含 Key；供事件与状态端点）。
 
     🔴 F3（M6 面板修复轮-2）：**本函数是事件 JSONL 的出口**，上游回显的凭据
@@ -38,15 +38,20 @@ def error_summary(err: UpstreamError | Exception | None) -> str | None:
     `scrub_upstream_text` —— `UpstreamError` 已在构造时脱敏，但本函数也吃任意
     异常（`f"{type(err).__name__}: {err}"`），文案可能带着上游原文逃逸。
     脱敏在**截断之前**做：先截 160 字会把凭据切成"半截仍在"的形态；截断口径
-    与改动前逐字一致（body 截 160，摘要 = `[状态码] body`）。
+    与改动前逐字一致（body 截 `limit`，摘要 = `[状态码] body`）。
+
+    `limit` 默认 160 = **事件 JSONL 的既有口径**（所有既有调用方逐字不变）。
+    唯一放宽者是「模型检测」结果（`admin.resource_test` 传 600）：那里用户要的是
+    **具体不可用原因**，160 字会把上游原话切在 `Invalid '` 这种半句上（2026-10-02 实盘实测），
+    等于把"可读的诊断"换成"看起来像诊断的截断串"。脱敏与截断的先后顺序不变。
     """
     if err is None:
         return None
     if isinstance(err, UpstreamError):
-        body = _scrub(err.error_body)[:160]
+        body = _scrub(err.error_body)[:limit]
         return (f"[{err.status_code if err.status_code is not None else 'network'}] "
-                f"{body or _scrub(str(err))[:160]}")
-    return f"{type(err).__name__}: {_scrub(str(err))[:160]}"
+                f"{body or _scrub(str(err))[:limit]}")
+    return f"{type(err).__name__}: {_scrub(str(err))[:limit]}"
 
 
 class EventLogger:

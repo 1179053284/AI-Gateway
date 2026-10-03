@@ -437,8 +437,13 @@ async def resource_test(request: Request):
         key = api_key
         close_after = True
 
+    # 🔴 探测预算 = 64，不是 1（2026-10-02 实盘检测抓出的**假阴性**）：
+    #    cline/Vercel 那条路把 `max_tokens` 映成 `max_output_tokens` 并要求 `>= 16`，
+    #    发 1 会被上游判 400「integer below minimum」⇒ 模型明明可用却报"不可用"；
+    #    带思考的模型更会把这 1 个 token 全花在推理上，回 `empty response content`（同一种谎）。
+    #    64 = 满足已知最小值、仍是一次可忽略的开销（最多 64 个输出 token）。
     req_body = {"messages": [{"role": "user", "content": "ping"}],
-                "max_tokens": 1, "stream": False}
+                "max_tokens": 64, "stream": False}
     t0 = time.monotonic()
     try:
         await adapter.chat_nonstream(
@@ -446,8 +451,10 @@ async def resource_test(request: Request):
             timeout=min(30, runtime.config.gateway.attempt_timeout_seconds))
         out = {"ok": True, "latency_ms": int((time.monotonic() - t0) * 1000), "model": model}
     except Exception as e:  # noqa: BLE001 — 连通性测试任何失败都原样回报
+        # 🔴 检测结果给**具体原因**（用户 2026-10-02 指令）：事件面仍是 160 字口径，
+        #    这里放宽到 600 字，避免把上游原话切在 `Invalid '` 这种半句上。
         out = {"ok": False, "latency_ms": int((time.monotonic() - t0) * 1000),
-               "model": model, "error": error_summary(e)}
+               "model": model, "error": error_summary(e, limit=600)}
     if close_after:
         with contextlib.suppress(Exception):
             await adapter.aclose()
@@ -645,12 +652,25 @@ async def get_config(request: Request, reveal: int = Query(default=0)):
             if r.get("api_key"):
                 r["api_key"] = mask_key(r["api_key"])
     by_id = {r.id: r for r in cfg.resources}
+    # 🔴 与调度 / `servable_models` / 映射弹窗 / `check-models` **同一条判据**（Q33-① 唯一真相），
+    #    界面不在前端再写一份"进不进池"的判断。派生位是只读视图：PUT 回传时被 Pydantic 忽略。
     # `model_dump` 保序 ⇒ 逐位对齐即可，不必再按 id 找一遍（找错了就是把 A 条目的判据写到 B 上）
     for m_dump, m in zip(data.get("models", []), cfg.models):
         for e_dump, e in zip(m_dump.get("resources", []), m.resources):
             res = by_id.get(e.resource)
             e_dump["mapping_enabled"] = bool(
                 cfg.mapping_enabled(res, e, m.name) if res is not None else e.enabled)
+    # 🔴 每条模型再带一个只读派生位 `spec` = 装配时算出的**合并规格**（`Runtime.model_specs`），
+    #    与 `/v1/models` 对外声明、出站缺省注入读的是**同一份对象** —— 界面要能回答
+    #    "工具看到的窗口为什么是这个数"，就必须显示网关承诺而不是官网取证（两者来源不同，
+    #    故「网关模型管理」页分两张卡画）。`stale` 就是债务 Q33-债8 第①条那个 `specStale`
+    #    的人读出口；`spec` 整体同样是只读视图，PUT 回传被 Pydantic 忽略、不落配置文件。
+    specs = getattr(runtime, "model_specs", None) or {}
+    for m_dump in data.get("models", []):
+        sp = specs.get(m_dump.get("name"))
+        if sp is not None:
+            m_dump["spec"] = {"max_input": sp.max_input, "max_output": sp.max_output,
+                              "stale": bool(sp.from_stale_cache), "sources": int(sp.sources)}
     return data
 
 

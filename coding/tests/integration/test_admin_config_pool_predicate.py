@@ -137,3 +137,77 @@ class TestDerivedBitIsReadOnly:
         entry = saved["models"][0]["resources"][0]
         assert "mapping_enabled" not in entry, f"派生位漏进配置文件：{entry}"
         assert entry["enabled"] is True
+
+
+class TestMergedSpecExitOnAdminView:
+    """🔴 INT-95 · 债务 Q33-债14 的第一半：`/admin/api/config` 每条模型带只读派生位 `spec`。
+
+    为什么要有这个出口：`specStale` 上一轮只落在 `/v1/models`（机器出口），管理界面里
+    没有任何地方显示**网关承诺**这份合并规格 —— 「网关模型管理」属性卡画的是内置目录
+    （官网取证），两者来源不同。于是"工具看到的窗口为什么是这个数 / 这个数是不是昨天的"
+    在界面上无处可查，标注位等于只有出口没有出口。三条判据：
+    ① 与 `/v1/models` **同一份数**（两个出口各算一份就是两套真相）；
+    ② 陈旧 ⇒ `stale=true`，且数值照旧声明（标陈旧 ≠ 收回承诺）；
+    ③ 只读视图：原样 PUT 回去不会把 `spec` 写进配置文件。
+    """
+
+    async def test_spec_matches_the_public_declaration(self, vendor, make_gateway, client,
+                                                       cfg_factory):
+        gw = await make_gateway(cfg_factory(entries=[
+            {"resource": "res-A", "model": "glm-5.2", "enabled": True}]))
+        data = (await client.get(f"{gw.base_url}/admin/api/config")).json()
+        spec = next(x for x in data["models"] if x["name"] == "sys-a")["spec"]
+        declared = next(x for x in (await client.get(
+            f"{gw.base_url}/v1/models", headers={"Authorization": "Bearer gw-user"}
+        )).json()["data"] if x["id"] == "sys-a")
+        assert spec["max_input"] == declared["maxInputTokens"], (spec, declared)
+        assert spec["max_output"] == declared["maxOutputTokens"], (spec, declared)
+        assert spec["stale"] is False and spec["sources"] >= 1, spec
+
+    async def test_stale_per_account_cache_is_marked_and_still_declares(
+            self, vendor, make_gateway, client, cfg_factory):
+        import json
+
+        from model_gateway.accounts import catalog_cache, store
+        from model_gateway.accounts.types import ModelInfo
+
+        gw = await make_gateway(cfg_factory(
+            entries=[{"resource": "res-acc", "model": "vm-x", "enabled": True}],
+            bit=_bit("vm-x", "sys-a", True),
+            extra_models=[]))
+        catalog_cache.write_cache(PRODUCT, [ModelInfo(id="vm-x", context_window=200000,
+                                                      max_output=8192)],
+                                  source_account="acc-a")
+        # 🔴 路径只经 `cache_path()` 现取（Q33-债12 那条红线的同一课）：按号副本的文件名是
+        #    `_catalog_cache.<清洗名>-<sha1[:8]>.json`，照文档拼字符串或 glob 猜目录，
+        #    就会出现"改了文件、读的还是另一份"这种假读数（本条第一次就是这么绿的）。
+        root = store.product_root(PRODUCT).parent
+        paths = [catalog_cache.cache_path(PRODUCT, account="acc-a", root=root),
+                 catalog_cache.cache_path(PRODUCT, root=root)]
+        pushed = 0
+        for p in paths:
+            if not p or not p.exists():
+                continue
+            d = json.loads(p.read_text(encoding="utf-8"))
+            d["fetched_at"] -= catalog_cache.DEFAULT_TTL_SECONDS + 60
+            p.write_text(json.dumps(d), encoding="utf-8")
+            pushed += 1
+        assert pushed, f"两份缓存都没找到 ⇒ 这条判据没有对象（glob/路径口径错了）：{paths}"
+        assert (await client.post(f"{gw.base_url}/admin/api/config/reload")).status_code == 200
+
+        spec = next(x for x in (await client.get(
+            f"{gw.base_url}/admin/api/config")).json()["models"]
+            if x["name"] == "sys-a")["spec"]
+        assert spec["stale"] is True, spec
+        assert (spec["max_output"], spec["max_input"]) == (8192, 200000), spec
+
+    async def test_put_roundtrip_does_not_persist_the_view(self, vendor, make_gateway, client,
+                                                           cfg_factory):
+        gw = await make_gateway(cfg_factory(entries=[
+            {"resource": "res-A", "model": "glm-5.2", "enabled": True}]))
+        data = (await client.get(f"{gw.base_url}/admin/api/config")).json()
+        assert all("spec" in m for m in data["models"]), "出口没带 spec"
+        r = await client.put(f"{gw.base_url}/admin/api/config", json=data)
+        assert r.status_code == 200, r.text
+        raw = yaml.safe_load(Path(gw.config_path).read_text(encoding="utf-8"))
+        assert all("spec" not in m for m in raw["models"]), raw["models"]
