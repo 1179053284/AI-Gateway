@@ -16,6 +16,16 @@
 # v2 结构（2026-10-01 对齐 codex-coding）：源码唯一区 = coding/，本脚本退到仓库根取 coding/ 下的 venv 与 data
 cd "$(dirname "$0")/.." || exit 1
 
+# 本机运行环境（gitignore 掉的文件，不存在就什么都不变）
+# 为什么走文件而不是写死在本脚本里：本脚本入仓，机器路径入仓 = 换台机器就指错地方。
+# 目前只有一项：MGW_QODER_WASM_GLUE（Qoder 加密端点的 wasm 签名桥目录，见 tech-design §22.4-A）。
+if [ -f "coding/data/gateway.env" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . "coding/data/gateway.env"
+    set +a
+fi
+
 URL_HOST="127.0.0.1"
 DEFAULT_PORT=8300
 CONFIG_FILE="${MG_CONFIG:-coding/data/config.yaml}"
