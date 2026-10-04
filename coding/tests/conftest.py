@@ -25,6 +25,26 @@ def _data_dir_isolated(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _qoder_signer_not_installed_by_host_env(monkeypatch):
+    """测试期**抹掉** Qoder wasm 签名器的两个环境变量，并复位签名器单例。
+
+    为什么必须挡在这里：`MGW_QODER_WASM_GLUE` 是**开发机状态**（本机装了 Qoder / DSH
+    插件才会有），而 `create_app()` 会按它注入 `SIGNER_FACTORY`。不隔离的话，
+    「qoder 签名未注入 ⇒ 资源不对外声明」这一族判据（`test_m6_traffic_guards.py`）
+    在有的机器绿、在别的机器红 —— 环境依赖必须显式，判据才有意义。
+    真需要签名器的用例自己 `monkeypatch.setenv` + 注入假桥（见
+    `tests/unit/test_qoder_wasm_signer.py`）。
+    """
+    from model_gateway.upstream.qoder import wasm_signer
+
+    monkeypatch.delenv(wasm_signer.GLUE_ENV, raising=False)
+    monkeypatch.delenv(wasm_signer.NODE_ENV, raising=False)
+    monkeypatch.setattr(wasm_signer, "_BRIDGE", None)
+    yield
+    wasm_signer._BRIDGE = None
+
+
+@pytest.fixture(autouse=True)
 def _ops_lock_dir_isolated(tmp_path, monkeypatch):
     """把运营互斥锁目录指到 tmp —— 锁文件是**跨进程**的，不能落在仓库 `data/` 里。
 

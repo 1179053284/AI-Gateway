@@ -45,3 +45,9 @@ htmlcov/
 .DS_Store
 .idea/
 *.swp
+
+# Qoder 加密端点的签名依赖：客户端自带的 wasm 与第三方 wasm-bindgen 桥**永不入库**（只按 MGW_QODER_WASM_GLUE 指向的目录运行时读取）。两条规则各钉一样东西：`*.wasm` 钉二进制，末行钉那个 JS 桥的**文件名**。
+# 立此规则的一手理由：2026-10-04 评审实测 `git check-ignore` rc=1（当时并没有这条规则），
+# 也就是说一次 `git add -A` 就会把 292 KB 第三方二进制提交进仓库（违反铁律 1）。
+*.wasm
+coding/model_gateway/upstream/qoder/qoder-wasm.js

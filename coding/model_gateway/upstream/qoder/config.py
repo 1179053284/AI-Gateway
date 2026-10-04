@@ -228,6 +228,12 @@ class QoderProduct:
     client_id: str
     #: `/sash/` 端点（用量/活动）的 `Cosy-ClientType` 头（桌面 app 身份 `'10'`，`:274` / `:626`）
     sash_client_type: str
+    #: **推理请求加密信封**里的客户端身份（DSH `clientMetadata`，`:448-453` / `:619-624`）。
+    #: 🔴 与上面的 `sash_client_type` 是**两个不同身份，不许合并**：本值是官方 CLI 默认值
+    #: （`client_type '5'` + `business_product 'cli'`，源码 `Fp()`），只喂 `QoderContext`；
+    #: `'10'` 是桌面 app 身份，只用于 `/sash/` 活动/用量端点（DSH `qoder-product.ts:247-262`
+    #: 实测：`/sash/api/v1/me/campaigns` 带 `'5'` 回 `claimable:false`，带 `'10'` 才下发活动）。
+    client_metadata: dict
     #: `User-Agent` 前缀（DSH `userAgentPrefix`，两站同值 `qoder`；续期/推理拼 `qoder/1.0.0`）
     user_agent_prefix: str
     #: 兜底模型目录（恒本地，零网络；§22.4「恒本地兜底表」）
@@ -244,6 +250,8 @@ QODER = QoderProduct(
     encrypted_infer_base="https://api2.qoder.sh",        # :445（认目录 key）
     client_id="e883ade2-e6e3-4d6d-adf7-f92ceff5fdcb",    # :446（prod 用的 J_a）
     sash_client_type="10",                               # :455
+    client_metadata={"client_type": "5", "business_product": "cli",
+                     "business_type": "agent", "scene": "assistant"},   # :448-453（CLI 身份）
     user_agent_prefix="qoder",                           # :456
     fallback_models=QODER_MODELS,
 )
@@ -260,6 +268,11 @@ QODER_CN = QoderProduct(
     encrypted_infer_base="https://gateway.qoder.com.cn", # :604
     client_id="732aef47-9cf2-46a2-95fe-4cebb5d0d1fa",    # :609（CN prod；test 同值 :612）
     sash_client_type="10",                               # :626（CN asar 同为 clientType 10）
+    # 沿用国际版的 **CLI** 身份（DSH `:613-624` 同此，并留了一句实话：CN 桌面端自己用的是
+    # app 身份，插件走 CLI 在国际版实测可用、CN 侧「若被拒再改这一组值」。本仓照此登记，
+    # 🔴 不宣称 CN 的 CLI 身份已实测通过 —— 那要看第一次真实签名请求的回执（见 §22.4 待验）。
+    client_metadata={"client_type": "5", "business_product": "cli",
+                     "business_type": "agent", "scene": "assistant"},
     user_agent_prefix="qoder",                           # :628
     fallback_models=QODER_CN_MODELS,
 )

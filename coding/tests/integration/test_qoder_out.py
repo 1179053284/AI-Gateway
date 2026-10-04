@@ -8,7 +8,8 @@
   = 目录 key（`qfmodel`），`business` 必填（`{"type":"agent"}` —— 缺它会被路由到故障节点，
   `qoder-adapter.ts:726-736`）；频道二义（§2.4）：业务码 `10605` **既可能走 HTTP 403、
   也可能出现在流内帧**，两条通道都必须识别并保留 `code`（`model-queue.ts:96-135`）；
-· **请求加密与 COSY 签名**未移植 → 走 `out.SIGNER_FACTORY` 注入缝：
+· **请求加密与 COSY 签名**在生产由本机 wasm 桥承担（`wasm_signer.py`）；本文件走
+   `out.SIGNER_FACTORY` 注入缝（假签名器）：
   本文件注入**假签名器**验证「明文 ask → url/headers/body → 信封解包」全链路；
   未注入时**fail closed**（可读失败 + 零次上游请求）；
 · **两站互不串用**：qodercn 资源上挂国际版凭据（`family="qoder"`）→ 可读失败 + 零次上游请求。

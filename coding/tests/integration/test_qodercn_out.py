@@ -12,7 +12,8 @@
 · **两站互不串用**（§22.4）：qodercn 资源挂国际版凭据（`family="qoder"`）→ 可读失败
   （503，`flow._guard_family` 同款判据、`no_failover`）+ **零次上游请求** + 签名器零调用；
   反向（qoder 资源挂 CN 凭据）同样被拒 —— 两个方向都锁；
-· 请求加密与 COSY 签名未移植（`SIGNER_FACTORY` 注入缝，见 `qoder/out.py` 模块头）：
+· 请求加密与 COSY 签名生产走本机 wasm 桥；本文件走 `SIGNER_FACTORY` 注入缝
+   （假签名器，见 `qoder/out.py` 模块头）：
   本文件注入**假签名器**验证「明文 ask → url/headers/body → 信封解包」全链路；
   假签名器**不模拟 WASM**，只证明本层交付的拼接契约正确。
 

@@ -164,6 +164,29 @@ def last_user_text(body: dict) -> str:
     return text
 
 
+def system_prompt_of(body: dict) -> str:
+    """顶层 `system` 字段 → 系统提示文本（**只认顶层**，与参考实现同源）。
+
+    🔴 2026-10-04 复研后**推翻本轮先前的一次改动**（如实记，别把错的说成对的）：
+    我一度把 `messages[]` 里 `role=="system"` 的消息也搬进顶层，理由是"参考实现的
+    builder 用 `ask.systemText` 填 `system`"。那是**看了一半源码**：builder 怎么用它
+    由调用方决定，而调用方（DSH `qoder-adapter.ts`）是 ——
+
+    - `systemText = options.system?.length ? options.system : undefined`（`:672-674`）
+      ⇒ 只有**顶层** system 进 `system` 数组；
+    - `buildQoderHistory(messages)`（`:334-364`）逐条搬所有 role，**不过滤 system**
+      ⇒ 住在 `messages[]` 里的系统提示留在历史里。
+
+    两边对「OpenAI 客户端把系统提示放在 messages 里」这一发法的处理**只有一个有真实流量
+    在后面**（参考实现，用户实跑），我方那条改动零真实验证（现网还没有一次加密端点 200）。
+    所以按参考实现来：**顶层归顶层、历史归历史，不搬**。
+    反转触发：一旦真机证明 system 必须住顶层才生效（或上游对 messages 里的 system 报错），
+    改这一处即可，且要同时把 §「待验」那一条划掉。
+    """
+    top = body.get("system")
+    return top.strip() if isinstance(top, str) and top.strip() else ""
+
+
 def build_infer_payload(body: dict, vendor_model: str, *, is_reasoning: bool = False,
                         is_vl: bool = True, display_name: str = "",
                         max_input_tokens: int | None = None,
@@ -176,10 +199,10 @@ def build_infer_payload(body: dict, vendor_model: str, *, is_reasoning: bool = F
     """
     rid = request_id or str(uuid.uuid4())
     text = last_user_text(body)
+    system_text = system_prompt_of(body)
     messages = history_of(body.get("messages"))
     if not messages:
         messages = [{"role": "user", "content": text}]
-    system_text = body.get("system")
     context_window = max_input_tokens or DEFAULT_MAX_INPUT_TOKENS
 
     parameters: dict[str, Any] = {}
@@ -231,8 +254,7 @@ def build_infer_payload(body: dict, vendor_model: str, *, is_reasoning: bool = F
             "max_input_tokens": context_window,
         },
         "custom_model": None,
-        "system": ([{"type": "text", "text": system_text}]
-                   if isinstance(system_text, str) and system_text else []),
+        "system": ([{"type": "text", "text": system_text}] if system_text else []),
         "messages": messages,
         "tools": tools_of(body.get("tools")),
         "parameters": parameters,

@@ -14,7 +14,8 @@
 `qodercn` 复用同一实现 —— 本文件只负责「用国际版配置接线」，**不得出现任何默认区域**。
 
 🔴 `build_out` 自 **M6-5c** 起已接线（`upstream/qoder/out.py::QoderOut`）：信封解包 +
-   明文请求构造已实现；**请求加密与 COSY 签名**未移植 → 走 `SIGNER_FACTORY` 注入缝
+   明文请求构造已实现；**请求加密与 COSY 签名**由本机 wasm 桥提供
+   （`wasm_signer.py`，按 `MGW_QODER_WASM_GLUE` 注入）→ 仍走 `SIGNER_FACTORY` 这条缝
    （未注入时请求当场 fail closed，**不伪造签名、不降级公开端点**）。
 🔴 `_HOOKS` = 本模块对 §22.3 的**契约表**：入口层按名取用（不给字符串 `getattr` 留后门）。
 """
@@ -100,7 +101,8 @@ def build_out(account) -> OutboundAdapter:
     - **区域配置显式注入**（本模块的 `_CONFIG` = `QODER`；qodercn 注入 `QODER_CN`）
       —— 两站 token/端点不通用（`20 §4.1`），这里不存任何默认区域；
     - 返回 `upstream/qoder/out.py::QoderOut`：响应信封解包 + 明文请求构造已实现；
-      **请求加密与 COSY 签名未移植** → 走 `out.SIGNER_FACTORY` 注入缝，未注入时
+      **请求加密与 COSY 签名走本机 wasm 桥**（`wasm_signer.py`）→ `out.SIGNER_FACTORY`
+      注入缝；未配置时
       请求当场 fail closed（**不伪造签名、不降级公开端点**，见 out.py 模块头）；
     - 延迟 import（`out.py` ↔ 本模块不互相在 import 期拉起）。
     """

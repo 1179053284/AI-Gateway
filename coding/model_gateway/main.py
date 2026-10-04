@@ -250,11 +250,13 @@ def _outbound_premise_gap(r) -> str | None:
     `servable_models` 据此把这些映射排除出 `/v1/models` 与 `mgw setup`（选了必然 503 的
     模型不得对外声明，BUG-1 的立意），同时 `config_warnings()` 给出横幅说明去向。
 
-    两类缺口（都是"代码尚未接线"，与"资源被停用/凭据失效"的 ③ 告警分开计数）：
+    两类缺口（都是**出站前提未就位**，与"资源被停用/凭据失效"的 ③ 告警分开计数）：
 
-    - **qoder / qodercn**：WASM 加密与 COSY 签名未移植（`SIGNER_FACTORY=None`）
-      → 每次调用 fail closed 503（`upstream/qoder/out.py::NOT_WIRED_HINT`）；签名器一旦
-      注入（后续波次 / 测试），本判据自动放行，无需改这里。
+    - **qoder / qodercn**：签名器未注入（`SIGNER_FACTORY=None`）⇒ 每次调用 fail closed
+      （`upstream/qoder/out.py::NOT_WIRED_HINT`）。🔴 措辞随现状更新（2026-10-04）：签名能力
+      **已实现**（`wasm_signer.py` + `qoder_bridge.mjs`，调用客户端自带 wasm），这里的"未注入"
+      现在只意味着**本机没配 wasm 桥目录**（`MGW_QODER_WASM_GLUE`）或没有 node —— 旧文案写
+      "未移植/等后续波次"会把用户支到一条不存在的路上。配齐并重启后本判据自动放行。
     - **zcode**：每请求验证码（`CAPTCHA_PROVIDER=None`）未注入 → 走 §17 降级链的
       「JWT 直连」档，**该直连是否成立（D1）尚未裁决**（`docs/research/24 §2-D1`）。
       F-4 的处置是**如实标注、不实现绕过、不加熔断**：本判据让 zcode 模型在前提未注入时
@@ -268,7 +270,12 @@ def _outbound_premise_gap(r) -> str | None:
         if prod in ("qoder", "qodercn"):
             from model_gateway.upstream.qoder import out as qoder_out
             if qoder_out.SIGNER_FACTORY is None:
-                return "qoder 签名未注入（WASM/COSY）"
+                # 前缀是既有判据钉住的口径（`test_m6_traffic_guards`）；后半句把**为什么**
+                # 带出来（未设环境变量 / 目录缺件 / 没有 node），否则用户只看到"未注入"
+                # 而没有任何可操作信息 —— 这类"红但不指路"的文案在本仓被反复判红。
+                from model_gateway.upstream.qoder import wasm_signer
+                why = wasm_signer.build_factory()[1] or "签名器未安装（装配未调用 install）"
+                return f"qoder 签名未注入（WASM/COSY）：{why}"
         elif prod == "zcode":
             from model_gateway.upstream.zcode import out as zcode_out
             if zcode_out.CAPTCHA_PROVIDER is None:
@@ -1016,6 +1023,12 @@ def create_app(config_path: Path | None = None, *,
                usage_dir: Path | None = None, enums_path: Path | None = None) -> FastAPI:
     """装配 FastAPI 应用（测试与启动共用；usage_dir/enums_path 供测试隔离注入）。"""
     configure_logging()
+    # Qoder 加密端的 wasm 签名器：按**本机环境**注入（未设 `MGW_QODER_WASM_GLUE` 就不注入，
+    # 行为与接线前逐字节一致 —— 请求前 fail closed，资源不对外声明）。
+    # 不在这里 print 原因：判据只有一份（`out.SIGNER_FACTORY is None`），由
+    # `_outbound_premise_gap` 现算并出横幅；装配期打一行日志 = 运行期没人看（§21 同一立意）。
+    from model_gateway.upstream.qoder import wasm_signer
+    wasm_signer.install()
     config_path = paths.resolve_config_path(config_path)
     config = _load_config_or_exit(config_path)
 
@@ -1093,6 +1106,9 @@ def create_app(config_path: Path | None = None, *,
             t.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await t
+        # 签名桥是**常驻子进程**：`execv` 重启时不关它，旧进程会变成孤儿（占一份 wasm 上下文）
+        from model_gateway.upstream.qoder import wasm_signer
+        await wasm_signer.shutdown()
         await runtime.events.stop()
         await runtime.aclose()
 

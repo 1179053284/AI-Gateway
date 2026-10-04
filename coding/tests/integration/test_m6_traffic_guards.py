@@ -360,6 +360,34 @@ async def test_f5_premise_predicate_follows_the_injection(vendor, make_gateway, 
     assert "model_unservable_premise" not in kinds, kinds
 
 
+async def test_f5_qoder_model_returns_when_the_signer_is_injected(vendor, make_gateway,
+                                                                  client, monkeypatch):
+    """🔴 qoder 那一条的正向半边（R3 抓出的覆盖缺口：此前只有 zcode 做了反向）。
+
+    判据跟着注入状态走 ⇒ 「签名器已就位」必须**解除隐藏**；否则隐藏就是一张单程票，
+    而界面/`mgw setup` 会永远看不到 qoder 模型 —— 那正是"用隐藏来回避问题"的形状。
+    另钉一条：注入后对外声明里必须带上本区域的**加密端点**形态，不允许悄悄降级到公开端点。
+    """
+    from model_gateway.upstream.qoder import out as qoder_out
+
+    def _factory(product_cfg, base_url, cred, meta):
+        async def _sign(payload):
+            return qoder_out.SignedRequest(
+                url=product_cfg.encrypted_infer_base + "/algo/agent_chat_generation",
+                headers={"Authorization": "Bearer COSY.FAKE"}, body="CIPHER")
+        return _sign
+
+    assert qoder_out.SIGNER_FACTORY is None, "起点必须是未注入（否则这条测的是别的东西）"
+    ids_before = await _get_ids(client, await make_gateway(_qoder_cfg(vendor.port)))
+    assert "qd-model" not in ids_before
+
+    monkeypatch.setattr(qoder_out, "SIGNER_FACTORY", _factory)
+    gw = await make_gateway(_qoder_cfg(vendor.port))
+    assert "qd-model" in await _get_ids(client, gw)
+    kinds = await _warnings(client, gw)
+    assert "model_unservable_premise" not in kinds, kinds
+
+
 # ============ F-6：`_apply` 不得覆写产品自报的协议族 ============
 
 def test_f6_apply_keeps_the_product_self_reported_protocol(tmp_path):

@@ -7,13 +7,14 @@
 |---|---|---|
 | 响应解包（信封） | ✅ 本波次完成 | `envelope.py`（`unwrapQoderEnvelopeStream` 的 Python 移植，纯文本处理） |
 | 明文请求构造 | ✅ 本波次完成 | `ask.py`（`buildQoderInferPayload` 移植：`modelKey` / `business` / `tools` / 历史） |
-| **请求加密与 COSY 签名** | 🔴 **未移植（留注入缝 + TODO）** | DSH 用客户端 WASM（`qoder-wasm.ts:599-706` 的 `QoderEncryptedInfer`）产出 `{url, headers, body}`；Python 侧没有等价物 |
+| **请求加密与 COSY 签名** | ✅ **已就位**（本机 wasm 桥，按环境变量注入） | 加密与签名在客户端自带的 `qoder-auth-wasm.wasm` 里；本仓用 `wasm_signer.py` + `qoder_bridge.mjs` 把它跑在一个 Node 子进程里，产出与 DSH `QoderEncryptedInfer.prepareInfer` 同形的 `{url, headers, body}`。**wasm 二进制不入库**，只按 `MGW_QODER_WASM_GLUE` 指向的目录在运行时读取 |
 
 ## 🔴 注入缝（`SIGNER_FACTORY`）—— 为什么必须留而不是"编一个"
 
 - 加密与签名**不是密码学破解**，而是调用客户端自带 WASM 的导出函数
-  （`qoder-wasm.ts:22-26`）；把它移植到 Python 需要 wasm 运行时或本地 Node 桥，
-  **本波次不具备该条件**（§22.8-1 禁止引入不明依赖；无网络）。
+  （`qoder-wasm.ts:22-26`）；Python 侧没有 wasm 运行时，所以这条腿落在**本机 Node 子进程**
+  （`wasm_signer.py` + `qoder_bridge.mjs`）：明文由本仓 `ask.py` 造，wasm 只负责加密 + 签名，
+  **二进制不入库**、运行时按 `MGW_QODER_WASM_GLUE` 指向的目录读取（铁律 1；不下载、不远程更新）。
 - 因此本模块把「明文 ask → 签名后的 `{url, headers, body}`」定义为一个**注入点**：
   生产默认 `None`（**fail closed**：请求前当场报可读错误，绝不伪造签名、绝不静默降级
   到公开端点 —— 公开端点**不认目录 key**，DSH 实测回 `Unsupported model`
@@ -25,10 +26,20 @@
   `qwen-plus` 这类通用名）**加上空 model、缺 `messages` 的畸形体，全部回同一句
   `402 {"code":116,"error":"quota exceeded"}`，一条 `Unsupported model` 都没拿到**。
   ⇒ 该号没有额度时「哪个公开名可用」**根本无法取证**；名称表只能在有额度后一次真调用里拿。
-  ⇒ 所以本波次**没有实现公开端点腿**：分类层（402/116 → QUOTA）已就位，
-  Qoder 的出站腿仍未接线（`SIGNER_FACTORY is None`，加密腿一字节都不发），
-  **不许把这里读成"Qoder 转发已可用"**。
-- 测试与后续波次可注入实现（M6-5c 集成测试即用假签名器验证**信封 + 明文构造**全链路）。
+  ⇒ 所以**公开端点腿仍未实现**（不是"没做"，是**没有可取证的名称表**）；
+  而**加密端点腿已就位**（本机 wasm 桥）—— 未设 `MGW_QODER_WASM_GLUE` 时
+  `SIGNER_FACTORY is None`，与接线前逐字节一致（一字节不发）。
+  🔴 两种读法都不许混：**"签名器已实现" ≠ "Qoder 转发已交付"**，后者要等一次
+  真实签名请求拿回 200（当前未验，见 §22.4 待验项）。
+- 测试注入假签名器（`tests/integration/test_qoder_out.py`）验证**信封 + 明文构造**全链路。
+  本轮新增的三面判据各管一段，别再混写成一句"契约见某文件"（R1 B-3 抓的就是这种假账：
+  桥本体当时一行都没被默认判据执行过）：
+  签名器契约与 NDJSON 往返 ⇒ `tests/unit/test_qoder_wasm_signer.py`；
+  **桥脚本本体**（真 node 跑 `.mjs`：形状不符点名符号、行上限、一账号一上下文）⇒
+  `tests/unit/test_qoder_bridge_mjs.py`；
+  入站形态规则（system / 多模态 / tool_calls / tools 参数）⇒ `tests/unit/test_qoder_ask_shape.py`；
+  与参考实现的逐键比对（**只管 builder 那一层**，两边各写字面量，不复用我方派生结果）⇒
+  `test_stage_b_payload_equals_the_reference_builder`。
 
 注入缝契约（与 DSH `prepareInfer(ask)` 同形）::
 
@@ -74,10 +85,16 @@ Signer = Callable[[dict], "SignedRequest | Awaitable[SignedRequest]"]
 SIGNER_FACTORY: Callable[..., Signer] | None = None
 
 #: 未接线时的**可操作**失败文案（不伪装成上游错误、不静默降级）。
+#: 🔴 措辞必须与现状同代：签名能力**已就位**（`wasm_signer.py` + `qoder_bridge.mjs`，
+#: 调用客户端自带的 wasm），"未注入"现在只意味着**本机没配 wasm 桥目录**或凭据缺身份字段。
+#: 旧文案说"尚未移植该通道"已经是假话，会让用户白等一个不存在的后续波次。
 NOT_WIRED_HINT = (
-    "qoder 出站需要 WASM 加密与 COSY 签名（DSH qoder-wasm.ts:599-706），"
-    "本网关尚未移植该通道（SIGNER_FACTORY 未注入）→ 本资源当前不可用；"
-    "请在「接入模型资源」页暂时停用该资源，或等待后续波次接线（见 M6-5c 报告）")
+    "qoder 出站需要 WASM 加密与 COSY 签名（客户端内嵌的 qoder-auth-wasm，"
+    "DSH qoder-wasm.ts:599-706 同一条链路）；本进程未注入签名器 "
+    "（SIGNER_FACTORY is None）→ 本资源当前不可用。"
+    "处置：在本机设置 " + "MGW_QODER_WASM_GLUE" + " 指向含 qoder-wasm.js + "
+    "qoder-auth-wasm.wasm 的目录（并保证有 node）后重启网关；"
+    "或暂时在「接入模型资源」页停用该资源")
 
 
 class QoderOut(ProductOutAdapter):
