@@ -95,6 +95,18 @@ _WORKBUDDY_FALLBACK_MODELS: tuple[ModelInfo, ...] = (
 #: 腾讯后台按出站 UA 归因「使用端」，用错产品线 UA 账单会显示为 `-`（`product.ts:93-99`）。
 #: ⚠️ `append_session_params=True`：国际版登录 URL 需追加 `version` 与 `loginSessionId`
 #: （`product.ts:137-141,405-406`；`buddy-oauth.ts:525-538`）。
+#: 首条 system 的补齐文案（= 用户 2026-10-04 指定的原话，逐句保留语义）。
+#: 🔴 触发条件：WorkBuddy 通道对**首条不是 system** 的推理请求回
+#: `400 {"code":11128,"msg":"first message is not system prompt"}`（:8300 真实两号命中，
+#: 同形请求落 CodeBuddy 为 200 ⇒ 这是本产品的通道限制，不是客户端写错了）。
+#: 只在"这条请求一条 system 都没有"时补；客户端自己写了 system ⇒ 内容一字不改、只挪到首位。
+#: 反转触发条件 = 若上游不再要求首条 system，或用户改口换文案 ⇒ 把档案里这一行置空即可。
+_SYSTEM_FIRST = (
+    "你是被执行任务的助手。收到用户提示词后，先充分理解其内容，确保完全理解后再执行；"
+    "如果任务本身有问题或信息不足，先与用户沟通清楚，"
+    "只有在确认你能足够完美地执行、不会有任何问题时，才可以开始执行。"
+)
+
 _PROFILE = ProductProfile(
     id=PRODUCT,
     platform="workbuddy-ai",                              # product.ts:383
@@ -103,6 +115,7 @@ _PROFILE = ProductProfile(
     fallback_models=_WORKBUDDY_FALLBACK_MODELS,
     append_session_params=True,                           # product.ts:405
     plugin_version="5.5.2",                               # product.ts:406
+    system_first_text=_SYSTEM_FIRST,                      # 通道要求首条 system（见上注）
 )
 
 

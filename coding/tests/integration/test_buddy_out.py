@@ -53,6 +53,16 @@ class _FakeBuddyUpstream:
             return JSONResponse({"code": 11101,
                                  "msg": "Non-stream chat request is currently not supported",
                                  "requestId": "fake-buddy"}, status_code=400)
+        if request.headers.get("x-product") == "WorkBuddy":
+            # 🔴 第二条**只属于 workbuddy** 的通道限制（buddy 同形请求实测 200）：
+            # 首条必须是 system，否则 `400 {"code":11128,"msg":"first message is not system prompt"}`。
+            # 假件若不看这条，"补齐首条 system"的腿就永远没有对象（= 空判据）。
+            messages = body.get("messages") or []
+            first = messages[0] if messages and isinstance(messages[0], dict) else {}
+            if first.get("role") != "system":
+                return JSONResponse({"code": 11128,
+                                     "msg": "first message is not system prompt",
+                                     "requestId": "fake-buddy"}, status_code=400)
         return StreamingResponse(self._sse(), media_type="text/event-stream")
 
     async def _sse(self):
@@ -165,6 +175,8 @@ async def test_buddy_nonstream_end_to_end(buddy_upstream, make_gateway, client):
     assert req["headers"]["user-agent"] == "CodeBuddyIDE/1.106.1"
     assert req["body"]["model"] == "hy3"                  # 映射里的厂商模型名
     assert req["body"]["stream"] is True                  # 通道只接受流式：网关内部改流式再聚合
+    # 🔴 反向判据：buddy 实测**收得下**首条非 system 的请求 ⇒ 不许给它凭空注入
+    assert req["body"]["messages"] == [{"role": "user", "content": "hi"}]
 
     await gw.drain_events()
     ev = gw.read_events()[-1]
@@ -213,6 +225,30 @@ async def test_workbuddy_uses_the_international_profile(buddy_upstream, make_gat
     assert req["headers"]["x-product-code"] == "workbuddy"          # product.ts:387
     assert req["headers"]["user-agent"].startswith("WorkBuddy/")    # product.ts:70,389
     assert req["body"]["model"] == "gpt-5.5"
+    # 🔴 workbuddy 通道只收"首条是 system"的请求（假上游照实判 400/11128，见 `_chat`）：
+    # 客户端这条只发了 user ⇒ 网关在**首位补**固定引导，用户那几条原样排在后面。
+    # 撤证方向 = 把档案里的 `system_first_text` 清空 ⇒ 本用例必红（假上游会回 11128）。
+    sent = req["body"]["messages"]
+    assert sent[0]["role"] == "system"
+    assert "充分理解" in sent[0]["content"] and "才可以" in sent[0]["content"]
+    assert sent[1] == {"role": "user", "content": "hi"}
+
+
+async def test_client_system_prompt_is_never_replaced_or_reordered_away(buddy_upstream,
+                                                                        make_gateway, client):
+    """客户端自己写了 system ⇒ 内容一字不改（网关那条固定引导不许盖掉它），只是位置在最前。"""
+    store.commit_login("workbuddy", "wb-1", {"access_token": "WB-TOKEN"}, {})
+    gw = await make_gateway(_cfg(buddy_upstream.port, product="workbuddy", account="wb-1",
+                                 model_name="wb-model", vendor_model="gpt-5.5"))
+
+    mine = "本项目只在 staging 环境操作"
+    body = _body("wb-model", messages=[{"role": "user", "content": "hi"},
+                                       {"role": "system", "content": mine}])
+    resp = await _chat(client, gw, body)
+    assert resp.status_code == 200, resp.text
+    sent = buddy_upstream.requests[-1]["body"]["messages"]
+    assert sent[0] == {"role": "system", "content": mine}     # 客户端那份赢，且原文未动
+    assert {"role": "user", "content": "hi"} in sent[1:]      # 用户消息一条没丢、顺序照旧
 
 
 # ============ fail closed ============

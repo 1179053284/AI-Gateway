@@ -208,7 +208,7 @@ def test_stream_only_aggregation_merges_reasoning_tools_usage(monkeypatch):
     assert data["choices"][0]["finish_reason"] == "stop"
     assert data["usage"] == {"prompt_tokens": 11, "completion_tokens": 5}
     assert data["id"] == "c-rich" and data["created"] == 1776000000
-    assert data["model"] == ""                               # 由调度器替换为系统模型名
+    assert data["model"] == ""                               # 由调度器替换为网关模型名
 
 
 def test_stream_only_without_any_chunk_fails_closed(monkeypatch):
@@ -219,6 +219,72 @@ def test_stream_only_without_any_chunk_fails_closed(monkeypatch):
         asyncio.run(adapter.chat_nonstream("", "hy3", {}, 10.0))
     asyncio.run(adapter.aclose())
     assert len(seen) == 1
+
+
+# ============ 首条 system 补齐（workbuddy 通道的形状要求）============
+
+def test_with_system_first_covers_exactly_four_shapes():
+    """四条分支各自唯一：没这条脾气 / 已经有了 / 有但不在首位 / 一条都没有。"""
+    from model_gateway.upstream.buddy.out import _with_system_first
+
+    user = {"role": "user", "content": "把日志清掉"}
+    mine = {"role": "system", "content": "客户端自己的引导"}
+    text = "固定引导"
+
+    # ① 档案没登记这条 ⇒ 原样返回（buddy 实测收得下，不许凭空注入）
+    assert _with_system_first({"messages": [user]}, "") == {"messages": [user]}
+    # ② 首条已是 system ⇒ 一字不改（客户端写的引导比网关补的更该生效）
+    assert _with_system_first({"messages": [mine, user]}, text) == {"messages": [mine, user]}
+    # ③ 有 system 但不在首位 ⇒ 只**移动**，内容不动（通道只认位置）
+    assert _with_system_first({"messages": [user, mine]}, text)["messages"] == [mine, user]
+    # ④ 一条 system 都没有 ⇒ 首位补固定文案，用户那几条原样留在后面
+    assert _with_system_first({"messages": [user]}, text)["messages"] == [
+        {"role": "system", "content": text}, user]
+
+
+def test_with_system_first_never_mutates_the_callers_list():
+    """🔴 IR body 还要进事件行与日志：适配器不许就地改那份列表（否则"用户发了什么"两个真相）。"""
+    from model_gateway.upstream.buddy.out import _with_system_first
+
+    messages = [{"role": "user", "content": "hi"}]
+    body = {"messages": messages, "temperature": 0.3}
+    out = _with_system_first(body, "固定引导")
+    assert messages == [{"role": "user", "content": "hi"}]   # 调用方那份没被动
+    assert out is not body and out["temperature"] == 0.3
+    assert len(out["messages"]) == 2 and out["messages"][1] is messages[0]
+
+
+def test_workbuddy_profile_carries_the_text_and_buddy_keeps_it_empty():
+    """文案只登记在**有这条脾气**的产品档案上（用户 2026-10-04 指定），buddy 留空。"""
+    from model_gateway.upstream.buddy import product as buddy_product
+    from model_gateway.upstream.workbuddy import product as wb_product
+
+    assert buddy_product._PROFILE.system_first_text == ""
+    text = wb_product._PROFILE.system_first_text
+    assert "充分理解" in text and "沟通" in text and "才可以" in text
+
+
+def test_workbuddy_adapter_injects_and_buddy_does_not(monkeypatch):
+    """出站体的实际形状：workbuddy 无 system 的请求被补齐；buddy 同形请求一字不加。"""
+    from model_gateway.upstream.workbuddy import product as wb
+
+    seen, handler = _capture(monkeypatch, sse=_sse())
+    adapter = _adapter(monkeypatch, transport=handler, product="workbuddy",
+                       name="acc-wb", factory=wb.build_out)
+    asyncio.run(adapter.chat_nonstream("", "hy3", {"messages": [
+        {"role": "user", "content": "hi"}]}, 10.0))
+    asyncio.run(adapter.aclose())
+    sent = json.loads(seen[0].content)["messages"]
+    assert sent[0]["role"] == "system"
+    assert sent[0]["content"] == wb._PROFILE.system_first_text
+    assert sent[1] == {"role": "user", "content": "hi"}
+
+    seen2, handler2 = _capture(monkeypatch, sse=_sse())
+    adapter2 = _adapter(monkeypatch, transport=handler2)     # 缺省 factory = buddy
+    asyncio.run(adapter2.chat_nonstream("", "hy3", {"messages": [
+        {"role": "user", "content": "hi"}]}, 10.0))
+    asyncio.run(adapter2.aclose())
+    assert json.loads(seen2[0].content)["messages"] == [{"role": "user", "content": "hi"}]
 
 
 # ============ 凭据自解 + 身份头 ============

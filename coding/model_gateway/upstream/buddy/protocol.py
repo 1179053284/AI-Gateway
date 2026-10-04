@@ -136,6 +136,13 @@ class ProductProfile:
     append_session_params: bool = False
     #: 追加到登录 URL 的版本号（`product.ts:142-143`）
     plugin_version: str = ""
+    #: 通道要求**首条必须是 `system`** 的产品，这里给出补齐用的固定引导文案（缺省空 = 不干预）。
+    #: 取证（:8300 真实两号，2026-10-04）：workbuddy 对首条非 system 的请求回
+    #: `400 {"code":11128,"msg":"first message is not system prompt"}`，
+    #: 而 buddy 的**同形请求**是 200 ⇒ 只有 workbuddy 置值，不给没这条脾气的通道凭空注入。
+    #: 生效规则（`buddy/out.py::_with_system_first`）：客户端**自己写了 system** ⇒ 一个字不改，
+    #: 只是把它挪到最前；**一条 system 都没有** ⇒ 在最前补这条固定引导。
+    system_first_text: str = ""
 
     @property
     def title(self) -> str:
