@@ -1,3 +1,5 @@
+
+> 🔴 **术语读法（2026-10-04 定版）**：本文规范性正文已统一到 **厂商 = 模型生产公司 / 供应商 = 接入方（「接入模型资源」每个 Key 接入 + 「接入账号资源」每个产品账号）/ 网关模型 = 把各供应商的同一厂商模型标准化成一个名字并统一规格（旧称「系统模型」作废、同义）/ 资源 = 供应商名下一条可调用模型接入**。版本史段落（`> vN（…）`、变更表 `| v… |`）、Q## 归档条目原文与用户原话引号内**保留当时措辞**（存证不改写），其中指接入方的「厂商」一律按**供应商**读、「系统模型」按**网关模型**读；定义源 = 需求文档 PRD §2「术语与核心概念」，执行细则 = 项目规则 `mg-terminology`。🔴 另注：`resources[].vendor` 这个字段名承载的是**供应商名称**（历史命名，不改字段以免打断实盘配置），内置目录的 `vendor` 字段承载的才是**厂商**（生产公司）——同名字段两种语义，判身份看它在哪一层。
 <p align="right"><a href="./README.md">English</a> · <strong>简体中文</strong></p>
 
 <p align="center">
@@ -8,17 +10,17 @@
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-171b22" alt="协议：Apache-2.0">
   <img src="https://img.shields.io/badge/python-3.12%2B-171b22" alt="Python 3.12+">
-  <img src="https://img.shields.io/badge/tests-1962%2F1962-188038" alt="测试：1962/1962">
+  <img src="https://img.shields.io/badge/tests-1967%2F1967-188038" alt="测试：1967/1967">
   <img src="https://img.shields.io/badge/runtime-100%25%20local-188038" alt="100% 本地运行">
 </p>
 
-**Model-Gateway** 是一个面向个人开发者的本地优先 LLM 网关。它把你手里的每一个厂商 Key —— 多厂商、多账号、按量 API 与订阅套餐 —— 聚合到**一个 OpenAI 兼容端点**之后，并用自动重试、故障切换与续跑保证调用不中断。
+**Model-Gateway** 是一个面向个人开发者的本地优先 LLM 网关。它把你手里的每一个供应商 Key —— 多供应商、多账号、按量 API 与订阅套餐 —— 聚合到**一个 OpenAI 兼容端点**之后，并用自动重试、故障切换与续跑保证调用不中断。
 
-只需把 Trae、Cursor、Cherry Studio 或任何 OpenAI 兼容客户端指向 `http://127.0.0.1:8300/v1` 一次。此后在网关背后新增、更换、下线厂商 Key，都不必再动工具端的任何配置。
+只需把 Trae、Cursor、Cherry Studio 或任何 OpenAI 兼容客户端指向 `http://127.0.0.1:8300/v1` 一次。此后在网关背后新增、更换、下线供应商 Key，都不必再动工具端的任何配置。
 
 ## 为什么需要它
 
-- **Key 太散。** 每个工具 × 每个厂商 × 每个 Key，都是要反复填写、反复核对的一行配置。有了网关，工具端永远只需要看到这一个端点。
+- **Key 太散。** 每个工具 × 每个供应商 × 每个 Key，都是要反复填写、反复核对的一行配置。有了网关，工具端永远只需要看到这一个端点。
 - **单点故障。** 限流或抖动的 Key 通常会断掉整个会话。在这里，失败会被分类、重试，资源耗尽时请求**切换到其他资源并继续执行**——只要还有一个可用资源，工具端就不会收到报错。
 - **消耗黑盒。** 每次调用都落在明文事件流水里，带 token 数、延迟与费用估算，内置看板直接呈现。
 
@@ -32,13 +34,13 @@
 | 切换续跑 | 重试耗尽后，同一请求自动换到下一个可用资源继续执行——只要有可用资源，工具端无感 |
 | 流式安全 | 15s SSE 心跳；首 token 前的失败无感切换；已输出部分内容后失败，把收到的内容与错误原样透传，不吞内容；客户端主动取消会透传到上游 |
 | 推理参数 | 三级合并：请求级 > 资源级默认 > 厂商内置（仅 chat） |
-| Web 控制台 | 总览、资源管理、系统模型、数据看板、请求日志、API 接入、系统设置、模板页面（内置前端参考模板库浏览/内嵌预览）——浅色 / 深色 / 跟随系统三主题 |
+| Web 控制台 | 总览、资源管理、网关模型、数据看板、请求日志、API 接入、系统设置、模板页面（内置前端参考模板库浏览/内嵌预览）——浅色 / 深色 / 跟随系统三主题 |
 | 全明文数据 | YAML 配置、JSONL 事件流水，无数据库、无二进制格式 |
 | 访问令牌 | `/v1/*` 支持多枚命名令牌，一工具一枚，可单独启停 |
 
 ## 调度是怎么工作的
 
-网关为每个系统模型维护一个有序资源池，三个全局参数决定一切：
+网关为每个网关模型维护一个有序资源池，三个全局参数决定一切：
 
 | 参数 | 默认 | 含义 |
 | --- | --- | --- |
@@ -61,7 +63,7 @@ pip install -e .
 
 mkdir -p data
 cp config.example.yaml data/config.yaml
-# 编辑 data/config.yaml：先填一个厂商 Key 即可跑通
+# 编辑 data/config.yaml：先填一个供应商 Key 即可跑通
 
 python -m model_gateway.main
 ```
@@ -135,7 +137,7 @@ scheduling:
   fail_threshold: 2         # y — 连续失败阈值
   retry_per_request: 3      # m — 单请求单资源重试上限
 
-resources:                  # 每条 = 厂商 + Key
+resources:                  # 每条 = 供应商 + Key
   - id: res-xxxxxxxx        # 系统自动生成
     name: 商汤 · 主Key
     preset: sensenova-api    # sensenova-api | sensenova-tokenplan | 自定义留空
@@ -145,7 +147,7 @@ resources:                  # 每条 = 厂商 + Key
     api_key: sk-xxxxxxxx
     enabled: true
 
-models:                      # 对工具端暴露的系统模型
+models:                      # 对工具端暴露的网关模型
   - name: deepseek-v4-flash
     endpoint: chat            # chat | images
     resources:                # 有序 = 优先级
@@ -153,12 +155,12 @@ models:                      # 对工具端暴露的系统模型
         model: deepseek-v4-flash
 ```
 
-厂商预设会自动填好协议与端点（商汤内置 `api` 与 `tokenplan` 两套预设）；任何自定义 OpenAI 兼容端点用 `preset: ""` 接入。完整字段见 [`config.example.yaml`](./config.example.yaml)。
+供应商预设会自动填好协议与端点（商汤内置 `api` 与 `tokenplan` 两套预设）；任何自定义 OpenAI 兼容端点用 `preset: ""` 接入。完整字段见 [`config.example.yaml`](./config.example.yaml)。
 
 ## 设计立场
 
 - **全明文。** 配置、模型枚举、事件流水与日志都是本地可读文件，没有数据库。
-- **纯本地。** 无遥测、无远程配置、无自动更新；除你配置的厂商外，不向任何外部发送请求。
+- **纯本地。** 无遥测、无远程配置、无自动更新；除你配置的供应商外，不向任何外部发送请求。
 - **密钥不出本机。** 凭据只存本地配置文件（git 忽略），绝不硬编码、绝不上传。
 - **单用户。** 无注册无登录，管理界面按本机自用设计为免鉴权——请只在自己的设备上运行；`/v1/*` 调用由访问令牌保护。
 
@@ -166,7 +168,7 @@ models:                      # 对工具端暴露的系统模型
 
 > **说明**：项目仍在持续更新优化，仅供个人研究使用。功能目前还比较简单，主要适配作者自身的使用场景；有好的意见欢迎在 [Issues](https://github.com/1179053284/AI-Gateway/issues) 交流。
 
-当前版本：**v0.2.0**（与 `mgw --version`、`pyproject.toml` 一致）—— 测试 **1962 passed / 1 skipped**（= 本提交树收集 1963 条减 1 条 skip）（截至 2026-10-04，复现命令 `.venv/bin/python -m pytest -q`；`test_v2_readme_claims.py` 会钉住这个数字不漂）。OpenAI 路径已做真实厂商调用验证；需要真实凭据的 ZCode / Anthropic 路径项**尚未验证**。
+当前版本：**v0.2.0**（与 `mgw --version`、`pyproject.toml` 一致）—— 测试 **1967 passed / 1 skipped**（= 本提交树收集 1968 条减 1 条 skip）（截至 2026-10-04，复现命令 `.venv/bin/python -m pytest -q`；`test_v2_readme_claims.py` 会钉住这个数字不漂）。OpenAI 路径已做真实厂商调用验证；需要真实凭据的 ZCode / Anthropic 路径项**尚未验证**。
 
 接下来计划：
 
