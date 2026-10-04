@@ -16,19 +16,16 @@
 ⚠️ **不设** CodeBuddy 系归属头（`X-Domain` / `X-Product*` / `X-IDE-*`）：`lobsterai.ts:492-503`
 明确「LobsterAI 不认那套头，带上可能让服务端按错误的客户端形态归因」。
 
-🔴 **非流式 = SSE 聚合**（`LobsterAI` 特有）：上游只接受 `stream:true`，故 `chat_nonstream`
-在本类内把 `chat_stream`（继承来的 SSE 解析 + 思考字段归一化）的 chunk 聚合成一条
-OpenAI 形状 `chat.completion`；其余产品走基类直连非流式端点。聚合只搬上游出现过的字段
-（内容 / `reasoning_content` / `tool_calls` / `finish_reason` / `usage`），**不编造**。
+🔴 **非流式 = SSE 聚合**（上游只接受 `stream:true`）：本类置 `stream_only = True`，
+非流式请求由族基类（`adapters/product_out.py`）把 `chat_stream` 的 chunk 聚合成一条
+OpenAI 形状 `chat.completion`（聚合器全包唯一一份，只搬上游出现过的字段，**不编造**）；
+其余产品走基类直连非流式端点。取证：`client.go:168-195`（DSH 照抄，
+`lobsterai-adapter.ts:996-1001`）。
 
 ⚠️ 本模块**无网络副作用**：只构造适配器；请求由 `core/scheduler` 驱动（§22.8-1）。
 """
 
 from __future__ import annotations
-
-import secrets
-import time
-from typing import Any
 
 from model_gateway.adapters.product_out import FamilyOpenAIOut
 from model_gateway.core.errors import UpstreamError
@@ -70,26 +67,9 @@ class LobsteraiOut(FamilyOpenAIOut):
         del cred, meta, device
         return {**body, "model": vendor_model, "stream": True}
 
-    # —— 非流式：聚合（LobsterAI 上游只支持 SSE）——
-
-    async def chat_nonstream(self, key: str, vendor_model: str, body: dict,
-                             timeout: float) -> dict:
-        """非流式 = 消费 `chat_stream` 并聚合为 `chat.completion`（模块头 🔴 的落地）。
-
-        - 传输 / SSE 解析 / 错误映射全部走继承实现（`_prepare_body` 已把 `stream` 改真）；
-        - 首帧前的失败照旧抛 `UpstreamError`（调度器据此重试 / 切换 / 停用）；
-        - **一帧未收到** → `UpstreamError`（fail closed，§22.8-5：不得把"上游什么都没给"
-          当成"空内容成功"返回给客户端）；
-        - 聚合语义：`content` 与 `reasoning_content` 按序拼接，`tool_calls` 按 `index`
-          合并（`id`/`name` 只允许**非空覆盖** —— 后续分片带空串，直接覆盖会清空工具名，
-          `lobsterai-adapter.ts:1218-1226` 的实测防坑），`finish_reason` / `usage` 取
-          上游最后出现的值；上游没给的字段**不编造**。
-        """
-        chunks = [chunk async for chunk in
-                  self.chat_stream(key, vendor_model, body, timeout)]
-        if not chunks:
-            raise UpstreamError("lobsterai：上游流式响应为空（未收到任何 SSE 帧）")
-        return _aggregate(chunks)
+    #: 上游只支持 SSE（`client.go:168-195`）：非流式请求由族基类内部走流式并本地聚合
+    #: （聚合器唯一一份 = `adapters/product_out.py::_aggregate`，本类不再自带实现）。
+    stream_only = True
 
 
 #: 头钩子的**显式登记**（供接线护栏核验，与 buddy 的 `_HEADER_HOOK` 同一性质）：
@@ -99,89 +79,3 @@ _HEADER_HOOK = LobsteraiOut.auth_headers
 #: 体钩子的**显式登记**（同上）：`FamilyOpenAIOut._prepare_body` 按属性名多态调起
 #: `self.prepare_body(...)`，覆盖点在新文件里没有 `.prepare_body` 属性访问可被 AST 看见。
 _BODY_HOOK = LobsteraiOut.prepare_body
-
-#: 非流式覆盖的**显式登记**（同上）：`chat_nonstream` 由 `Scheduler.execute_chat`
-#: 多态调起，跨文件 AST 判据因名字全包不唯一而看不见本类的覆盖。
-_NONSTREAM_HOOK = LobsteraiOut.chat_nonstream
-
-
-def _aggregate(chunks: list[dict]) -> dict:
-    """把归一化 chunk 聚合成一条非流式 `chat.completion`（LobsterAI 专用，见模块头）。
-
-    - 聚合只搬上游出现过的字段；`id`/`created` 在上游从未给出时才用本地值兜底
-      （客户端 SDK 期望这两个字段存在）；
-    - `message.content` 恒为字符串（无正文 = `""`），与 OpenAI 非流式形态一致。
-    """
-    content: list[str] = []
-    reasoning: list[str] = []
-    tools: dict[int, dict] = {}
-    finish_reason: Any = None
-    usage: dict | None = None
-    last_id = ""
-    created = 0
-    for chunk in chunks:
-        if isinstance(chunk.get("id"), str) and chunk["id"]:
-            last_id = chunk["id"]
-        value = chunk.get("created")
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            created = int(value)
-        if isinstance(chunk.get("usage"), dict):
-            usage = chunk["usage"]
-        for choice in chunk.get("choices") or []:
-            if not isinstance(choice, dict):
-                continue
-            if isinstance(choice.get("finish_reason"), str):
-                finish_reason = choice["finish_reason"]
-            for delta in (choice.get("delta"), choice.get("message")):
-                if not isinstance(delta, dict):
-                    continue
-                piece = delta.get("content")
-                if isinstance(piece, str) and piece:
-                    content.append(piece)
-                think = delta.get("reasoning_content")
-                if isinstance(think, str) and think:
-                    reasoning.append(think)
-                for call in delta.get("tool_calls") or []:
-                    _merge_tool_call(tools, call)
-    message: dict[str, Any] = {"role": "assistant", "content": "".join(content)}
-    if reasoning:
-        message["reasoning_content"] = "".join(reasoning)
-    if tools:
-        message["tool_calls"] = [tools[index] for index in sorted(tools)]
-    out: dict[str, Any] = {
-        "id": last_id or f"chatcmpl-{secrets.token_hex(12)}",
-        "object": "chat.completion",
-        "created": created or int(time.time()),
-        "model": "",           # 由调度器按系统模型名替换（`execute_chat` 末尾）
-        "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
-    }
-    if usage is not None:
-        out["usage"] = usage
-    return out
-
-
-def _merge_tool_call(tools: dict[int, dict], call: Any) -> None:
-    """把一片 `tool_calls` 增量并进按 `index` 键控的累加器。
-
-    🔴 `id` / `function.name` **只允许非空覆盖**：上游后续分片会带空串，
-    直接覆盖会清空已解析出的工具名（`unknown tool ""`，`lobsterai-adapter.ts:1218-1226`）。
-    """
-    if not isinstance(call, dict):
-        return
-    raw_index = call.get("index")
-    index = raw_index if isinstance(raw_index, int) and not isinstance(raw_index, bool) else 0
-    entry = tools.setdefault(index, {"index": index, "type": "function",
-                                     "id": "", "function": {"name": "", "arguments": ""}})
-    call_id = call.get("id")
-    if isinstance(call_id, str) and call_id:
-        entry["id"] = call_id
-    function = call.get("function")
-    if isinstance(function, dict):
-        name = function.get("name")
-        if isinstance(name, str) and name:
-            entry["function"]["name"] = name
-        arguments = function.get("arguments")
-        if isinstance(arguments, str):
-            entry["function"]["arguments"] += arguments
-    if isinstance(call.get("type"), str) and call["type"]:
-        entry["type"] = call["type"]

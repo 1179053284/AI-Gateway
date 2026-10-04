@@ -27,7 +27,7 @@ import pytest
 import yaml
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
 from model_gateway.accounts import store
@@ -39,7 +39,13 @@ CONFIG_KEY = "sk-config-key-must-not-be-sent"
 # ============ 基建：假 buddy 上游（401 / 200 可切）============
 
 class _FakeBuddyUpstream:
-    """假 CodeBuddy 上游：`POST /v2/chat/completions`；`status` 可切成 401。"""
+    """假 CodeBuddy 上游：`POST /v2/chat/completions`；`status` 可切成 401。
+
+    🔴 2026-10-04 随真实通道形状更正：这条通道**只收流式**（非流式实盘 4/4 回
+    `400 {"code":11101}`），所以本假件对 `stream:false` 照实回 400、只对 SSE 请求回帧；
+    上一版直接对非流式回 JSON，等于用 mock 把这条产品事实遮掉（B-2 的判据不受影响：
+    它要的是"401 判死 → 重新登录复活"，与响应形态无关）。
+    """
 
     def __init__(self) -> None:
         self.requests: list[dict] = []
@@ -54,13 +60,25 @@ class _FakeBuddyUpstream:
         if self.status != 200:
             return JSONResponse({"error": {"message": "token rejected"}},
                                 status_code=self.status)
-        return JSONResponse({
-            "id": "chatcmpl-fake-buddy", "object": "chat.completion", "model": body["model"],
-            "choices": [{"index": 0,
-                         "message": {"role": "assistant", "content": "来自假上游"},
-                         "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 7, "completion_tokens": 3},
-        })
+        if not body.get("stream"):
+            return JSONResponse({"code": 11101,
+                                 "msg": "Non-stream chat request is currently not supported",
+                                 "requestId": "fake-buddy"}, status_code=400)
+        frames = [
+            {"id": "c", "object": "chat.completion.chunk", "model": body["model"],
+             "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]},
+            {"id": "c", "object": "chat.completion.chunk", "model": body["model"],
+             "choices": [{"index": 0, "delta": {"content": "来自假上游"},
+                          "finish_reason": "stop"}],
+             "usage": {"prompt_tokens": 7, "completion_tokens": 3}},
+        ]
+
+        async def stream():
+            for frame in frames:
+                yield f"data: {json.dumps(frame, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(stream(), media_type="text/event-stream")
 
 
 @pytest.fixture

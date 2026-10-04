@@ -45,15 +45,15 @@ class _FakeBuddyUpstream:
         body = await request.json()
         self.requests.append({"path": request.url.path,
                               "headers": dict(request.headers), "body": body})
-        if body.get("stream"):
-            return StreamingResponse(self._sse(), media_type="text/event-stream")
-        return JSONResponse({
-            "id": "chatcmpl-fake-buddy", "object": "chat.completion", "model": body["model"],
-            "choices": [{"index": 0,
-                         "message": {"role": "assistant", "content": "来自假上游"},
-                         "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 7, "completion_tokens": 3},
-        })
+        if not body.get("stream"):
+            # 🔴 复刻真实通道的**唯一**接受形态：非流式一律 400 code 11101
+            # （:8300 真实两号 4/4 命中，2026-10-04，`usage/events-20261004.jsonl`）。
+            # 假上游若照收 `stream:false` 回 JSON，就是把"产品只发流式"这条事实
+            # 用 mock 遮掉的经典 mock 绿 —— 适配器漏掉聚合时本用例必红。
+            return JSONResponse({"code": 11101,
+                                 "msg": "Non-stream chat request is currently not supported",
+                                 "requestId": "fake-buddy"}, status_code=400)
+        return StreamingResponse(self._sse(), media_type="text/event-stream")
 
     async def _sse(self):
         frames = [
@@ -63,8 +63,11 @@ class _FakeBuddyUpstream:
              "choices": [{"index": 0, "delta": {"content": "你"}, "finish_reason": None}]},
             {"id": "c", "object": "chat.completion.chunk", "model": "hy3",
              "choices": [{"index": 0, "delta": {"content": "好"}, "finish_reason": None}]},
+            # usage 在末帧给出（实测：buddy/workbuddy 流式成功的事件 `usage_source=vendor`
+            # 且 token 非零 ⇒ 流式里确实带 usage，聚合后的非流式统计才有依据）
             {"id": "c", "object": "chat.completion.chunk", "model": "hy3",
-             "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+             "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+             "usage": {"prompt_tokens": 7, "completion_tokens": 3}},
         ]
         for frame in frames:
             yield f"data: {json.dumps(frame, ensure_ascii=False)}\n\n"
@@ -139,8 +142,10 @@ async def test_buddy_nonstream_end_to_end(buddy_upstream, make_gateway, client):
     resp = await _chat(client, gw, _body())
     assert resp.status_code == 200, resp.text
     data = resp.json()
-    assert data["choices"][0]["message"]["content"] == "来自假上游"
+    # 客户端要的是非流式一条完整回答；通道只收流式 ⇒ 网关内部聚合（不甩 11101 给客户端）
+    assert data["choices"][0]["message"]["content"] == "你好"
     assert data["model"] == "cb-model"                    # 统一名替换厂商名
+    assert data["usage"] == {"prompt_tokens": 7, "completion_tokens": 3}
 
     assert len(buddy_upstream.requests) == 1
     req = buddy_upstream.requests[0]
@@ -159,7 +164,7 @@ async def test_buddy_nonstream_end_to_end(buddy_upstream, make_gateway, client):
     assert req["headers"]["x-product-code"] == "codebuddy"
     assert req["headers"]["user-agent"] == "CodeBuddyIDE/1.106.1"
     assert req["body"]["model"] == "hy3"                  # 映射里的厂商模型名
-    assert "stream" not in req["body"] or req["body"]["stream"] is False
+    assert req["body"]["stream"] is True                  # 通道只接受流式：网关内部改流式再聚合
 
     await gw.drain_events()
     ev = gw.read_events()[-1]

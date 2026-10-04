@@ -38,6 +38,12 @@ class BuddyFamilyOut(FamilyOpenAIOut):
     #: 推理端点：`POST {base}/v2/chat/completions`（两产品同源共用，`product.ts:14-18`）
     chat_path = "/v2/chat/completions"
 
+    #: 上游只支持 SSE：`stream:false` 被通道回 `400 {"code":11101,"msg":"Non-stream chat
+    #: request is currently not supported"}`（:8300 真实两号 4/4 命中，2026-10-04，
+    #: 判据见 `adapters/product_out.py::FamilyOpenAIOut.stream_only`）。非流式请求由族基类
+    #: 内部走流式并本地聚合 —— 客户端的 `stream:false` 是与**网关**的契约，不该听见厂商通道错。
+    stream_only = True
+
     def __init__(self, account: ProductAccount, profile: p.ProductProfile) -> None:
         super().__init__(account)
         self._profile = profile

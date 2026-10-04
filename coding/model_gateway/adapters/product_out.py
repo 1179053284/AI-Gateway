@@ -20,6 +20,9 @@
   `auth_headers(cred, meta, device)`（必装）与 `prepare_body(...)`（可选，默认只落
   厂商模型名）；传输（客户端 / SSE 解析 / 错误映射 / 图片转 base64）全部复用
   `OpenAIOutAdapter`，**不复制第二份**。
+- `FamilyOpenAIOut.stream_only`：上游**只支持 SSE** 的产品置 `True`，非流式请求由本基类
+  内部走流式并**本地聚合**成 `chat.completion` 返回（聚合器本模块唯一一份）——
+  取证与判据见该属性处。
 - 其余协议族（anthropic 等）后续波次照此形态加 `FamilyAnthropicOut`（M6-5b）。
 
 ⚠️ 本模块**不 import 账号层与产品层于模块级**（延迟到调用时）：适配层要被
@@ -30,6 +33,8 @@
 from __future__ import annotations
 
 import importlib
+import secrets
+import time
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Callable
 
@@ -144,6 +149,19 @@ class FamilyOpenAIOut(OpenAIOutAdapter, ProductOutAdapter):
     #: 推理端点路径（子类覆盖；拼接口径与 `OpenAIOutAdapter` 一致）
     chat_path: str = "/chat/completions"
 
+    #: 上游**只支持 SSE**（`stream:false` 被通道拒绝）的产品置 `True`：
+    #: 非流式请求由本基类内部走流式 + 本地聚合，不把厂商错误甩给客户端。
+    #: 取证（:8300 真实数据，`usage/events-20261004.jsonl`）：buddy / workbuddy 上
+    #: **4/4** 次 `stream=false` 全回
+    #: `400 {"code":11101,"msg":"Non-stream chat request is currently not supported"}`，
+    #: 而同一条请求落在 cline / lobsterai / trae 上 200；同族 DSH 侧本来也只发流式
+    #: （`buddy/protocol.py:277`）。
+    #: 🔴 为什么不在调度器里"换号重试"了事：400 按 FR-3.13 归 BAD_REQUEST
+    #: （请求本身的问题不换号），而 `stream:false` 是**客户端与网关的契约**、
+    #: 不是客户端写错了 —— 能在自己这一层补齐的形态差异，不该变成调度策略或
+    #: 用户可见的厂商报错。
+    stream_only: bool = False
+
     def __init__(self, account: ProductAccount, *, client=None,
                  needs_base64: Callable[[str], bool] | None = None) -> None:
         # 基序 = (OpenAIOutAdapter, ProductOutAdapter)：`chat_*`/`aclose` 取真实现，
@@ -191,6 +209,109 @@ class FamilyOpenAIOut(OpenAIOutAdapter, ProductOutAdapter):
         headers = dict(self.auth_headers(cred, meta, device))
         headers.setdefault("Content-Type", "application/json")
         return headers
+
+    # —— 非流式：`stream_only` 产品的本地聚合出口（本族唯一一份）——
+
+    async def chat_nonstream(self, key: str, vendor_model: str, body: dict,
+                             timeout: float) -> dict:
+        """`stream_only` 置真时 = 消费 `chat_stream` 并聚合成 `chat.completion`。
+
+        - 传输 / SSE 解析 / 错误映射 / 凭据自解全部走继承实现，本方法不碰网络；
+        - 首帧前的失败照旧抛 `UpstreamError`（调度器据此重试 / 切换 / 停用）；
+        - **一帧未收到** → `UpstreamError`（fail closed，§22.8-5：不得把"上游什么都没给"
+          当成"空内容成功"返回给客户端）；
+        - 其余产品照基类直连非流式端点（`stream_only=False`）。
+        """
+        if not self.stream_only:
+            return await super().chat_nonstream(key, vendor_model, body, timeout)
+        chunks = [chunk async for chunk in
+                  self.chat_stream(key, vendor_model, {**body, "stream": True}, timeout)]
+        if not chunks:
+            raise UpstreamError(
+                f"{self.product}：上游流式响应为空（未收到任何 SSE 帧）")
+        return _aggregate(chunks)
+
+
+def _aggregate(chunks: list[dict]) -> dict:
+    """把归一化 chunk 聚合成一条非流式 `chat.completion`（`stream_only` 产品共用）。
+
+    - 只搬上游出现过的字段；`id`/`created` 上游从未给出时才用本地值兜底
+      （客户端 SDK 期望这两个字段存在）；
+    - `message.content` 恒为字符串（无正文 = `""`），与 OpenAI 非流式形态一致。
+    """
+    content: list[str] = []
+    reasoning: list[str] = []
+    tools: dict[int, dict] = {}
+    finish_reason: Any = None
+    usage: dict | None = None
+    last_id = ""
+    created = 0
+    for chunk in chunks:
+        if isinstance(chunk.get("id"), str) and chunk["id"]:
+            last_id = chunk["id"]
+        value = chunk.get("created")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            created = int(value)
+        if isinstance(chunk.get("usage"), dict):
+            usage = chunk["usage"]
+        for choice in chunk.get("choices") or []:
+            if not isinstance(choice, dict):
+                continue
+            if isinstance(choice.get("finish_reason"), str):
+                finish_reason = choice["finish_reason"]
+            for delta in (choice.get("delta"), choice.get("message")):
+                if not isinstance(delta, dict):
+                    continue
+                piece = delta.get("content")
+                if isinstance(piece, str) and piece:
+                    content.append(piece)
+                think = delta.get("reasoning_content")
+                if isinstance(think, str) and think:
+                    reasoning.append(think)
+                for call in delta.get("tool_calls") or []:
+                    _merge_tool_call(tools, call)
+    message: dict[str, Any] = {"role": "assistant", "content": "".join(content)}
+    if reasoning:
+        message["reasoning_content"] = "".join(reasoning)
+    if tools:
+        message["tool_calls"] = [tools[index] for index in sorted(tools)]
+    out: dict[str, Any] = {
+        "id": last_id or f"chatcmpl-{secrets.token_hex(12)}",
+        "object": "chat.completion",
+        "created": created or int(time.time()),
+        "model": "",           # 由调度器按系统模型名替换（`execute_chat` 末尾）
+        "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
+    }
+    if usage is not None:
+        out["usage"] = usage
+    return out
+
+
+def _merge_tool_call(tools: dict[int, dict], call: Any) -> None:
+    """把一片 `tool_calls` 增量并进按 `index` 键控的累加器。
+
+    🔴 `id` / `function.name` **只允许非空覆盖**：上游后续分片会带空串，
+    直接覆盖会清空已解析出的工具名（`unknown tool ""`，`lobsterai-adapter.ts:1218-1226`）。
+    """
+    if not isinstance(call, dict):
+        return
+    raw_index = call.get("index")
+    index = raw_index if isinstance(raw_index, int) and not isinstance(raw_index, bool) else 0
+    entry = tools.setdefault(index, {"index": index, "type": "function",
+                                     "id": "", "function": {"name": "", "arguments": ""}})
+    call_id = call.get("id")
+    if isinstance(call_id, str) and call_id:
+        entry["id"] = call_id
+    function = call.get("function")
+    if isinstance(function, dict):
+        name = function.get("name")
+        if isinstance(name, str) and name:
+            entry["function"]["name"] = name
+        arguments = function.get("arguments")
+        if isinstance(arguments, str):
+            entry["function"]["arguments"] += arguments
+    if isinstance(call.get("type"), str) and call["type"]:
+        entry["type"] = call["type"]
 
 
 def build_product_adapter(product: str, account_ref: str, base_url: str, *,

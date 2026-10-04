@@ -105,6 +105,42 @@ def _sse() -> str:
     return out + "data: [DONE]\n\n"
 
 
+def _sse_rich() -> str:
+    """带 `reasoning_content` / 分片 `tool_calls` / `usage` 的 SSE（聚合判据的输入形状）。"""
+    frames = [
+        {"id": "c-rich", "created": 1776000000, "object": "chat.completion.chunk",
+         "model": "hy3",
+         "choices": [{"index": 0, "delta": {"reasoning_content": "先想"},
+                      "finish_reason": None}]},
+        {"id": "c-rich", "created": 1776000000, "object": "chat.completion.chunk",
+         "model": "hy3",
+         "choices": [{"index": 0, "delta": {"content": "你"}, "finish_reason": None}]},
+        {"id": "c-rich", "created": 1776000000, "object": "chat.completion.chunk",
+         "model": "hy3",
+         "choices": [{"index": 0, "delta": {"content": "好", "tool_calls": [
+             {"index": 0, "id": "call-1", "type": "function",
+              "function": {"name": "lookup", "arguments": "{\"q\""}}]},
+             "finish_reason": None}]},
+        {"id": "c-rich", "created": 1776000000, "object": "chat.completion.chunk",
+         "model": "hy3",
+         "choices": [{"index": 0, "delta": {"tool_calls": [
+             {"index": 0, "id": "", "type": "function",
+              "function": {"name": "", "arguments": ": \"天气\"}"}}]},
+             "finish_reason": "stop"}],
+         "usage": {"prompt_tokens": 11, "completion_tokens": 5}},
+    ]
+    out = "".join(f"data: {json.dumps(f, ensure_ascii=False)}\n\n" for f in frames)
+    return out + "data: [DONE]\n\n"
+
+
+class _PlainFamilyOut(FamilyOpenAIOut):
+    """族基类**缺省形状**样本：`stream_only=False` + 默认 `prepare_body`（测缺省用）。"""
+
+    def auth_headers(self, cred: dict, meta: dict, device: dict) -> dict:
+        del cred, meta, device
+        return {"authorization": "Bearer PLAIN"}
+
+
 # ============ 形状（§22.3 duck typing）============
 
 def test_adapter_shape_matches_the_duck_typing_contract(monkeypatch):
@@ -130,16 +166,75 @@ def test_base_contract_methods_fail_loudly(monkeypatch):
         asyncio.run(adapter.aclose())
 
 
+# ============ `stream_only`：只收流式的通道在族内聚合 ============
+
+def test_stream_only_flag_matches_the_probed_channels():
+    """置真的一律是**实测只收流式**的通道；直连非流式能通的产品（cline）必须保持缺省。
+
+    取证（:8300 真实数据 `usage/events-20261004.jsonl`，2026-10-04）：
+    buddy / workbuddy 的 `stream=false` **4/4** 回 `400 {"code":11101}`，
+    cline 的 `stream=false` 200（`test_cline_out.py` 同钉）⇒ 一刀切改流式会把
+    能直连的通道也拖进"必须读完整个流才回首字节"的延迟里。
+    """
+    from model_gateway.upstream.cline.out import ClineOut
+    from model_gateway.upstream.lobsterai.out import LobsteraiOut
+    from model_gateway.upstream.workbuddy import product as workbuddy
+
+    assert BuddyFamilyOut.stream_only is True          # buddy 与 workbuddy 共用这一份实现
+    wb = workbuddy.build_out(ProductAccount(product="workbuddy", name="acc-wb", base_url=BASE))
+    assert isinstance(wb, BuddyFamilyOut) and wb.stream_only is True   # 国际版同一条腿
+    asyncio.run(wb.aclose())
+    assert LobsteraiOut.stream_only is True            # client.go:168-195
+    assert ClineOut.stream_only is False               # 实测可直连非流式
+    assert _PlainFamilyOut.stream_only is False        # 族基类缺省 = 不改动形态
+
+
+def test_stream_only_aggregation_merges_reasoning_tools_usage(monkeypatch):
+    """聚合语义 = 正文/思考按序拼接、工具按 `index` 合并、usage/finish 取上游末值。"""
+    seen, handler = _capture(monkeypatch, sse=_sse_rich())
+    adapter = _adapter(monkeypatch, transport=handler)
+    data = asyncio.run(adapter.chat_nonstream("", "hy3", {"messages": []}, 10.0))
+    asyncio.run(adapter.aclose())
+
+    assert json.loads(seen[0].content)["stream"] is True     # 出站形态被改写（真实通道唯一能收的）
+    assert data["object"] == "chat.completion"
+    message = data["choices"][0]["message"]
+    assert message["content"] == "你好"
+    assert message["reasoning_content"] == "先想"
+    # 🔴 后续分片带空 `id`/空 `name` 不许清空已解析出的工具名与参数
+    assert message["tool_calls"] == [{"index": 0, "type": "function", "id": "call-1",
+                                      "function": {"name": "lookup",
+                                                   "arguments": '{"q": "天气"}'}}]
+    assert data["choices"][0]["finish_reason"] == "stop"
+    assert data["usage"] == {"prompt_tokens": 11, "completion_tokens": 5}
+    assert data["id"] == "c-rich" and data["created"] == 1776000000
+    assert data["model"] == ""                               # 由调度器替换为系统模型名
+
+
+def test_stream_only_without_any_chunk_fails_closed(monkeypatch):
+    """一帧未收到 ⇒ `UpstreamError`（不把"上游什么都没给"当成空内容成功，§22.8-5）。"""
+    seen, handler = _capture(monkeypatch)        # 回 JSON：SSE 解析拿不到任何帧
+    adapter = _adapter(monkeypatch, transport=handler)
+    with pytest.raises(UpstreamError, match="流式响应为空"):
+        asyncio.run(adapter.chat_nonstream("", "hy3", {}, 10.0))
+    asyncio.run(adapter.aclose())
+    assert len(seen) == 1
+
+
 # ============ 凭据自解 + 身份头 ============
 
 def test_chat_nonstream_resolves_credential_from_account_and_sends_family_headers(monkeypatch):
-    seen, handler = _capture(monkeypatch)
+    seen, handler = _capture(monkeypatch, sse=_sse())
     adapter = _adapter(monkeypatch, transport=handler, base_url="http://127.0.0.1:9")
     body = {"messages": [{"role": "user", "content": "hi"}]}
     data = asyncio.run(adapter.chat_nonstream("", "hy3", body, 10.0))
     asyncio.run(adapter.aclose())
 
-    assert data["choices"][0]["message"]["content"] == "hi"
+    # buddy 通道只收流式（`stream:false` 实盘 4/4 回 400 code 11101）：非流式由族基类
+    # 改走 SSE 后**本地聚合**，所以假上游这里照真实形状回 SSE（回 JSON 就是 mock 绿）。
+    assert data["object"] == "chat.completion"
+    assert data["choices"][0]["message"]["content"] == "你"
+    assert json.loads(seen[0].content)["stream"] is True     # 出站必为流式
     request = seen[0]
     assert request.url.path == "/v2/chat/completions"          # 取证路径（不是 /chat/completions）
     assert request.headers["authorization"] == "Bearer TOKEN-FROM-ACCOUNT"
@@ -164,7 +259,7 @@ def test_chat_nonstream_resolves_credential_from_account_and_sends_family_header
 
 def test_config_key_is_never_used_for_product_resources(monkeypatch):
     """🔴 铁律 1 的判据：调度侧传进来的配置 Key **不参与鉴权**（凭据只在账号目录）。"""
-    seen, handler = _capture(monkeypatch)
+    seen, handler = _capture(monkeypatch, sse=_sse())
     adapter = _adapter(monkeypatch, transport=handler)
     asyncio.run(adapter.chat_nonstream("sk-config-key-must-not-leak", "hy3", {}, 10.0))
     asyncio.run(adapter.aclose())
@@ -191,13 +286,19 @@ def test_credential_without_access_token_is_rejected_before_request(monkeypatch)
 
 
 def test_prepare_body_default_only_sets_vendor_model(monkeypatch):
-    """默认体塑造 = 只落厂商模型名（不塞自创字段；采样/推理注入归 IR 层）。"""
+    """默认体塑造 = 只落厂商模型名（不塞自创字段；采样/推理注入归 IR 层）。
+
+    样本用 `_PlainFamilyOut`（族基类**缺省形状**：`stream_only=False`）—— buddy 现在
+    自带"只收流式"这条产品事实，拿它测缺省塑造会把那条强制改写也算进"缺省"。
+    """
     seen, handler = _capture(monkeypatch)
-    adapter = _adapter(monkeypatch, transport=handler)
+    adapter = _adapter(monkeypatch, transport=handler,
+                       factory=lambda account: _PlainFamilyOut(account))
     asyncio.run(adapter.chat_nonstream("", "hy3", {"messages": [], "temperature": 0.3}, 10.0))
     asyncio.run(adapter.aclose())
     body = json.loads(seen[0].content)
     assert body == {"messages": [], "temperature": 0.3, "model": "hy3"}
+    assert "stream" not in body                     # 非 stream_only 产品照旧直连非流式端点
 
 
 def test_needs_base64_probe_flows_from_the_account_payload(monkeypatch):
