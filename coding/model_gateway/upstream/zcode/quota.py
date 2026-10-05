@@ -360,7 +360,25 @@ def refresh_runtime_quotas(runtime, *, accounts: list[str] | None = None) -> int
     return updated
 
 
-def apply_remaining_to_runtime(runtime, account: str, remaining: int | None) -> int:
+def entitled_from_snapshot(snap) -> bool | None:
+    """上游对「这条通道有没有承接资格」的说法：`False` = 明确说没有，`True` = 说了有，`None` = 没说（不动）。
+
+    🔴 只有 `reason == "no_plan"` 算否认（`200 + code=0 + plans/balances 皆空`，
+    `upstream/zcode/billing.py:56` 的取证档位）。`expired` / `circuit` / `unreachable` /
+    `no_credentials` / `no_identity` 都是**没查到**而不是"上游说没有"⇒ 一律不动这一位 ——
+    把"没查到"当成"没资格"就是误封整条通道，与 `remaining_units()` 的「未知不当 0」同一纪律。
+    `state ∈ {available, exhausted}` 且 `reason` 空 = 上游给了包（哪怕这个窗口用完）⇒ 恢复 True。
+    """
+    reason = str(getattr(snap, "reason", "") or "")
+    if reason == "no_plan":
+        return False
+    if not reason and str(getattr(snap, "state", "") or "") in ("available", "exhausted"):
+        return True
+    return None
+
+
+def apply_remaining_to_runtime(runtime, account: str, remaining: int | None,
+                            *, entitled: bool | None = None) -> int:
     """把一个**已算好的余量数值**写回该账号资源的额度池，返回被更新的资源数。
 
     🔴 2026-10-02：§17 回写义务的**唯一实现**搬到这里，两个入口共用它 ——
@@ -384,7 +402,7 @@ def apply_remaining_to_runtime(runtime, account: str, remaining: int | None) -> 
       `res-sensenova-main`（`product` 为空串）被前者命中、被后者排除 —— 两者今天已差 1 条，
       用 zcode 谓词才是 §17 的既有行为（PM r4 N-R4-11 / QA r5 N-1 实测）。
     """
-    if remaining is None or runtime is None:
+    if runtime is None or (remaining is None and entitled is None):
         return 0
     mgr = getattr(runtime, "resources", None)
     config = getattr(runtime, "config", None)
@@ -392,10 +410,17 @@ def apply_remaining_to_runtime(runtime, account: str, remaining: int | None) -> 
         return 0
     rids = resource_ids_of_account(account, config)
     updated = 0
-    for rid in rids:
-        # 按 **rid（一把凭据）** 覆盖共享池，不是按 (rid, vendor_model) 各写一份
-        if mgr.set_quota(rid, remaining):
-            updated += 1
+    if remaining is not None:
+        for rid in rids:
+            # 按 **rid（一把凭据）** 覆盖共享池，不是按 (rid, vendor_model) 各写一份
+            if mgr.set_quota(rid, remaining):
+                updated += 1
+    # 🔴 资格位单独走一条腿：`no_plan` 时 `remaining` 恰是 None，若跟着上面的早退一起被跳过，
+    # 「上游明确说这号没套餐」就永远写不进池（2026-10-05 实盘审计：12 条可派号里 5 条无套餐号
+    # 照常轮转，判据零覆盖 ⇒ 这就是那条漏网）。
+    if entitled is not None:
+        for rid in rids:
+            mgr.set_entitled(rid, entitled)
     if remaining == 0 and rids:
         apply_to_resource(runtime, rids, reason=QUOTA_EXHAUSTED_REASON,
                           seconds=quota_refresh_seconds(runtime))
@@ -408,7 +433,8 @@ def apply_snapshot_to_runtime(runtime, account: str, snap: "QuotaSnapshot") -> i
     🔴 单一实现：`refresh_runtime_quotas`（批量离线面）与联网腿（`_apply_zcode_quota`）
     共用 `apply_remaining_to_runtime`，避免出现"两条路径算了两种额度"。
     """
-    return apply_remaining_to_runtime(runtime, account, remaining_units(snap))
+    return apply_remaining_to_runtime(runtime, account, remaining_units(snap),
+                            entitled=entitled_from_snapshot(snap))
 
 
 #: 额度耗尽写入 `last_error` 的原因串（§17 表格的**字面**取值，不改写、不加戏）

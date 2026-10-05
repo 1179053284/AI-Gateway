@@ -112,7 +112,8 @@ def _apply_zcode_quota(product: str, account: str, snap: QuotaSnapshot, runtime)
     """
     from model_gateway.upstream.zcode import quota as zq
 
-    return zq.apply_remaining_to_runtime(runtime, account, snap.remaining)
+    return zq.apply_remaining_to_runtime(runtime, account, snap.remaining,
+                                         entitled=zq.entitled_from_snapshot(snap))
 
 
 #: 额度**回写**的产品分派表（缺省 = 通用三态体）。**只有填了 `remaining` 的产品才进这张表** ——

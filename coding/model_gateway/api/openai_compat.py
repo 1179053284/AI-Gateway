@@ -188,8 +188,12 @@ async def _chat_stream_response(request: Request, scheduler, ir, ctx, model_def,
         first = await gen.__anext__()
     except StopAsyncIteration:
         # 零内容成功（罕见）：空流 + [DONE]
+        # 🔴 `_finish_only()` 本身就是 SSE 行的异步生成器（下面 `body_stream` 也直接 yield 字符串），
+        # 原先这里包了一层**模块里并不存在的 `_sse()`** ⇒ 一条"兜底"分支自己把请求打成 500，
+        # 而事件行早已记成 success（2026-10-05 实测：`NameError: name '_sse' is not defined`，
+        # 且既有「空流」用例只钉出站体带没带 stream:true，从没执行过这条分支 ⇒ 零覆盖）。
         watcher.cancel_sync()
-        return StreamingResponse(_sse(_finish_only()), media_type="text/event-stream",
+        return StreamingResponse(_finish_only(), media_type="text/event-stream",
                                  headers=_sse_headers())
     except GatewayError as e:
         watcher.cancel_sync()
