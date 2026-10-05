@@ -33,6 +33,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 
+from model_gateway.core import quota_policy
 from model_gateway.accounts import registry as account_registry
 from model_gateway.accounts import store as accounts_store
 from model_gateway.accounts.types import QuotaSnapshot
@@ -112,8 +113,11 @@ def _apply_zcode_quota(product: str, account: str, snap: QuotaSnapshot, runtime)
     """
     from model_gateway.upstream.zcode import quota as zq
 
+    ok = quota_policy.entitled_for(snap)
     return zq.apply_remaining_to_runtime(runtime, account, snap.remaining,
-                                         entitled=zq.entitled_from_snapshot(snap))
+                                         entitled=ok,
+                                         entitled_reason=(quota_policy.reason_of(snap)
+                                                          if ok is False else ""))
 
 
 #: 额度**回写**的产品分派表（缺省 = 通用三态体）。**只有填了 `remaining` 的产品才进这张表** ——
@@ -269,6 +273,14 @@ def _apply_quota_to_pools(product: str, account: str, snap: QuotaSnapshot, runti
     if manager is None or config is None:
         return 0
     remaining = 0 if snap.state == "exhausted" else None
+    # 🔴 资格闸门对**所有产品**生效（用户 2026-10-05 的阈值规则里"积分制"根本不是 zcode 的量纲），
+    # 但只走 `core/quota_policy.entitled_for()` 这**一个**判据 —— 在这里另抄一张阈值表就是
+    # "两条路径判两种资格"。`None` = 没查到 ⇒ 一位都不动。
+    entitled = quota_policy.entitled_for(snap)
+    # 🔴 原因串在循环**外**算一次：放进下面那个"单个资源写失败不中断"的 try 里，
+    # 判据自身的一个 NameError 会被失败隔离吞成 N 条 warning、资格位一个字节都不写
+    # ——本轮就是这么把"49 积分照常被派发"藏过去的（`test_credit_floor_excludes_a_non_zcode_account` 抓到）。
+    why = quota_policy.reason_of(snap) if entitled is False else ""
     updated = 0
     for res in getattr(config, "resources", None) or []:
         if str(getattr(res, "product", "") or "") != product:
@@ -278,6 +290,8 @@ def _apply_quota_to_pools(product: str, account: str, snap: QuotaSnapshot, runti
         if ref and ref != account:
             continue
         try:
+            if entitled is not None:
+                manager.set_entitled(res.id, entitled, reason=why)
             if manager.set_quota(res.id, remaining):
                 updated += 1
         except Exception as e:  # noqa: BLE001 — 单个资源写失败不中断（失败隔离，§22.8-6）

@@ -155,15 +155,21 @@ def build_gateway(tmp: Path, upstream_port: int) -> tuple[object, int]:
 
 def hydrate_quota(rt, resources) -> None:
     """把实盘的额度分档灌进额度池 —— 走**生产者用的同一个函数**
-    （`quota.apply_remaining_to_runtime`，联网腿 `_apply_zcode_quota` 调的也是它），
-    而不是直调 `set_quota`，否则"资格位有没有接到闸门"这条就永远测不到。"""
+    （`quota.apply_remaining_to_runtime`，联网腿与通用体调的也是它），
+    而不是直调 `set_quota`，否则"资格位有没有接到闸门"这条就永远测不到。
+    证据形状与实盘一致：**逐包 items**（zcode = token 量纲、`no_plan` 的号没有包）。"""
+    from model_gateway.core import quota_policy
     from model_gateway.upstream.zcode import quota as zq
 
-    snap = type("S", (), {})()
     for acct, _en, rem, st in LIVE_SHAPE:
-        snap.state, snap.reason, snap.remaining = st, ("no_plan" if st == "no_plan" else ""), rem
+        items = () if st == "no_plan" else (
+            {"name": "GLM-5.3-Flash", "unit": "token", "remaining": rem,
+             "total": 100_000_000, "active": True, "expires_at": ""},)
+        snap = type("S", (), {"state": st, "remaining": rem,
+                              "reason": "no_plan" if st == "no_plan" else "",
+                              "items": items})()
         zq.apply_remaining_to_runtime(rt, acct, rem,
-                                      entitled=zq.entitled_from_snapshot(snap))
+                                      entitled=quota_policy.entitled_for(snap))
 
 
 def events(usage: Path) -> list[dict]:
@@ -265,6 +271,43 @@ def main() -> None:
         print(f"  [{'绿' if state.status == 'cooldown' else '红'}] 规则 D："
               f"{'已被移出' if state.status == 'cooldown' else '从未被移出 —— 它会一直占着活跃组名额'}")
         print(f"  事件状态计数={ {k: sum(1 for e in rows if e.get('status') == k) for k in {e.get('status') for e in rows}} }")
+
+        # —— 轮 5/6：token 阈值（用户 2026-10-05 补的规则：低于 1 万自动剔出）——
+        # 🔴 号集必须与轮 2/轮 3 **互不相交**：那两轮已经把 ok_accts[:3] 打进 5 小时冷却了，
+        # 拿它们做阈值判据 = 空判据（红是排队造成的，绿也是排队造成的，跟阈值无关）。
+        from model_gateway.core import quota_policy as qp
+        from model_gateway.upstream.zcode import quota as zq_mod
+
+        mids = {acct: mid for mid, acct in mid_of.items()}
+        low_accts = ok_accts[3:6]
+
+        def _set_floor(acct, rem):
+            snap = type("S", (), {"state": "available", "reason": "", "remaining": rem,
+                                  "items": ({"name": "GLM-5.3-Flash", "unit": "token",
+                                             "remaining": rem, "total": 100_000_000,
+                                             "active": True, "expires_at": ""},)})()
+            zq_mod.apply_remaining_to_runtime(rt, acct, rem, entitled=qp.entitled_for(snap))
+            return qp.entitled_for(snap)
+
+        def _served(acct, n=12):
+            rt.resources._cursor[MODEL] = 0
+            fake.hits.clear()
+            codes = ask(base, n)
+            return fake.hits.count(mids[acct]), codes
+
+        print("\n=== 轮 5 · token 包余量阈值（用户：少于 1 万自动剔出）===")
+        for acct in low_accts:
+            before, _ = _served(acct)
+            verdict = _set_floor(acct, 5_000)
+            after, codes = _served(acct)
+            back, _ = _served(acct, 6) if after else (0, [])
+            _set_floor(acct, 10_000)
+            revived, _ = _served(acct)
+            flag = '绿' if (before > 0 and after == 0 and verdict is False and revived > 0) else '红'
+            print(f"  [{flag}] {acct[:26]:26} 阈值前={before} 次 · 5000 token(判据={verdict}) 后={after} 次"
+                  f" · 回到 10000 后={revived} 次")
+            if flag == '红':
+                print(f"      ↳ 读数异常：HTTP={ {c: codes.count(c) for c in set(codes)} }")
 
         # —— 轮 4：并发 6 条，看同时在途的号数与档位 ——
         fake.behavior.clear()

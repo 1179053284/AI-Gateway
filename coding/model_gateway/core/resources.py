@@ -1,3 +1,4 @@
+
 """资源池/生效集/冷却/连续失败计数（tech-design §4.3 / §5.3；Q18-② 扁平资源模型）。
 
 - 全局注册表：resource_id=(resource_id, vendor_model) → 状态全局唯一（PRD Q11）
@@ -13,6 +14,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 import time
 from contextlib import contextmanager
@@ -20,6 +22,8 @@ from typing import Callable
 
 from model_gateway.config.presets import preset_name
 from model_gateway.config.schemas import AppConfig
+
+logger = logging.getLogger("model_gateway")
 
 
 def normalize_base_url(url: str | None) -> str:
@@ -744,7 +748,7 @@ class ResourceManager:
         pool.remaining = remaining
         return True
 
-    def set_entitled(self, target, ok: bool) -> int:
+    def set_entitled(self, target, ok: bool, reason: str = "") -> int:
         """覆盖某资源**共享额度池**的承接资格位，返回受影响的本资源条目（`(rid, 供应商模型名)`）数。
 
         🔴 与 `set_quota` 同粒度（按 rid，一把凭据共享一个池）：同账号多映射不能各记一份，
@@ -753,10 +757,19 @@ class ResourceManager:
         读取失败/网络失败一律不动这一位（把"没查到"当成"没资格"= 误封整条通道）。
         """
         pool = self._pool_of(target)
+        was = pool.entitled
         pool.entitled = ok
         if isinstance(target, str):
-            return sum(1 for s in self.registry.values() if s.rid == target)
-        return sum(1 for s in self.registry.values() if s.quota is pool)
+            rids = target
+        else:
+            rids = next((s.rid for s in self.registry.values() if s.quota is pool), "?")
+        if was and not ok:
+            # 🔴 一条号从可用范围里消失必须有痕：这是"没有报错的失败"最容易长出来的位置
+            # （额度腿是后台刷新，用户侧只看见"这个模型不干活"）。
+            logger.warning("承接资格关闭（%s）：%s", rids, reason or "未给出原因")
+        elif not was and ok:
+            logger.info("承接资格恢复（%s）", rids)
+        return sum(1 for s in self.registry.values() if s.rid == rids)
 
     def reserve_quota(self, state: ResourceState) -> bool:
         """**事前预留** 1 单位（与 `in_flight += 1` 同一同步段，事件循环内天然原子）。

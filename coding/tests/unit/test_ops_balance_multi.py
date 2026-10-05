@@ -157,3 +157,50 @@ async def test_quota_cache_persists_plan_and_items(monkeypatch):
     assert cache["items"] == [{"name": "CodeBuddy个人体验版", "unit": "credits",
                                "remaining": 5, "total": 10, "used": 5,
                                "active": True, "expires_at": ""}]
+
+
+# ---------- 量纲阈值（2026-10-05 用户补的规则：积分 <50、token <1万 ⇒ 自动剔出） ----------
+
+async def test_credit_floor_excludes_a_non_zcode_account(monkeypatch):
+    """🔴 阈值**不只接在 zcode 那条腿上**：buddy 是积分制产品，走的是 `_apply_quota_to_pools`
+    的**通用体**（此前它只写三态、从不写资格位）。49 积分 ⇒ 剔出；升到 51 ⇒ 回池。
+
+    实盘依据：`coding/data/upstream/buddy/accounts/*/runtime.json` 的 items 单位就是
+    `credits` 且余量是小数（`500.0`、`472.1868`）。
+    """
+    _seed("buddy", "acct-1")
+    RT, mgr = _runtime([_buddy_resource()])
+    st = None
+
+    def _snap(remaining):
+        return QuotaSnapshot(state="available", source="buddy-billing", detail="逐包读数",
+                             items=({"name": "CodeBuddy个人体验版", "unit": "credits",
+                                     "remaining": remaining, "total": 500.0,
+                                     "active": True, "expires_at": ""},))
+
+    _install_quota(monkeypatch, _snap(49.0))
+    await query_balance.query_balance("acct-1", runtime=RT)
+    st = mgr.registry[("res-b", "vm")]
+    assert st.quota.entitled is False, "49 积分仍被当成可承接"
+    assert st.available() is False and mgr.reserve_quota(st) is False
+
+    _install_quota(monkeypatch, _snap(51.0))
+    await query_balance.query_balance("acct-1", runtime=RT)
+    assert st.quota.entitled is True, "升到 51 没回池（阈值成了永久黑名单）"
+    assert st.available() is True
+
+
+async def test_unknown_state_does_not_touch_the_floor_gate(monkeypatch):
+    """`unknown`（没查到）时**一位都不动**：阈值判据不许把"查询失败"变成"这号没资格"。"""
+    _seed("buddy", "acct-1")
+    RT, mgr = _runtime([_buddy_resource()])
+    _install_quota(monkeypatch, QuotaSnapshot(state="available", source="buddy-billing",
+                                              detail="有包"))          # 先建立一个"有资格"的起点
+    await query_balance.query_balance("acct-1", runtime=RT)
+    st = mgr.registry[("res-b", "vm")]
+    assert st.quota.entitled is True
+
+    _install_quota(monkeypatch, QuotaSnapshot(state="unknown", source="buddy-billing",
+                                              detail="余额查询网络错误：boom"))
+    await query_balance.query_balance("acct-1", runtime=RT)
+    assert st.quota.entitled is True, "unknown 把资格位洗掉了（未知不当没资格）"

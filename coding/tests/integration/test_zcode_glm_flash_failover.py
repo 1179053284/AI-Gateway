@@ -459,6 +459,7 @@ async def test_z11_global_circuit_does_not_stop_forwarding(zcode_upstream, make_
     ② `sync_circuit_to_runtime` —— 而它的触发点**只有启动一次**（`main.py:96-99` 原话）。
     转发腿自己既不查 `circuit_active()` 也不调用 `enter()`（F-4 的处置就是「如实标注、不加熔断」，
     `upstream/zcode/out.py:35-45`）⇒ 进程内因别的腿新起的风控，挡不住这条腿继续打同一批号。"""
+    from model_gateway.core import quota_policy
     from model_gateway.upstream.zcode import quota as zq
 
     _login_all()
@@ -651,6 +652,7 @@ async def test_z23_no_plan_account_is_not_dispatched(zcode_upstream, make_gatewa
     `state=unknown / reason=no_plan`，`billing.py:56`）时，这条号**不参与派发**。
     旧形状（2026-10-05 实盘审计）：`remaining=None` 被当成"未知不限额" ⇒ 实盘 12 条可派号里
     5 条无套餐号照常轮转，连续 20 条请求有 6 条落在它们身上。"""
+    from model_gateway.core import quota_policy
     from model_gateway.upstream.zcode import quota as zq
 
     _login_all()
@@ -659,7 +661,7 @@ async def test_z23_no_plan_account_is_not_dispatched(zcode_upstream, make_gatewa
     # 走**生产者用的那同一个函数**（联网腿 `_apply_zcode_quota` 也调它），不另抄一份
     snap = type("S", (), {"state": "unknown", "reason": "no_plan", "remaining": None})()
     changed = zq.apply_remaining_to_runtime(
-        gw.runtime, "zc-3", None, entitled=zq.entitled_from_snapshot(snap))
+        gw.runtime, "zc-3", None, entitled=quota_policy.entitled_for(snap))
     assert changed == 0, f"资格位不该动额度池，却写了 {changed} 个池"
 
     for _ in range(6):
@@ -670,6 +672,7 @@ async def test_z23_no_plan_account_is_not_dispatched(zcode_upstream, make_gatewa
 async def test_z24_entitlement_recovers_when_upstream_says_ok(zcode_upstream, make_gateway, client):
     """**契约**：上游随后说「这号有包」（`state=available/exhausted` 且 `reason` 空）⇒ 资格恢复、
     重新参与轮转。**不许**把"曾经无套餐"变成永久黑名单。"""
+    from model_gateway.core import quota_policy
     from model_gateway.upstream.zcode import quota as zq
 
     _login_all()
@@ -677,13 +680,13 @@ async def test_z24_entitlement_recovers_when_upstream_says_ok(zcode_upstream, ma
     gw = await make_gateway(_cfg(zcode_upstream.port, x=1))
     no_plan = type("S", (), {"state": "unknown", "reason": "no_plan", "remaining": None})()
     zq.apply_remaining_to_runtime(gw.runtime, "zc-1", None,
-                                  entitled=zq.entitled_from_snapshot(no_plan))
+                                  entitled=quota_policy.entitled_for(no_plan))
     st = gw.resource("res-z1", VENDOR_MODEL)
     assert st.available() is False and st.quota.entitled is False
 
     ok = type("S", (), {"state": "available", "reason": "", "remaining": 1000})()
     zq.apply_remaining_to_runtime(gw.runtime, "zc-1", 1000,
-                                  entitled=zq.entitled_from_snapshot(ok))
+                                  entitled=quota_policy.entitled_for(ok))
     assert st.available() is True and st.quota.entitled is True
     gw.runtime.resources._cursor[MODEL] = 0
     assert (await _ask(client, gw)).status_code == 200
@@ -694,6 +697,7 @@ async def test_z25_unreadable_is_not_no_plan(zcode_upstream, make_gateway, clien
     """**契约（反向）**：`unreachable / circuit / expired / no_credentials` 都是**没查到**，
     不是"上游说没资格" ⇒ 一律不动闸门（与 `remaining_units()` 的「未知不当 0」同一纪律）。
     没有这一条，一次网络抖动就会把整条产品线封掉。"""
+    from model_gateway.core import quota_policy
     from model_gateway.upstream.zcode import quota as zq
 
     _login_all()
@@ -701,7 +705,58 @@ async def test_z25_unreadable_is_not_no_plan(zcode_upstream, make_gateway, clien
     gw = await make_gateway(_cfg(zcode_upstream.port, x=1))
     for reason in ("unreachable", "circuit", "expired", "no_credentials", "no_identity"):
         snap = type("S", (), {"state": "unknown", "reason": reason, "remaining": None})()
-        assert zq.entitled_from_snapshot(snap) is None, f"{reason} 被当成了资格否认"
+        assert quota_policy.entitled_for(snap) is None, f"{reason} 被当成了资格否认"
         zq.apply_remaining_to_runtime(gw.runtime, "zc-1", None,
-                                      entitled=zq.entitled_from_snapshot(snap))
+                                      entitled=quota_policy.entitled_for(snap))
         assert gw.resource("res-z1", VENDOR_MODEL).available() is True
+
+
+async def test_z26_token_package_below_floor_is_not_dispatched(zcode_upstream, make_gateway, client):
+    """**契约（用户 2026-10-05 补：token 制 < 1 万自动剔出）**：
+    这条号**有余量**（5000 token，`has_room()` 不会挡它），但低于 token 阈值 ⇒ 不派发。
+    旧形状：只有 `remaining=0` 才挡 ⇒ 一个只剩 0.5 万的号照样被派活，打到上游才知不够。"""
+    from model_gateway.core import quota_policy
+    from model_gateway.upstream.zcode import quota as zq
+
+    _login_all()
+    zcode_upstream.set_all("ok")
+    gw = await make_gateway(_cfg(zcode_upstream.port, x=1))
+    snap = type("S", (), {"items": ({"name": "GLM-5.3-Flash", "unit": "token",
+                                     "remaining": 5_000, "total": 100_000_000,
+                                     "active": True, "expires_at": ""},),
+                          "state": "available", "reason": "", "remaining": 5_000})()
+    assert quota_policy.entitled_for(snap) is False
+    zq.apply_remaining_to_runtime(gw.runtime, "zc-1", 5_000,
+                                  entitled=quota_policy.entitled_for(snap))
+
+    for _ in range(4):
+        assert (await _ask(client, gw)).status_code == 200
+    assert MIDS["zc-1"] not in zcode_upstream.mids_hit(), "低于 token 阈值的号仍被派发"
+
+
+async def test_z27_above_floor_keeps_dispatching(zcode_upstream, make_gateway, client):
+    """**契约（阈值是"少于"不是"少于等于"，且必须能恢复）**：
+    同一把尺在 `10000` 上判"留"，在 `9999` 上判"剔"。"""
+    from model_gateway.core import quota_policy
+    from model_gateway.upstream.zcode import quota as zq
+
+    _login_all()
+    zcode_upstream.set_all("ok")
+    gw = await make_gateway(_cfg(zcode_upstream.port, x=1))
+
+    def _snap(rem):
+        return type("S", (), {"items": ({"name": "GLM-5.3-Flash", "unit": "token",
+                                         "remaining": rem, "total": 100_000_000,
+                                         "active": True, "expires_at": ""},),
+                              "state": "available", "reason": "", "remaining": rem})()
+
+    zq.apply_remaining_to_runtime(gw.runtime, "zc-1", 9_999,
+                                  entitled=quota_policy.entitled_for(_snap(9_999)))
+    assert gw.resource("res-z1", VENDOR_MODEL).available() is False
+    zq.apply_remaining_to_runtime(gw.runtime, "zc-1", 10_000,
+                                  entitled=quota_policy.entitled_for(_snap(10_000)))
+    st = gw.resource("res-z1", VENDOR_MODEL)
+    assert st.available() is True and st.quota.entitled is True
+    gw.runtime.resources._cursor[MODEL] = 0
+    assert (await _ask(client, gw)).status_code == 200
+    assert zcode_upstream.mids_hit()[0] == MIDS["zc-1"]
