@@ -103,6 +103,13 @@ class ErrorClass(str, Enum):
     CANCELED = "CANCELED"
 
 
+#: 通道级风控的**归一化错误 type**（各上游自己那套信封里的码，由出站层翻译成这一个）。
+#: 🔴 它落 RETRYABLE 而不是 BAD_REQUEST：3012 这类风控是**账号级状态**（与 429 同类），
+#: 不是"客户端请求写错了"。按 FR-3.13 原样透传的后果 = 不换号、不计 C、不冷却 ⇒
+#: 一条坏号永远占着活跃组名额、每轮轮转再把失败交给用户一次
+#: （2026-10-05 用户裁定：「没额度和多次请求失败，就应该排除到可用调用范围」）。
+RISK_CONTROL_TYPE = "zcode_risk_control"
+
 # 商汤官方错误 type → 默认分类（PRD FR-1.8；UT-01 断言口径）
 VENDOR_TYPE_TABLE: dict[str, ErrorClass] = {
     "invalid_request_error": ErrorClass.BAD_REQUEST,
@@ -196,6 +203,11 @@ class ErrorClassifier:
         # 3) 商汤/供应商错误 type 表
         if etype and etype in VENDOR_TYPE_TABLE:
             return VENDOR_TYPE_TABLE[etype]
+
+        # 3b) 通道级风控（出站层归一化后的 type）⇒ 可重试：换号 + 计 C + y 次后冷却。
+        #     `error_rules` 的精确覆写仍排在前面（上面第 2 步）⇒ 某产品要改判据不必动代码。
+        if etype == RISK_CONTROL_TYPE:
+            return ErrorClass.RETRYABLE
 
         # 4) HTTP 通用映射（UT-02）
         if status == 401:

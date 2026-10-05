@@ -237,6 +237,11 @@ PRODUCTS: dict[str, ProductMeta] = {
         capabilities=Capabilities(balance=True, checkin=True,
                                   onboarding=False, permanent_lock=False, refresh=False),
         models_source="static",
+        # 🔴 整根隔离布局：凭据只落在 `<账号>/data/.zcode/v2/credentials.json`
+        # （`mgw zcode import` 写的那份），公共层 `credentials.json` 实盘 16 个号**全部没有**
+        # ⇒ 转发腿必须让产品层的 `outbound_credentials` 去判凭据在不在，
+        #   不能在公共读取入口读空就当"无凭据"（2026-10-05 D1 轮实测的真因）。
+        credentials_from="product",
     ),
 }
 

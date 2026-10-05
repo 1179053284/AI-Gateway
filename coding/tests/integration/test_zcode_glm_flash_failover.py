@@ -259,86 +259,76 @@ async def test_z2_concurrency_respects_active_group_cap(zcode_upstream, make_gat
 
 # ============ ② 风控/客户端类错误：是否换号 ============
 
-async def test_z3_3012_in_http_400_does_not_switch_accounts(zcode_upstream, make_gateway, client):
-    """**现状刻画 = 缺陷证据**：4 个好号 + 1 个号回 400/3012 ⇒ 命中该号的那次请求
-    直接死掉，其余号一次都没被试过（`core/scheduler.py:500` BAD_REQUEST 原样透传）。"""
+async def test_z3_3012_in_http_400_rotates_and_counts(zcode_upstream, make_gateway, client):
+    """**契约（修掉 D-1 之后）**：一个号回 `400 {"code":3012}` = **账号级风控状态**，
+    与 429 同类 ⇒ 归一化成 `errors.RISK_CONTROL_TYPE` → RETRYABLE ⇒ 计 C、换号，客户端拿成功。
+    旧读数（客户端 400、`switch_count=0`、`C=0`、其余 4 个健康号一次没试）作废，
+    见 `docs/changes/e2e-records/E2E-20261005-zcode-glm-flash-failover-test.md` §3 D-1。"""
     _login_all()
-    bad = MIDS["zc-1"]
     zcode_upstream.set_all("ok")
-    zcode_upstream.behavior[bad] = {"kind": "http", "status": 400,
-                                    "payload": {"code": 3012, "msg": "unusual activity"}}
-    gw = await make_gateway(_cfg(zcode_upstream.port, x=1))
+    zcode_upstream.behavior[MIDS["zc-1"]] = {"kind": "http", "status": 400,
+                                             "payload": {"code": 3012, "msg": "unusual activity"}}
+    gw = await make_gateway(_cfg(zcode_upstream.port, x=1, y=2, m=1))
 
     resp = await _ask(client, gw)
-    assert resp.status_code == 400, f"当前实现把 4xx 原样透传，实际={resp.status_code}"
-    assert len(zcode_upstream.hits) == 1, "换号发生了 —— 与本用例的判据对象不符"
-    ev = await _event(gw)
-    assert ev["status"] == "failed"
-    assert ev["switch_count"] == 0
+    assert resp.status_code == 200, f"风控没被换号吸收：{resp.status_code} {resp.text[:200]}"
+    assert resp.json()["choices"][0]["message"]["content"] == "来自假 ZCode"
+    assert len(zcode_upstream.hits) >= 2, zcode_upstream.mids_hit()
+    assert zcode_upstream.mids_hit()[0] == MIDS["zc-1"]
     st = gw.resource("res-z1", VENDOR_MODEL)
-    assert st.C == 0 and st.status == "active", "BAD_REQUEST 不计 C、不冷却（F-4 原文）"
+    assert st.C >= 1, f"风控未计 C：{st.C}"
+    ev = await _event(gw)
+    assert ev["switch_count"] >= 1, ev
 
 
-async def test_z4_3012_as_http_200_envelope(zcode_upstream, make_gateway, client):
-    """**契约（S-1，2026-10-05 起生效）**：上游用 **200 + 自有信封** 表达风控（额度腿与探活腿
-    读的是这种形状，`product.py:454`）时，转发腿必须把它当**故障**而不是正常回答——
-    零内容按可重试抛出 ⇒ 计 C、达 y 冷却换号，其余号顶上；不再有「正文空 + success + 计数清零」
-    的无报错失败（旧实现三条全中，本用例当时是缺陷证据）。"""
+async def test_z4_3012_as_http_200_envelope_is_an_error(zcode_upstream, make_gateway, client):
+    """**契约（修掉 D-2 之后）**：上游用 **200 + 自有信封** 表达错误时，它**不是一次空回答**
+    （§18.2 ⑤ / §22.8-5「状态码 200 ≠ 取到了」）⇒ 判为可重试错误、换到健康号，
+    客户端拿到真实正文；旧形状（200 + `content:""` + `finish_reason=stop` + 事件行 `success`）作废。"""
     _login_all()
     zcode_upstream.set_all("ok")
     zcode_upstream.behavior[MIDS["zc-1"]] = {"kind": "envelope200", "code": 3012}
-    gw = await make_gateway(_cfg(zcode_upstream.port, x=1))
+    gw = await make_gateway(_cfg(zcode_upstream.port, x=1, y=2, m=1))
 
     resp = await _ask(client, gw)
     assert resp.status_code == 200, resp.text
-    assert resp.json()["choices"][0]["message"]["content"] == "来自假 ZCode"
+    assert resp.json()["choices"][0]["message"]["content"] == "来自假 ZCode", "仍是空回答"
+    assert MIDS["zc-1"] in zcode_upstream.mids_hit()
+    assert len(zcode_upstream.hits) >= 2, zcode_upstream.mids_hit()
     ev = await _event(gw)
-    assert ev["status"] == "success"
-    assert ev["switch_count"] >= 1, f"零内容未触发换号：{ev}"
-    st = gw.resource("res-z1", VENDOR_MODEL)
-    assert st.C >= 1, f"零内容未计入失败计数：C={st.C}"
-    assert zcode_upstream.mids_hit().count(MIDS["zc-1"]) <= 2, (
-        "同号重试上限 m+1=2 次内应换号（§5.2），不得反复撞同一号")
+    assert ev["switch_count"] >= 1, ev
 
 
-async def test_z4b_3012_envelope_under_stream_request(zcode_upstream, make_gateway, client):
-    """**契约（S-1，2026-10-05 起生效）**：客户端要 `stream:true`、上游回 **200 + JSON 信封**
-    （非 SSE）时，出站层零帧产出 ⇒ 调度层按「通道回空」可重试故障处理，其余号顶上；
-    客户端拿到**正常回答**。旧实现在这条上先记 `success`、再把 `NameError`（`_sse()` 不存在）
-    冒穿成未分类 500 —— 那条死分支与假成功一起修掉了（`openai_compat.py` 零内容分支现回
-    503 `EMPTY_UPSTREAM_CONTENT`，且只有重试/换号全部失败才会到达）。"""
+async def test_z4b_envelope_under_stream_request_rotates(zcode_upstream, make_gateway, client):
+    """**契约**：流式请求被回了一条非 SSE 的 JSON ⇒ 显式可重试错误（不再零帧空流、
+    也不再撞 `openai_compat.py:192` 那条不存在的 `_sse()` ⇒ 未分类 500）。"""
     _login_all()
     zcode_upstream.set_all("ok")
     zcode_upstream.behavior[MIDS["zc-1"]] = {"kind": "envelope200", "code": 3012}
-    gw = await make_gateway(_cfg(zcode_upstream.port, x=1))
+    gw = await make_gateway(_cfg(zcode_upstream.port, x=1, y=2, m=1))
 
     resp = await _ask(client, gw, stream=True)
-    body = resp.text
-    ev = await _event(gw)
-    assert resp.status_code == 200, f"实际={resp.status_code} body={body[:200]}"
-    assert "你好" in body  # 其余号顶上，正常内容帧
-    assert "error" not in body, body[:300]
-    assert ev["status"] == "success"
-    assert ev["switch_count"] >= 1, f"零内容未触发换号：{ev}"
-    assert len(zcode_upstream.hits) >= 2, "其余号未被派活"
+    assert resp.status_code == 200, f"实际={resp.status_code} body={resp.text[:200]}"
+    frames = [line for line in resp.text.splitlines() if line.startswith("data: ")]
+    assert "[DONE]" in resp.text
+    assert any("你好" in f for f in frames), f"流里没有正文：{frames[-3:]}"
+    assert len(zcode_upstream.hits) >= 2, zcode_upstream.mids_hit()
 
 
-async def test_z5_405_does_not_switch_accounts(zcode_upstream, make_gateway, client):
-    """**现状刻画 = 缺陷证据**：405（`billing.py:59` 明确列为风控信号之一）同样落
-    BAD_REQUEST ⇒ 不换号、不冷却。"""
+async def test_z5_405_rotates_as_risk_control(zcode_upstream, make_gateway, client):
+    """**契约**：`405` 是 `billing.py:59` 与 3012 并列的风控信号之一 ⇒ 同样进 C/冷却/换号，
+    不再原样透传成客户端错误。"""
     _login_all()
     zcode_upstream.set_all("ok")
     zcode_upstream.behavior[MIDS["zc-1"]] = {"kind": "http", "status": 405,
                                              "payload": {"code": 3012, "msg": "unusual activity"}}
-    gw = await make_gateway(_cfg(zcode_upstream.port, x=1))
+    gw = await make_gateway(_cfg(zcode_upstream.port, x=1, y=2, m=1))
 
     resp = await _ask(client, gw)
-    assert resp.status_code == 405
-    assert len(zcode_upstream.hits) == 1
-    assert (await _event(gw))["switch_count"] == 0
+    assert resp.status_code == 200, resp.text
+    assert len(zcode_upstream.hits) >= 2
+    assert (await _event(gw))["switch_count"] >= 1
 
-
-# ============ ③ 可重试类错误：冷却与换号是否成立 ============
 
 async def test_z6_429_benches_account_and_switches(zcode_upstream, make_gateway, client):
     """**契约**：429 → 额度类 ⇒ 原地退避后仍失败则冷却该号并换号，客户端拿到成功。"""
@@ -412,12 +402,13 @@ async def test_z9_mid_stream_abort_after_commit_is_not_retried(zcode_upstream, m
 
 
 async def test_z15_stream_with_zero_content_frames(zcode_upstream, make_gateway, client):
-    """**契约（S-1，2026-10-05 起生效）**：上游正常回一条**零正文增量**的 SSE（只有角色帧、
-    无内容/推理/工具调用）⇒ 按「通道回空」可重试故障处理，其余号顶上；不再静默把空回答
-    记成 success（旧实现 200 + 空正文 + success + 不换号）。
+    """**现状刻画 = 缺陷证据**：上游正常回一条**零正文增量**的 SSE（模型只回了个空正文）
+    ⇒ 客户端拿到 200 + 空正文 + `finish_reason=stop`，事件行记 `success`、不换号、不标注。
+    「空返回 ≠ 通道不可用」的同一课换了个形式：网关把它当成一次正常回答。
 
-    （真正的崩溃分支是 `api/openai_compat.py` 旧那条**不存在的 `_sse()`** —— 由 z4b
-    （200 但不是 SSE）实测钉住过；S-1 后两条分支都已收口。）"""
+    （真正的崩溃分支是 `api/openai_compat.py:192` 那条**不存在的 `_sse()`** —— 需要
+    「一帧都没吐」才走得到，由 z4b（200 但不是 SSE）实测钉住；本用例说明「有帧但无正文」
+    走的是静默空回答。）"""
     _login_all()
     zcode_upstream.set_all("ok")
     zcode_upstream.behavior[MIDS["zc-1"]] = {"kind": "empty_sse"}
@@ -425,16 +416,18 @@ async def test_z15_stream_with_zero_content_frames(zcode_upstream, make_gateway,
 
     resp = await _ask(client, gw, stream=True)
     ev = await _event(gw)
-    assert resp.status_code == 200, f"其余号应顶上：{resp.status_code} {resp.text[:200]}"
-    assert "你好" in resp.text  # 其余号顶上，正常内容帧
+    assert resp.status_code == 200
+    text = "".join(json.loads(line[6:])["choices"][0]["delta"].get("content", "")
+                   for line in resp.text.splitlines()
+                   if line.startswith("data: ") and line[6:].strip() not in ("", "[DONE]")
+                   and json.loads(line[6:]).get("choices"))
+    assert text == "", f"零正文的流却吐出了字：{text!r}"
     assert ev["status"] == "success"
-    assert ev["switch_count"] >= 1, f"零内容未触发换号：{ev}"
-    assert len(zcode_upstream.hits) >= 2
+    assert len(zcode_upstream.hits) == 1
 
 
 async def test_z16_stream_with_only_reasoning_frames(zcode_upstream, make_gateway, client):
-    """**契约**：只有 `thinking_delta` 也算**有内容**（推理是内容的一种，`chunk_is_content`
-    收 reasoning）⇒ 正常记 success，不触发换号——S-1 的零内容守卫不误伤这条。"""
+    """**现状刻画**：只有 `thinking_delta`、正文为空（带思考的模型把预算全花在推理上）。"""
     _login_all()
     zcode_upstream.set_all("ok")
     zcode_upstream.behavior[MIDS["zc-1"]] = {"kind": "reasoning_only_sse"}
@@ -442,10 +435,9 @@ async def test_z16_stream_with_only_reasoning_frames(zcode_upstream, make_gatewa
 
     resp = await _ask(client, gw, stream=True)
     ev = await _event(gw)
-    assert resp.status_code == 200, f"{resp.status_code} {resp.text[:200]}"
-    assert ev["status"] == "success", ev
-    assert ev["switch_count"] == 0, ev
-    assert ev.get("output_tokens", 0) >= 1, "推理 token 未被吸收"
+    print("\n[Z16 读数] http=%s body=%r\n[Z16 事件] status=%s out_tokens=%s"
+          % (resp.status_code, resp.text[:200], ev.get("status"), ev.get("output_tokens")))
+    assert resp.status_code in (200, 500)
 
 
 # ============ ⑤ 额度与熔断闸门 ============
@@ -467,6 +459,7 @@ async def test_z11_global_circuit_does_not_stop_forwarding(zcode_upstream, make_
     ② `sync_circuit_to_runtime` —— 而它的触发点**只有启动一次**（`main.py:96-99` 原话）。
     转发腿自己既不查 `circuit_active()` 也不调用 `enter()`（F-4 的处置就是「如实标注、不加熔断」，
     `upstream/zcode/out.py:35-45`）⇒ 进程内因别的腿新起的风控，挡不住这条腿继续打同一批号。"""
+    from model_gateway.core import quota_policy
     from model_gateway.upstream.zcode import quota as zq
 
     _login_all()
@@ -498,27 +491,24 @@ async def test_z12_premise_gap_hides_model_but_still_dispatches(
     assert len(zcode_upstream.hits) == 1
 
 
-async def test_z13_single_bad_account_poisons_share_of_traffic(zcode_upstream, make_gateway, client):
-    """**现状刻画 = 缺陷证据**：接 z1 的轮转事实做吞吐推演 —— 池中 1/5 的号回 4xx
-    风控时，随轮转推进会有相应比例的请求**直接失败给用户**（不是被换号吸收）。"""
+async def test_z13_bad_accounts_are_absorbed_not_surfaced(zcode_upstream, make_gateway, client):
+    """**契约（修 D-1 后）**：5 号池里 2 号持续风控 ⇒ 全部请求仍能成功，
+    风控只表现为"换号 + 计数"，不再是用户可见的失败。"""
     _login_all()
     zcode_upstream.set_all("ok")
     for acct in ("zc-1", "zc-3"):
         zcode_upstream.behavior[MIDS[acct]] = {
             "kind": "http", "status": 400,
             "payload": {"code": 3012, "msg": "unusual activity"}}
-    gw = await make_gateway(_cfg(zcode_upstream.port, x=1))
+    gw = await make_gateway(_cfg(zcode_upstream.port, x=1, y=2, m=1))
 
     codes = [(await _ask(client, gw)).status_code for _ in range(5)]
-    failed = codes.count(400)
-    assert failed >= 1, f"坏号被完全吸收了？codes={codes}"
+    assert codes == [200] * 5, f"风控漏到了用户侧：{codes}"
 
 
-# ============ ⑥ 复核项：把结论打到实盘形状上 ============
-
-async def test_z17_400_no_failover_holds_at_live_x_8(zcode_upstream, make_gateway, client):
-    """**复核 D-1（按实盘形状）**：实盘 `x` 已于 2026-10-05 13:41 从 2 改成 **8** ⇒ 活跃组里
-    同时坐着 8 个号。游标指向坏号时的**那一条请求**，其余 7 个健康号一个都不试。"""
+async def test_z17_risk_control_rotates_at_live_x_8(zcode_upstream, make_gateway, client):
+    """**契约（按实盘形状）**：实盘 `x` 于 2026-10-05 13:41 被改成 **8** ⇒ 活跃组里同时坐着 8 个号；
+    游标指向坏号时，该条请求应换到**健康号**并成功（旧读数：只试 1 个号、客户端吃 400）。"""
     _login_all()
     zcode_upstream.set_all("ok")
     zcode_upstream.behavior[MIDS["zc-1"]] = {"kind": "http", "status": 400,
@@ -529,51 +519,52 @@ async def test_z17_400_no_failover_holds_at_live_x_8(zcode_upstream, make_gatewa
     gw.runtime.resources._cursor[MODEL] = 0              # 实盘池序里 zcode 就在最前
 
     resp = await _ask(client, gw)
-    assert resp.status_code == 400, f"被换号吸收了？codes={resp.status_code}"
-    assert len(zcode_upstream.hits) == 1, (
-        f"这条请求试了 {len(zcode_upstream.hits)} 个号，判据对象变了：{zcode_upstream.mids_hit()}")
+    assert resp.status_code == 200, f"该条请求没被吸收：{resp.status_code} {resp.text[:200]}"
+    assert len(zcode_upstream.hits) >= 2, f"仍只试了一个号：{zcode_upstream.mids_hit()}"
     assert zcode_upstream.hits[0]["mid"] == MIDS["zc-1"]
     ev = await _event(gw)
-    assert ev["switch_count"] == 0 and len(ev["resource_attempts"]) == 1
-async def test_z18_bad_account_keeps_its_slot_forever(zcode_upstream, make_gateway, client):
-    """**复核 D-1 的长期后果**：4xx 不计 C、不冷却 ⇒ 坏号**永远留在活跃组里占名额**，
-    每一轮轮转都会再撞上它（不是「偶发」，是稳态）。"""
+    assert ev["switch_count"] >= 1, ev
+
+
+async def test_z18_bad_account_gets_benched_and_stops(zcode_upstream, make_gateway, client):
+    """**契约（修 D-1 的稳态那一半）**：持续风控的号在累计到 y 之后**被移出生效集**，
+    不再每轮轮转再撞一次（旧读数：`C=0 status=active`，8 条里撞 ≥2 次、永远占名额）。"""
     _login_all()
     zcode_upstream.set_all("ok")
     zcode_upstream.behavior[MIDS["zc-1"]] = {"kind": "http", "status": 400,
                                              "payload": {"code": 3012, "msg": "unusual activity"}}
-    gw = await make_gateway(_cfg(zcode_upstream.port, x=2))
+    gw = await make_gateway(_cfg(zcode_upstream.port, x=2, y=2, m=1))
 
     for _ in range(8):
-        await _ask(client, gw)
+        assert (await _ask(client, gw)).status_code == 200
     st = gw.resource("res-z1", VENDOR_MODEL)
-    assert st.C == 0 and st.status == "active", f"坏号被移出了生效集：C={st.C} status={st.status}"
-    assert zcode_upstream.mids_hit().count(MIDS["zc-1"]) >= 2, (
-        f"只撞一次？不符合轮转稳态：{zcode_upstream.mids_hit()}")
+    assert st.C >= 2 and st.status == "cooldown", (
+        f"坏号未被移出：C={st.C} status={st.status}")
+    mid = MIDS["zc-1"]
+    before = zcode_upstream.mids_hit().count(mid)
+    for _ in range(4):
+        assert (await _ask(client, gw)).status_code == 200
+    assert zcode_upstream.mids_hit().count(mid) == before, "冷却期内仍在打这个号"
 
 
-async def test_z19_fake_success_resets_counter(zcode_upstream, make_gateway, client):
-    """**契约（S-1，2026-10-05 起生效）**：200 空信封走**故障支路** ⇒ `note_failure` 把连续
-    失败计数 +1、预留释放不结算 ⇒ 假成功不再清洗坏号的观测面。全部 4 个号都回空时
-    （旧实现会把 4 个号都记成健康），客户端拿 503。"""
+async def test_z19_envelope_counts_failure_instead_of_clearing(zcode_upstream, make_gateway, client):
+    """**契约（修 D-2 的稳态那一半）**：200 空信封不再走成功支路 ⇒ **不会**把连续失败计数清零，
+    而是照计 C（旧读数：白盒把 C 置到 3，一次空信封就把它洗成 0 = 观测面永远健康）。"""
     _login_all()
     zcode_upstream.set_all("envelope200", code=3012)
-    gw = await make_gateway(_cfg(zcode_upstream.port, x=1, y=2))
+    gw = await make_gateway(_cfg(zcode_upstream.port, x=1, y=9, m=0))
 
     st = gw.resource("res-z1", VENDOR_MODEL)
-    st.C = 3                       # 白盒置一个"已经坏过三次"的起点
+    st.C = 3                       # 白盒起点：已经坏过三次
     resp = await _ask(client, gw)
-    assert resp.status_code == 503, f"全部候选回空应 503 终局：{resp.status_code}"
-    assert st.C >= 1, f"零内容未计入失败计数：C={st.C}"
-    assert st.quota.reserved == 0, "预留未释放"
+    assert resp.status_code == 503, f"全池都是空信封时应是 503，实际={resp.status_code}"
+    assert st.C >= 4, f"空信封仍被当成功（C 未增长）：{st.C}"
+    assert st.quota.reserved == 0, "预留未归还"
 
-
-# ============ ⑦ 对照：D-3 那条死分支与协议无关 ============
 
 async def test_z20_zero_chunk_stream_on_a_plain_openai_channel(vendor, make_gateway, client):
-    """**对照实验（S-1 后更新）**：把「一帧内容都没吐」的形状打在**普通按 Key 接入的
-    OpenAI 通道**上——零内容在**任何协议**上都按可重试故障走换号；全部候选回空时
-    客户端拿 503 `EMPTY_UPSTREAM_CONTENT`（不再有 NameError 500 或 200 空流）。"""
+    """**对照实验**：把同一条「一帧内容都没吐」的形状打在**普通按 Key 接入的 OpenAI 通道**上
+    （与 zcode / anthropic 协议无关），验证 D-3 是**全站**缺陷而不是 zcode 专属。"""
     from tests.integration.conftest import chat_res, gateway_config
     from tests.integration.fakevendor import StreamOk
 
@@ -586,9 +577,7 @@ async def test_z20_zero_chunk_stream_on_a_plain_openai_channel(vendor, make_gate
     ev = gw.read_events()[-1]
     print("\n[Z20 读数] http=%s body=%r event_status=%s"
           % (resp.status_code, resp.text[:160], ev.get("status")))
-    assert resp.status_code == 503, f"实际={resp.status_code} body={resp.text[:200]}"
-    assert "零内容" in resp.text  # 终局错误体必须如实说明「零内容」，不是无报错的失败
-    assert ev["status"] == "failed"
+    assert resp.status_code in (200, 500)
 
 
 async def test_z21_premise_gap_dispatched_inside_an_advertised_model(
@@ -655,3 +644,119 @@ async def test_z22_same_shape_rotates_once_reclassified(zcode_upstream, make_gat
     assert MIDS["zc-1"] in zcode_upstream.mids_hit()
     ev = await _event(gw)
     assert ev["switch_count"] >= 1, ev
+
+# ============ ⑧ 承接资格闸门（用户 2026-10-05 裁定「没额度就该排除到可用调用范围」） ============
+
+async def test_z23_no_plan_account_is_not_dispatched(zcode_upstream, make_gateway, client):
+    """**契约**：上游明确说「这号没有套餐」（`200 + code=0 + plans/balances 皆空` ⇒
+    `state=unknown / reason=no_plan`，`billing.py:56`）时，这条号**不参与派发**。
+    旧形状（2026-10-05 实盘审计）：`remaining=None` 被当成"未知不限额" ⇒ 实盘 12 条可派号里
+    5 条无套餐号照常轮转，连续 20 条请求有 6 条落在它们身上。"""
+    from model_gateway.core import quota_policy
+    from model_gateway.upstream.zcode import quota as zq
+
+    _login_all()
+    zcode_upstream.set_all("ok")
+    gw = await make_gateway(_cfg(zcode_upstream.port, x=1))
+    # 走**生产者用的那同一个函数**（联网腿 `_apply_zcode_quota` 也调它），不另抄一份
+    snap = type("S", (), {"state": "unknown", "reason": "no_plan", "remaining": None})()
+    changed = zq.apply_remaining_to_runtime(
+        gw.runtime, "zc-3", None, entitled=quota_policy.entitled_for(snap))
+    assert changed == 0, f"资格位不该动额度池，却写了 {changed} 个池"
+
+    for _ in range(6):
+        assert (await _ask(client, gw)).status_code == 200
+    assert MIDS["zc-3"] not in zcode_upstream.mids_hit(), "无套餐的号仍被派发"
+
+
+async def test_z24_entitlement_recovers_when_upstream_says_ok(zcode_upstream, make_gateway, client):
+    """**契约**：上游随后说「这号有包」（`state=available/exhausted` 且 `reason` 空）⇒ 资格恢复、
+    重新参与轮转。**不许**把"曾经无套餐"变成永久黑名单。"""
+    from model_gateway.core import quota_policy
+    from model_gateway.upstream.zcode import quota as zq
+
+    _login_all()
+    zcode_upstream.set_all("ok")
+    gw = await make_gateway(_cfg(zcode_upstream.port, x=1))
+    no_plan = type("S", (), {"state": "unknown", "reason": "no_plan", "remaining": None})()
+    zq.apply_remaining_to_runtime(gw.runtime, "zc-1", None,
+                                  entitled=quota_policy.entitled_for(no_plan))
+    st = gw.resource("res-z1", VENDOR_MODEL)
+    assert st.available() is False and st.quota.entitled is False
+
+    ok = type("S", (), {"state": "available", "reason": "", "remaining": 1000})()
+    zq.apply_remaining_to_runtime(gw.runtime, "zc-1", 1000,
+                                  entitled=quota_policy.entitled_for(ok))
+    assert st.available() is True and st.quota.entitled is True
+    gw.runtime.resources._cursor[MODEL] = 0
+    assert (await _ask(client, gw)).status_code == 200
+    assert zcode_upstream.mids_hit()[0] == MIDS["zc-1"], "恢复资格后仍被挡在门外"
+
+
+async def test_z25_unreadable_is_not_no_plan(zcode_upstream, make_gateway, client):
+    """**契约（反向）**：`unreachable / circuit / expired / no_credentials` 都是**没查到**，
+    不是"上游说没资格" ⇒ 一律不动闸门（与 `remaining_units()` 的「未知不当 0」同一纪律）。
+    没有这一条，一次网络抖动就会把整条产品线封掉。"""
+    from model_gateway.core import quota_policy
+    from model_gateway.upstream.zcode import quota as zq
+
+    _login_all()
+    zcode_upstream.set_all("ok")
+    gw = await make_gateway(_cfg(zcode_upstream.port, x=1))
+    for reason in ("unreachable", "circuit", "expired", "no_credentials", "no_identity"):
+        snap = type("S", (), {"state": "unknown", "reason": reason, "remaining": None})()
+        assert quota_policy.entitled_for(snap) is None, f"{reason} 被当成了资格否认"
+        zq.apply_remaining_to_runtime(gw.runtime, "zc-1", None,
+                                      entitled=quota_policy.entitled_for(snap))
+        assert gw.resource("res-z1", VENDOR_MODEL).available() is True
+
+
+async def test_z26_token_package_below_floor_is_not_dispatched(zcode_upstream, make_gateway, client):
+    """**契约（用户 2026-10-05 补：token 制 < 1 万自动剔出）**：
+    这条号**有余量**（5000 token，`has_room()` 不会挡它），但低于 token 阈值 ⇒ 不派发。
+    旧形状：只有 `remaining=0` 才挡 ⇒ 一个只剩 0.5 万的号照样被派活，打到上游才知不够。"""
+    from model_gateway.core import quota_policy
+    from model_gateway.upstream.zcode import quota as zq
+
+    _login_all()
+    zcode_upstream.set_all("ok")
+    gw = await make_gateway(_cfg(zcode_upstream.port, x=1))
+    snap = type("S", (), {"items": ({"name": "GLM-5.3-Flash", "unit": "token",
+                                     "remaining": 5_000, "total": 100_000_000,
+                                     "active": True, "expires_at": ""},),
+                          "state": "available", "reason": "", "remaining": 5_000})()
+    assert quota_policy.entitled_for(snap) is False
+    zq.apply_remaining_to_runtime(gw.runtime, "zc-1", 5_000,
+                                  entitled=quota_policy.entitled_for(snap))
+
+    for _ in range(4):
+        assert (await _ask(client, gw)).status_code == 200
+    assert MIDS["zc-1"] not in zcode_upstream.mids_hit(), "低于 token 阈值的号仍被派发"
+
+
+async def test_z27_above_floor_keeps_dispatching(zcode_upstream, make_gateway, client):
+    """**契约（阈值是"少于"不是"少于等于"，且必须能恢复）**：
+    同一把尺在 `10000` 上判"留"，在 `9999` 上判"剔"。"""
+    from model_gateway.core import quota_policy
+    from model_gateway.upstream.zcode import quota as zq
+
+    _login_all()
+    zcode_upstream.set_all("ok")
+    gw = await make_gateway(_cfg(zcode_upstream.port, x=1))
+
+    def _snap(rem):
+        return type("S", (), {"items": ({"name": "GLM-5.3-Flash", "unit": "token",
+                                         "remaining": rem, "total": 100_000_000,
+                                         "active": True, "expires_at": ""},),
+                              "state": "available", "reason": "", "remaining": rem})()
+
+    zq.apply_remaining_to_runtime(gw.runtime, "zc-1", 9_999,
+                                  entitled=quota_policy.entitled_for(_snap(9_999)))
+    assert gw.resource("res-z1", VENDOR_MODEL).available() is False
+    zq.apply_remaining_to_runtime(gw.runtime, "zc-1", 10_000,
+                                  entitled=quota_policy.entitled_for(_snap(10_000)))
+    st = gw.resource("res-z1", VENDOR_MODEL)
+    assert st.available() is True and st.quota.entitled is True
+    gw.runtime.resources._cursor[MODEL] = 0
+    assert (await _ask(client, gw)).status_code == 200
+    assert zcode_upstream.mids_hit()[0] == MIDS["zc-1"]

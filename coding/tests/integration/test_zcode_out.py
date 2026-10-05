@@ -133,6 +133,13 @@ def _login(account: str = "zc-1", jwt: str = JWT) -> None:
     store.commit_login("zcode", account, {"zcodejwttoken": jwt, "device_mid": DEVICE_MID}, {})
 
 
+def dataroot_root():
+    """zcode 账号根（与 `_resolved_credentials` 兜底腿用的**同一个**解析口）。"""
+    from model_gateway.upstream.zcode import product as _zp
+
+    return _zp._account_root_of(None)
+
+
 # ============ 非流式 ============
 
 async def test_zcode_nonstream_end_to_end(anthropic_upstream, make_gateway, client):
@@ -235,13 +242,22 @@ async def test_zcode_fingerprint_follows_config(monkeypatch):
 # ============ fail closed 与错误通道 ============
 
 async def test_zcode_missing_credential_fails_closed(anthropic_upstream, make_gateway, client):
-    """账号没登录（凭据文件缺失）→ 可读失败 + **零次上游请求**。"""
+    """两条落点都没有凭据 → 可读失败 + **零次上游请求**（fail-closed 不变）。
+
+    🔴 判据随 2026-10-05 D1 轮**改写而非放宽**：`credentials_from="product"` 之后，
+    判死的位置从公共层（`resolve_context` 读空即 503）挪到产品层（两条落点都取不到才 503），
+    所以文案里那句「无凭据（未登录或凭据文件缺失）」换成了点名**两处**的可读原因 ——
+    "凭据本体与客户端数据根都没有"。这里钉的仍然是同一件事：**没凭据就绝不打上游**，
+    外加一条新判据：原因必须说清是**两处**都没有（旧文案把"整根隔离布局是常态"误报成
+    "你没登录"，正是这条腿对 16 个导入号结构性死亡却无人察觉的原因）。
+    """
     gw = await make_gateway(_cfg(anthropic_upstream.port))      # 刻意不 _login()
 
     resp = await client.post(f"{gw.base_url}/v1/chat/completions", json=_body())
     assert resp.status_code == 503, resp.text
-    assert "无凭据" in json.dumps(resp.json(), ensure_ascii=False)
-    assert anthropic_upstream.requests == []
+    blob = json.dumps(resp.json(), ensure_ascii=False)
+    assert "凭据缺少 zcodejwttoken" in blob and "客户端数据根" in blob, blob
+    assert anthropic_upstream.requests == [], "凭据缺失仍发起了上游请求"
 
 
 async def test_zcode_401_disables_the_resource(anthropic_upstream, make_gateway, client):
@@ -256,3 +272,34 @@ async def test_zcode_401_disables_the_resource(anthropic_upstream, make_gateway,
     await gw.drain_events()
     assert gw.read_events()[-1]["status"] == "failed"
 
+
+async def test_zcode_credentials_only_in_client_root_still_forward(
+        anthropic_upstream, make_gateway, client, tmp_path):
+    """**2026-10-05 D1 轮的根因判据**：实盘 16 个 zcode 号的凭据**只**落在
+    `<账号>/data/.zcode/v2/credentials.json`（`mgw zcode import` 的整根隔离布局），
+    公共层 `credentials.json` 一个都没有 —— 旧实现在 `resolve_context` 读空就判死，
+    ⇒ 转发腿对每个导入号结构性 503，而额度腿/探活腿用产品层兜底读法照常工作
+    （事件流水里 zcode 承接 0 行的真因）。现在必须能出词。"""
+    from model_gateway.upstream.zcode import oauth as zoauth
+
+    from model_gateway.upstream.zcode import dataroot
+
+    account = "zc-imported"
+    # 公共层凭据留空、meta 里带设备码 —— 与实盘 16 个导入号逐字同形
+    store.commit_login("zcode", account, {}, {"device_mid": DEVICE_MID})
+    # 🔴 必须写进**读取侧同一个根**：`store.account_dir("zcode", name)` 不带 root 时返回的是
+    # 相对名（`zcode/<name>`），照着它写就写进了一个游离目录 ⇒ 判据空转（第一版就是这么"假失败"的）。
+    v2 = dataroot.v2_dir_of(dataroot_root(), account)
+    v2.mkdir(parents=True, exist_ok=True)
+    (v2 / "credentials.json").write_text(
+        json.dumps({"zcodejwttoken": JWT, "deviceMid": DEVICE_MID}), encoding="utf-8")
+
+    cfg = _cfg(anthropic_upstream.port, account=account)
+    gw = await make_gateway(cfg)
+    resp = await client.post(f"{gw.base_url}/v1/chat/completions", json=_body())
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["choices"][0]["message"]["content"] == "来自假 ZCode"
+    assert len(anthropic_upstream.requests) == 1
+    req = anthropic_upstream.requests[0]
+    assert req["headers"]["authorization"] == f"Bearer {JWT}"
+    assert req["headers"]["x-device-mid"] == DEVICE_MID    # meta.json 里那份设备码

@@ -68,6 +68,20 @@ class ProductAccount:
         return self.name
 
 
+def _credentials_from_store(product: str) -> bool:
+    """这个产品的凭据是否**只**在公共层（缺省 True ⇒ 九个产品行为逐字节不变）。
+
+    注册表读不到（产品未在册 / 字段缺失）时按 `True` 处理 —— 与改动前一致，
+    不把"读不到声明"变成"放松判据"（fail-closed 方向）。
+    """
+    try:
+        from model_gateway.accounts.registry import PRODUCTS
+
+        meta = PRODUCTS.get(product)
+        return getattr(meta, "credentials_from", "store") != "product"
+    except Exception:  # noqa: BLE001 — 声明读不动 ⇒ 保持既有严格姿势
+        return True
+
 class ProductOutAdapter:
     """产品出站适配的**契约**（§22.3 duck typing；`FamilyOpenAIOut` 等下文的族基类实现它）。
 
@@ -107,10 +121,16 @@ class ProductOutAdapter:
         from model_gateway.accounts import store as account_store  # 延迟：见模块头 ⚠️
 
         cred = account_store.load_credentials(self.product, self.account_ref)
-        if not cred:
+        if not cred and _credentials_from_store(self.product):
             raise UpstreamError(
                 f"账号 {self.product}/{self.account_ref} 无凭据（未登录或凭据文件缺失）"
                 " —— 请重新登录该账号（资源已物化、凭据未落盘）")
+        # 🔴 `credentials_from == "product"` 时**不在这里判死**：这类产品（实盘只有 zcode）的
+        # 凭据落在自己的隔离布局里（`<账号>/data/.zcode/v2/credentials.json`），公共层读空是
+        # **常态而不是故障**。在这里提前 fail-closed 会让转发腿对每个导入号结构性失败，
+        # 而额度腿/探活腿用的是产品层的 `outbound_credentials`（双处兜底）照常工作
+        # ⇒ 同一账号"看起来活着、转发必 503"。判死挪到两条落点都取不到之后（由产品层给可读原因，
+        # 见 `upstream/zcode/out.py::_headers`）。
         meta = account_store.hook_meta(self.product, self.account_ref)
         return cred, meta, _device_of(self.product, meta)
 

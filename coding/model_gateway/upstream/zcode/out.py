@@ -56,7 +56,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
+import json
 from contextvars import ContextVar
 from typing import AsyncIterator, Awaitable, Callable
 
@@ -64,9 +66,17 @@ import httpx
 
 from model_gateway.adapters.anthropic_out import ANTHROPIC_VERSION, AnthropicOutAdapter
 from model_gateway.adapters.product_out import ProductAccount, ProductOutAdapter
-from model_gateway.core.errors import UpstreamError
+from model_gateway.core.errors import RISK_CONTROL_TYPE, UpstreamError
 from model_gateway.upstream.zcode import auth, oauth
 from model_gateway.upstream.zcode import product as zproduct
+from model_gateway.upstream.zcode import quota as zquota
+
+#: 3012 = 服务端风控 `unusual activity`；3007 = 验证码 param 被复用（一次性）
+#: —— 两者都是"这条通道此刻不收"，换一条号有可能成功
+_RISK_CODES = frozenset({zquota.CODE_RISK_CONTROL, 3007})
+#: 这四个（含 403）状态码在 `errors.classify()` 里各有归属（AUTH / NOT_FOUND / CANCELED / QUOTA），
+#: 风控归一化**不接管**它们，否则会把既有的终态判定（401→停用）改写成可重试。
+_OWN_STATUS = frozenset({401, 403, 404, 408, 429})
 
 #: 验证码头（`zcode-upstream.ts:87-88`；`x-aliyun-captcha-verify-*`）
 CAPTCHA_HEADER = "x-aliyun-captcha-verify-param"
@@ -93,6 +103,43 @@ def _fingerprint_enabled() -> bool:
                             "fingerprint", False))
     except Exception:  # noqa: BLE001 — 配置读不动不应让出站整体不可用
         return False
+
+
+def _as_risk_control(e: UpstreamError) -> UpstreamError:
+    """把 ZCode 的**通道级风控形状**归一化成 `errors.RISK_CONTROL_TYPE`；认不出就原样返回。
+
+    为什么必须在产品层做：ZCode 的错误住在信封里（`{"code":3012,"msg":"unusual activity"}`），
+    既没有 `error.type`、HTTP 状态又可能是 4xx/405 ⇒ 按通用映射一律落 `BAD_REQUEST` ⇒
+    不换号、不计 C、不冷却（本文件顶部 F-4 登记的老问题）。而它是**账号级状态**，与 429 同类：
+    把事实判对之后，既有的 C / y / 冷却 / 换号机器自然会处理它
+    （Q35-③ 红线：不许用"跳过它/隐藏它"回避 —— 这里不是跳过，是分类正确）。
+
+    认得的形状（逐条有出处，不扩写）：
+    · 信封 `code ∈ {3012 风控, 3007 验证码一次性}`（`quota.py:49`、`out.py` 顶部取证表）；
+    · `quota.looks_like_risk_control(msg)` 命中的文案（与额度腿**同一把尺**）；
+    · HTTP 405 —— `billing.py:59` 把 405 与 3012 并列为风控信号之一。
+
+    🔴 只在「通用映射本来会把它落成 `BAD_REQUEST`」的那些状态码上接管：
+    401/403/404/408/429 各有自己的既有语义（凭据被拒 / 模型名无效 / 上游取消 / 额度），
+    抢过来会把 `test_zcode_401_disables_the_resource` 钉的终态判定改成可重试 ——
+    那是换一种错，不是修这条。
+    """
+    if e.status_code in _OWN_STATUS:
+        return e
+    body = e.error_body or ""
+    code: object = None
+    msg = ""
+    with contextlib.suppress(ValueError, TypeError):
+        data = json.loads(body)
+        if isinstance(data, dict):
+            code = data.get("code")
+            msg = str(data.get("msg") or data.get("message") or "")
+    if code in _RISK_CODES or zquota.looks_like_risk_control(msg):
+        e.error_type = e.error_type or RISK_CONTROL_TYPE
+        return e
+    if e.status_code == 405:
+        e.error_type = e.error_type or RISK_CONTROL_TYPE
+    return e
 
 
 class ZcodeOut(AnthropicOutAdapter, ProductOutAdapter):
@@ -172,10 +219,16 @@ class ZcodeOut(AnthropicOutAdapter, ProductOutAdapter):
     async def chat_stream(self, key: str, vendor_model: str, body: dict,
                           timeout: float) -> AsyncIterator[dict]:
         await self._mint_captcha()
-        async for chunk in super().chat_stream(key, vendor_model, body, timeout):
-            yield chunk
+        try:
+            async for chunk in super().chat_stream(key, vendor_model, body, timeout):
+                yield chunk
+        except UpstreamError as e:
+            raise _as_risk_control(e) from e
 
     async def chat_nonstream(self, key: str, vendor_model: str, body: dict,
                              timeout: float) -> dict:
         await self._mint_captcha()
-        return await super().chat_nonstream(key, vendor_model, body, timeout)
+        try:
+            return await super().chat_nonstream(key, vendor_model, body, timeout)
+        except UpstreamError as e:
+            raise _as_risk_control(e) from e

@@ -79,6 +79,19 @@ class ProductMeta:
     capabilities: Capabilities
     #: 目录来源：远端探测 / 磁盘缓存 / 恒本地静态表（`21 §1.1` 四型收敛）
     models_source: Literal["remote", "cache", "static"]
+
+    #: 凭据的**权威落点**（§22.3「凭据是产品私有格式」的读取侧补齐，2026-10-05 D1 轮）：
+    #: - `store`   = 公共层 `accounts/store.py::credentials.json`（`commit_login` 写的那份）；
+    #:   🔴 实盘 9 个产品（buddy/workbuddy/lobsterai/qoder/qodercn/trae/cline/loomy/raccoon）
+    #:   全部走这一档，缺省即它们的行为，**零变化**。
+    #: - `product` = 产品层自己解析私有落点（`mgw zcode import` 的**整根隔离布局**：
+    #:   凭据只在 `<账号>/data/.zcode/v2/credentials.json`，公共层那一份根本不存在）。
+    #:   这一档下 `resolve_context` **不许**在公共层读空时就判死 —— 那会让转发腿对
+    #:   每个导入号结构性失败（2026-10-05 实据：zcode 16 个号 store 层 0 个有凭据，
+    #:   而额度腿/探活腿用 `outbound_credentials` 的双处兜底读法照常工作 ⇒
+    #:   "号看起来是活的、转发一定 503"，事件流水里 zcode 承接 0 行的真因）。
+    #:   fail-closed 仍然成立，只是挪到**两条落点都读不到**之后（由产品层给可读原因）。
+    credentials_from: Literal["store", "product"] = "store"
     #: 备选登录形态（裁决补入 2026-09-29：`loomy`/`raccoon` = 扫码 / 短信双路径，
     #: `20 §2.8/§4.1`）；默认空元组 = 只有主形态。**放字段末尾**以满足 dataclass 默认值顺序。
     login_alt: tuple[LoginKind, ...] = ()

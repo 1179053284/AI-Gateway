@@ -516,6 +516,20 @@ class AnthropicOutAdapter:
             status_code=None,
         )
 
+    def _shape_error(self, status: int, content_type: str, text: str) -> UpstreamError:
+        """🔴 2xx 且是 JSON，但**看不出是一条 Anthropic 消息**（`{code:…, msg:…}` 这类自有信封）
+        → `status_code=None`（= RETRYABLE），而不是当成功返回空正文。
+
+        与上面 `_non_json_error` 同一条立意（§18.2 ⑤ / §22.8-5「状态码 200 ≠ 取到了」）：
+        2026-10-05 实盘审计的形状是「上游用 200 + 自有信封表达风控/错误」，旧实现把它当正常回答 ⇒
+        客户端拿到 `content:""` + `finish_reason=stop`、事件行记 `success`、`note_success` 还把连续
+        失败计数**清零**（= 一条永远健康的僵尸通道）。落 `None` 才进 C 计数与冷却、才换号。
+        """
+        return UpstreamError(
+            f"upstream {status} 非消息形状 (content-type={content_type or '?'}): {text[:160]}",
+            status_code=None,
+        )
+
     # —— chat 非流式 ——
     async def chat_nonstream(self, key: str, vendor_model: str, body: dict,
                              timeout: float) -> dict:
@@ -544,6 +558,10 @@ class AnthropicOutAdapter:
             data = resp.json()
         except ValueError:
             raise self._non_json_error(resp.status_code, ctype, resp.text) from None
+        if not _looks_like_message(data):
+            # 200 + JSON，但形状不是消息（`{code:3012,msg:"unusual activity"}` 这类自有信封）
+            # ⇒ 这是**上游在说话**，不是一次空回答。旧实现返回 `content:""` 并被记成 success。
+            raise self._shape_error(resp.status_code, ctype, resp.text)
         return anthropic_to_openai(data, vendor_model)
 
     # —— chat 流式 ——
@@ -568,6 +586,13 @@ class AnthropicOutAdapter:
                 if "event-stream" not in ctype.lower() and "json" not in ctype.lower():
                     text = (await resp.aread()).decode("utf-8", "replace")
                     raise self._non_json_error(resp.status_code, ctype, text)
+                if "json" in ctype.lower() and "event-stream" not in ctype.lower():
+                    # 流式请求被回了一条**非 SSE 的 JSON**（自有信封的错误，或整块消息）：
+                    # 逐行按 SSE 解析必然一帧都出不来 ⇒ 旧形状是「空流 + 事件行 success」，
+                    # 再叠上入站层那条不存在的 `_sse()` 就直接 500。这里显式判失败，
+                    # 让调度按可重试去换号（与上面 `_non_json_error` 同一立意）。
+                    text = (await resp.aread()).decode("utf-8", "replace")
+                    raise self._shape_error(resp.status_code, ctype, text)
 
                 pending_event = ""
                 async for raw in resp.aiter_lines():
@@ -607,3 +632,16 @@ def _extract_anthropic_error_type(text: str) -> str:
     if isinstance(err, dict):
         return str(err.get("type") or "")
     return ""
+
+
+def _looks_like_message(data) -> bool:
+    """这条 JSON **是不是一条 Anthropic 消息**（§18.2 ⑤ 的形状判据，不看状态码）。
+
+    认不出消息就认不出成功 —— 上游用自有信封（`{"code":3012,"msg":"unusual activity"}`、
+    `{"success":false,…}`）回错误时，旧实现会把它翻译成一条**空正文的成功**。
+    """
+    if not isinstance(data, dict):
+        return False
+    if data.get("type") == "message":
+        return True
+    return isinstance(data.get("content"), list)

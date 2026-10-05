@@ -190,7 +190,9 @@ async def _chat_stream_response(request: Request, scheduler, ir, ctx, model_def,
         # 零内容：调度层（scheduler.stream_chat）已把「流收尾但零内容」按 502 可重试抛出，
         # 走完重试/换号仍回空才会到这里 ⇒ 对客户端**如实回错误**，不再伪造 [DONE] 空流
         # （S-1，2026-10-05：旧实现调用的 `_sse()` 在本模块不存在 ⇒ NameError → 未分类 500，
-        #  而事件行记 success —— test_zcode_glm_flash_failover.py 曾把这条钉成缺陷证据）。
+        #  而事件行记 success —— test_zcode_glm_flash_failover.py 曾把这条钉成缺陷证据；
+        #  fix/zcode-selection-gate 独立把它改成 `_finish_only()` 空流，本合并取
+        #  「如实报错」语义（S-1 契约））。
         watcher.cancel_sync()
         return _openai_json_error(503, {
             "message": "上游通道回空（未产生任何内容帧，重试与换号后仍无内容）",

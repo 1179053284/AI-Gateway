@@ -1,3 +1,4 @@
+
 """资源池/生效集/冷却/连续失败计数（tech-design §4.3 / §5.3；Q18-② 扁平资源模型）。
 
 - 全局注册表：resource_id=(resource_id, vendor_model) → 状态全局唯一（PRD Q11）
@@ -13,6 +14,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 import time
 from contextlib import contextmanager
@@ -20,6 +22,8 @@ from typing import Callable
 
 from model_gateway.config.presets import preset_name
 from model_gateway.config.schemas import AppConfig
+
+logger = logging.getLogger("model_gateway")
 
 
 def normalize_base_url(url: str | None) -> str:
@@ -79,12 +83,19 @@ class QuotaPool:
     而额度是**账号侧**共享的。早先每个 `(rid, vendor_model)` 各记一份余量 →
     同账号有 N 个映射就能各放行 1 个，余量 1 也并发超发 N 个（验收 S-1）。
 
-    🔴 两个字段各自的语义是**唯一的**，不再有第三个"本地记账"维度：
+    🔴 三个字段各自的语义是**唯一的**，不再有第四个"本地记账"维度：
 
     | 字段 | 含义 | 谁写 |
     |---|---|---|
     | `remaining` | 上游**最近一次快照**的余量 = 唯一权威 | 额度刷新路径（`set_quota`） |
     | `reserved` | **在飞**已预留、尚未结算的请求数 | 选路 `reserve_quota` / `settle_quota` / `release_quota` |
+    | `entitled` | 上游**有没有明确否认这条供应商通道的承接资格**（`False` = 上游说"这号没有套餐"） | 额度刷新路径（`set_entitled`） |
+
+    ⚠️ `entitled` 不是记账维度，而是**一条来自上游的肯定性否定**：它与 `remaining` 分工清楚 ——
+    `remaining=None` 说的是"我们不知道还剩多少"（网络失败、尾读不到、上游沉默），
+    `entitled=False` 说的是"上游答了，答案是这号没有可承接的套餐"（`state=unknown + reason=no_plan`，
+    2026-10-05 用户裁定「没有额度就该排除到可用调用范围」）。把这两种情形压成同一个 `None`，
+    实测后果是实盘 12 条可派号里 5 条无套餐号照常轮转（`docs/changes/e2e-records/E2E-20261005-zcode-glm-flash-failover-test.md` §6）。
 
     ⚠️ 为什么没有"本地已消耗"计数（第三轮我曾加过，是错的）：上游快照本身就会反映
     已用量，本地再猜一份"我扣了 N"只会造成两类故障 ——
@@ -94,12 +105,14 @@ class QuotaPool:
     由 `core/scheduler` 既有的退避 + `note_failure`/`bench` 与 §17 的额度耗尽回写承接。
     """
 
-    __slots__ = ("remaining", "reserved")
+    __slots__ = ("remaining", "reserved", "entitled")
 
     def __init__(self) -> None:
         #: None = 未知/不限（如普通按量 API Key）→ 不做额度管控
         self.remaining: int | None = None
         self.reserved: int = 0
+        #: True = 没有任何上游证据说这条通道没资格承接（缺省必须宽松，否则新接入即被误封）
+        self.entitled: bool = True
 
     def has_room(self) -> bool:
         if self.remaining is None:
@@ -107,7 +120,8 @@ class QuotaPool:
         return (self.remaining - self.reserved) > 0
 
     def __repr__(self) -> str:  # 诊断用
-        return f"QuotaPool(remaining={self.remaining}, reserved={self.reserved})"
+        return (f"QuotaPool(remaining={self.remaining}, reserved={self.reserved}, "
+                f"entitled={self.entitled})")
 
 
 def display_label(r: "Resource") -> str:
@@ -173,7 +187,8 @@ class ResourceState:
         return self.quota.has_room()
 
     def available(self) -> bool:
-        return self.status == "active" and self.enabled and self.has_quota()
+        return (self.status == "active" and self.enabled and self.has_quota()
+                and self.quota.entitled)
 
 
 #: 尾部被**写入时烘死**的恢复时刻（旧 `circuit.json`、以及 CLI 经 `/bench` 回传的
@@ -733,6 +748,29 @@ class ResourceManager:
         pool.remaining = remaining
         return True
 
+    def set_entitled(self, target, ok: bool, reason: str = "") -> int:
+        """覆盖某资源**共享额度池**的承接资格位，返回受影响的本资源条目（`(rid, 供应商模型名)`）数。
+
+        🔴 与 `set_quota` 同粒度（按 rid，一把凭据共享一个池）：同账号多映射不能各记一份，
+        否则"这条映射有资格、那条没有"会凭空造出两种真相。
+        `ok=True` 是缺省也是恢复值 —— **只有上游明确否认**（`no_plan`）才置 False；
+        读取失败/网络失败一律不动这一位（把"没查到"当成"没资格"= 误封整条通道）。
+        """
+        pool = self._pool_of(target)
+        was = pool.entitled
+        pool.entitled = ok
+        if isinstance(target, str):
+            rids = target
+        else:
+            rids = next((s.rid for s in self.registry.values() if s.quota is pool), "?")
+        if was and not ok:
+            # 🔴 一条号从可用范围里消失必须有痕：这是"没有报错的失败"最容易长出来的位置
+            # （额度腿是后台刷新，用户侧只看见"这个模型不干活"）。
+            logger.warning("承接资格关闭（%s）：%s", rids, reason or "未给出原因")
+        elif not was and ok:
+            logger.info("承接资格恢复（%s）", rids)
+        return sum(1 for s in self.registry.values() if s.rid == rids)
+
     def reserve_quota(self, state: ResourceState) -> bool:
         """**事前预留** 1 单位（与 `in_flight += 1` 同一同步段，事件循环内天然原子）。
 
@@ -741,6 +779,8 @@ class ResourceManager:
         （验收 M-5）。生产永远是"一请求一预留"，多出来的自由度只是风险。
         """
         pool = state.quota
+        if not pool.entitled:
+            return False          # 上游否认过资格 ⇒ 预留闸门就挡掉（与 `available()` 同一事实）
         if pool.remaining is None:
             return True
         if (pool.remaining - pool.reserved) < 1:
