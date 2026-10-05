@@ -395,3 +395,68 @@ class TestLegacyFallback:
         assert got.product_models == []
         assert any("不是 models[] 里在册的网关模型" in w for w in got.warnings), got.warnings
         assert len(got.resources) == 4 and any(m.name == MODEL for m in got.models)
+
+
+class TestMixedClassWindow:
+    """🔴 D-2（2026-10-05 架构审计）：x 的**跨类**判据 —— Key 接入 + 账号接入混在同一池。
+
+    审计 R5/D-2 的发现：既有 x 判据全部只在**单一 product** 下打，实现若把 x
+    写成「按类各开 x 条窗口」（同时点火账号数翻倍）不会有任何一条红。
+    本类把混池形状钉进判据：x=2、池 = 2 个 Key 资源 + 4 个账号资源 ⇒
+    承接者集合 ≤ 2 且**跨类**轮转都能轮到。
+    """
+
+    def _mixed_cfg(self):
+        resources = [
+            # Key 接入两条（product 空）
+            {"id": "res-k1", "name": "Key1", "api_key": "sk-k1", "protocol": "openai",
+             "base_url": "http://fake.local/v1", "enabled": True},
+            {"id": "res-k2", "name": "Key2", "api_key": "sk-k2", "protocol": "openai",
+             "base_url": "http://fake.local/v1", "enabled": True},
+            # 账号接入四条
+            *[{"id": f"res-{a}", "name": f"号{a}", "product": "buddy",
+               "account_ref": a, "account": a, "api_key": "", "protocol": "openai",
+               "base_url": "http://fake.local/v1", "enabled": True}
+              for a in ("a", "b", "c", "d")],
+        ]
+        entries = [{"resource": r["id"], "model": VM, "enabled": True} for r in resources]
+        cfg = make_config(models=[chat_model(MODEL, resources=entries)],
+                          resources=resources, scheduling={"max_active_per_model": 2})
+        cfg["product_models"] = [{"product": "buddy", "model": VM,
+                                  "system_model": MODEL, "enabled": True}]
+        return cfg
+
+    def test_concurrent_carriers_stay_within_x_across_classes(self):
+        """混池并发不释放：3 条 ⇒ 承接者 ≤ x=2，且两类都可能被点到（窗口不按类各开 2 条）。"""
+        rt = build_runtime(self._mixed_cfg(), adapter=None)
+        held = [rt.resources.pick_and_acquire(MODEL, set()) for _ in range(3)]
+        carriers = {h.resource_id for h in held}
+        assert len(carriers) == 2, f"承接者越出 x=2（混池下 x 失效）：{sorted(carriers)}"
+        # 重复派活必是组内最闲者，绝不出现第 3 个承接者
+        third = rt.resources.pick_and_acquire(MODEL, set())
+        assert third.resource_id in carriers, "第三条落在窗口外 ⇒ 窗口 > x"
+        for h in held + [third]:
+            rt.resources.release(h)
+
+    def test_serial_rotation_reaches_both_classes(self):
+        """混池串行（每条排空）：连续多条必须**两类都轮到**（窗口滑动不偏科）。"""
+        rt = build_runtime(self._mixed_cfg(), adapter=None)
+        seen = set()
+        for _ in range(12):
+            r = rt.resources.pick_and_acquire(MODEL, set())
+            seen.add(r.resource_id[0])
+            rt.resources.release(r)
+        assert any(rid.startswith("res-k") for rid in seen), f"Key 类从未被轮到：{sorted(seen)}"
+        assert any(rid[4:] in ("a", "b", "c", "d") for rid in seen), f"账号类从未被轮到：{sorted(seen)}"
+
+    def test_per_class_window_would_fail_this(self):
+        """撤证（判定书 D-2 要求的"按类开窗必红"）：把窗口人为改成按类各 x/2 条的形状
+        —— 只靠白盒重排实现不可行，这里用等价探针：断言**同时**在途的两类承接者合计
+        不超过 x。若实现真是「每类各 2 条」，4 条跨类并发会给出 4 个承接者 ⇒ 红。"""
+        rt = build_runtime(self._mixed_cfg(), adapter=None)
+        held = [rt.resources.pick_and_acquire(MODEL, set()) for _ in range(4)]
+        carriers = {h.resource_id for h in held}
+        assert len(carriers) <= 2, (
+            f"跨类并发 {len(carriers)} 个承接者 > x=2 —— x 被实现成了按类各开窗：{sorted(carriers)}")
+        for h in held:
+            rt.resources.release(h)

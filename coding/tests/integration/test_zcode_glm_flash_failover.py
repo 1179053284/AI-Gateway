@@ -402,13 +402,9 @@ async def test_z9_mid_stream_abort_after_commit_is_not_retried(zcode_upstream, m
 
 
 async def test_z15_stream_with_zero_content_frames(zcode_upstream, make_gateway, client):
-    """**现状刻画 = 缺陷证据**：上游正常回一条**零正文增量**的 SSE（模型只回了个空正文）
-    ⇒ 客户端拿到 200 + 空正文 + `finish_reason=stop`，事件行记 `success`、不换号、不标注。
-    「空返回 ≠ 通道不可用」的同一课换了个形式：网关把它当成一次正常回答。
-
-    （真正的崩溃分支是 `api/openai_compat.py:192` 那条**不存在的 `_sse()`** —— 需要
-    「一帧都没吐」才走得到，由 z4b（200 但不是 SSE）实测钉住；本用例说明「有帧但无正文」
-    走的是静默空回答。）"""
+    """**契约（S-1，2026-10-05 起生效）**：上游正常回一条**零正文增量**的 SSE（只有角色帧、
+    无内容/推理/工具调用）⇒ 按「通道回空」可重试故障处理，其余号顶上；不再静默把空回答
+    记成 success（旧实现 200 + 空正文 + success + 不换号）。"""
     _login_all()
     zcode_upstream.set_all("ok")
     zcode_upstream.behavior[MIDS["zc-1"]] = {"kind": "empty_sse"}
@@ -416,14 +412,11 @@ async def test_z15_stream_with_zero_content_frames(zcode_upstream, make_gateway,
 
     resp = await _ask(client, gw, stream=True)
     ev = await _event(gw)
-    assert resp.status_code == 200
-    text = "".join(json.loads(line[6:])["choices"][0]["delta"].get("content", "")
-                   for line in resp.text.splitlines()
-                   if line.startswith("data: ") and line[6:].strip() not in ("", "[DONE]")
-                   and json.loads(line[6:]).get("choices"))
-    assert text == "", f"零正文的流却吐出了字：{text!r}"
+    assert resp.status_code == 200, f"其余号应顶上：{resp.status_code} {resp.text[:200]}"
+    assert "你好" in resp.text, "换号后应有正常内容帧"
     assert ev["status"] == "success"
-    assert len(zcode_upstream.hits) == 1
+    assert ev["switch_count"] >= 1, f"零内容未触发换号：{ev}"
+    assert len(zcode_upstream.hits) >= 2
 
 
 async def test_z16_stream_with_only_reasoning_frames(zcode_upstream, make_gateway, client):
@@ -563,8 +556,9 @@ async def test_z19_envelope_counts_failure_instead_of_clearing(zcode_upstream, m
 
 
 async def test_z20_zero_chunk_stream_on_a_plain_openai_channel(vendor, make_gateway, client):
-    """**对照实验**：把同一条「一帧内容都没吐」的形状打在**普通按 Key 接入的 OpenAI 通道**上
-    （与 zcode / anthropic 协议无关），验证 D-3 是**全站**缺陷而不是 zcode 专属。"""
+    """**对照实验（S-1 后更新）**：把「一帧内容都没吐」的形状打在**普通按 Key 接入的
+    OpenAI 通道**上——零内容在**任何协议**上都按可重试故障走换号；单池回空时
+    客户端拿 503（不再有 NameError 500 或 200 空流）。"""
     from tests.integration.conftest import chat_res, gateway_config
     from tests.integration.fakevendor import StreamOk
 
@@ -577,9 +571,9 @@ async def test_z20_zero_chunk_stream_on_a_plain_openai_channel(vendor, make_gate
     ev = gw.read_events()[-1]
     print("\n[Z20 读数] http=%s body=%r event_status=%s"
           % (resp.status_code, resp.text[:160], ev.get("status")))
-    assert resp.status_code in (200, 500)
-
-
+    assert resp.status_code == 503, f"实际={resp.status_code} body={resp.text[:200]}"
+    assert "零内容" in resp.text
+    assert ev["status"] == "failed"
 async def test_z21_premise_gap_dispatched_inside_an_advertised_model(
         zcode_upstream, vendor, make_gateway, client):
     """**现状刻画 = 缺陷证据（实盘形状，Z12 的加强版）**：实盘 `glm-5.3-flash` 不是「只有 zcode」，
