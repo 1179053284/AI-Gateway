@@ -3,12 +3,12 @@
 - GET  /admin/api/overview：总览一次取齐（状态 + 今日聚合 + 资源健康 + 最近切换 + 调用地址）
 - GET  /admin/api/stats?days=：看板聚合（daily 快照 + 当日实时双段合并，含按天趋势序列；
        五维 by_model/by_resource/by_token/by_provider/by_account + dimensions 可用维度键）
-- GET  /admin/api/presets：厂商预设注册表（接入向导下拉数据源，含 billing_display 展示值）
+- GET  /admin/api/presets：供应商预设注册表（接入向导下拉数据源，含 billing_display 展示值）
 - POST /admin/api/system/stop：系统运行控制·优雅停机（仅主进程启动形态）
 - POST /admin/api/system/restart：系统运行控制·自重启（execv 映像替换，仅主进程启动形态）
 - GET  /admin/api/logs/requests?date=&limit=&offset=&model=&status=&token=：请求流水
 - GET  /admin/api/logs/switches?date=&limit=：切换事件流水
-- GET  /admin/api/config[?reveal=1]：当前配置（默认厂商 Key 脱敏；reveal=1 明文，Q18-① 自用系统免鉴权）
+- GET  /admin/api/config[?reveal=1]：当前配置（默认供应商 Key 脱敏；reveal=1 明文，Q18-① 自用系统免鉴权）
 - PUT  /admin/api/config：保存配置（ID/密钥缺省自动生成 → 脱敏还原 → 校验 → 原子写 → 热重载）
 - GET/PUT /admin/api/enums：统一名枚举池读写（model-enums.yaml 双向一致）
 - GET  /admin/api/zcode/import/sources + POST /admin/api/zcode/import：ZCode 导入兼容（Q31）
@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import datetime as dt
 import json
@@ -42,6 +43,7 @@ from model_gateway.config.presets import display_billing, list_presets
 from model_gateway.config.schemas import AppConfig
 from model_gateway.core.resources import vendor_label
 from model_gateway.enums.matcher import BUILTIN_ENTRIES, EnumEntry
+from model_gateway.stats.events import error_summary
 from model_gateway.stats.aggregate import aggregate_day
 from model_gateway.stats.events import error_summary, mask_key
 
@@ -254,7 +256,7 @@ async def overview(request: Request):
         "uptime_ms": int((time.monotonic() - runtime.started_mono) * 1000),
         "in_flight_requests": sum(r.in_flight for r in runtime.resources.registry.values()),
         "counts": {
-            # 资源/厂商口径 = 配置资源（厂商+账号+Key），非 (资源×模型) 映射条目（注册表）
+            # 资源/供应商口径 = 配置资源（供应商+账号+Key），非 (资源×模型) 映射条目（注册表）
             "vendors": len({vendor_label(r.preset, r.vendor, r.name, r.id)
                             for r in cfg.resources}),
             "resources": len(cfg.resources),
@@ -639,7 +641,7 @@ async def get_config(request: Request, reveal: int = Query(default=0)):
     """当前配置（Q18-② 扁平资源）。默认脱敏 resources[].api_key；接入密钥明文（UI 复制用）。
 
     🔴 每条映射条目额外带一个**派生位** `mapping_enabled` = `AppConfig.mapping_enabled`
-    （Q33-① 唯一判据：厂商侧看条目位、账号侧看产品位 + 号开关）。界面（「网关模型管理」
+    （Q33-① 唯一判据：Key 接入侧看条目位、账号侧看产品位 + 号开关）。界面（「网关模型管理」
     资源池行与"N 个资源"计数）只读这一位——判据在前端再写一份就会分叉（映射弹窗说进池、
     资源池表说不进池），正是 Q33 要消灭的"两套真相"。写回时该键被 Pydantic 忽略
     （`ModelResource` 没这个字段），不会污染配置文件。
@@ -650,7 +652,7 @@ async def get_config(request: Request, reveal: int = Query(default=0)):
     if not reveal:
         for r in data.get("resources", []):
             if r.get("api_key"):
-                r["api_key"] = mask_key(r["api_key"])
+                r["api_key"] = _mask_key_sentinel(r["api_key"])
     by_id = {r.id: r for r in cfg.resources}
     # 🔴 与调度 / `servable_models` / 映射弹窗 / `check-models` **同一条判据**（Q33-① 唯一真相），
     #    界面不在前端再写一份"进不进池"的判断。派生位是只读视图：PUT 回传时被 Pydantic 忽略。
@@ -674,48 +676,88 @@ async def get_config(request: Request, reveal: int = Query(default=0)):
     return data
 
 
+MASKED_SENTINEL_PREFIX = "mgw-masked:"
+
+
+def _mask_key_sentinel(value: str) -> str:
+    """GET 出口的脱敏形态（S-2，2026-10-05）：`mask_key` 加**显式哨兵前缀**。
+
+    🔴 旧出口 `sk-aa****1111` 与"用户手滑把掩码串当新 Key 粘回去"同形 ——
+    `_unmask_resources` 只在「值 == 当前掩码」时还原，另一页签拿旧快照拨开关就会把
+    掩码串逐字当新 Key 落盘并返回 ok（审计 S-2 的静默毁数据路径）。哨兵前缀保证
+    **脱敏值与任何合法明文都不同形**：用户没动过 ⇒ 原样传回被识别还原；动过 ⇒
+    按字面保存（用户显式选择），且哨兵形态本身不可能成为合法 Key。
+    前后位规则仍复用 `mask_key`（脱敏单一实现，wiring guard 钉住不许第二份）。
+    """
+    if not value:
+        return ""
+    return f"{MASKED_SENTINEL_PREFIX}{mask_key(value)}"
+
+
 def _unmask_resources(body: dict, current: AppConfig) -> None:
-    """PUT 还原：界面传回的脱敏 Key 值 → 原明文（仅当值与当前脱敏形态一致时）。"""
+    """PUT 还原：识别 GET 出口的哨兵形态 → 原明文（fail-closed：不认识的一律按字面保存）。"""
     cur = {r.id: r.api_key for r in current.resources}
     for r in body.get("resources", []) or []:
         v = r.get("api_key") or ""
-        if v and r.get("id") in cur and v == mask_key(cur[r["id"]]):
-            r["api_key"] = cur[r["id"]]
+        rid = r.get("id")
+        if v and rid in cur and v.startswith(MASKED_SENTINEL_PREFIX):
+            r["api_key"] = cur[rid]
 
 
 @router.put("/admin/api/config")
 async def put_config(request: Request):
-    """保存配置：ID/密钥缺省自动生成 → 脱敏还原 → Pydantic 校验 → 原子写 → 热重载（失败 400 保留旧快照）。"""
+    """保存配置：ID/密钥缺省自动生成 → 脱敏还原 → Pydantic 校验 → 原子写 → 热重载（失败 400 保留旧快照）。
+
+    🔴 S-2（2026-10-05 架构审计）：读快照、还原、校验、落盘整段在**工作线程**里持
+    `Runtime._reload_lock` 执行（与 `reload_from_file` 同一把锁）——
+    ① 旧实现在线程外先 `_unmask_resources(body, runtime.config)`，"读到谁"与"写盘时
+    谁在盘上"之间没有互斥，两个并发 PUT（或 PUT 撞上 CLI 热重载）会让后写者把前写者
+    的资源整批回滚（读改写竞争）；② 旧实现把 fsync + 全量 rebuild + 阻塞锁都留在事件
+    循环里（`threading.Lock` 不能跨 await，还阻塞所有并发请求）。现在锁内做完慢活再
+    回到循环里热重载（`_apply` 两阶段提交本体已由 reload 持锁保护）。
+    """
     runtime = request.app.state.runtime
     body = await request.json()
     if not isinstance(body, dict):
         return JSONResponse(status_code=400, content={"status": "rejected",
                                                       "errors": ["请求体须为配置对象"]})
-    _autogen_ids(body)
-    _unmask_resources(body, runtime.config)
-    try:
-        config = AppConfig.model_validate(body)
-    except Exception as e:  # noqa: BLE001 — Pydantic 校验错误统一转为列表
-        errors = []
-        for err in getattr(e, "errors", lambda: [])():
-            loc = ".".join(str(x) for x in err.get("loc", []))
-            errors.append(f"{loc}: {err.get('msg', str(e))}" if loc else str(err.get("msg", e)))
-        if not errors:
-            errors = [str(e)]
-        return JSONResponse(status_code=400, content={"status": "rejected", "errors": errors})
-    # 🔴 落盘只用**一份实现**：`config.loader.save_config`（tempfile + fsync + os.replace，
-    #    且 `BaseException` 也清临时文件）。原先这里又手写了一遍原子写，
-    #    于是 `save_config` 变成"只有测试在用的死函数" —— 两份实现同一件事，
-    #    将来只改一份就是 bug（接线护栏把它报出来后按此口径收敛）。
-    try:
-        save_config(config, runtime.config_path)
-    except OSError as e:
-        return JSONResponse(status_code=500, content={"status": "rejected",
-                                                      "errors": [f"写入失败: {e}"]})
-    # 写入成功 → 热重载（校验已在内存完成，reload 只会因文件竞争失败）
+    errors: list[str] = []
+
+    def _validate_and_save() -> bool:
+        nonlocal errors  # 闭包内重新绑定（errors = [...]）必须声明，否则 UnboundLocalError → 500
+        with runtime._reload_lock:  # noqa: SLF001 — 同进程装配侧唯一写面互斥点
+            try:
+                _autogen_ids(body)
+                # 锁内读当前配置还原哨兵：读与写同一临界区，杜绝"还原的是上一代"竞争
+                _unmask_resources(body, runtime.config)
+                config = AppConfig.model_validate(body)
+            except Exception as e:  # noqa: BLE001 — Pydantic 校验错误统一转为列表
+                errs = []
+                for err in getattr(e, "errors", lambda: [])():
+                    loc = ".".join(str(x) for x in err.get("loc", []))
+                    errs.append(f"{loc}: {err.get('msg', str(e))}" if loc else str(err.get("msg", e)))
+                errors = errs or [str(e)]
+                return False
+            # 🔴 落盘只用**一份实现**：`config.loader.save_config`（tempfile + fsync +
+            #    os.replace，且 `BaseException` 也清临时文件）。
+            try:
+                save_config(config, runtime.config_path)
+            except OSError as e:
+                errors = [f"写入失败: {e}"]
+                return False
+            return True
+
+    if not await asyncio.get_running_loop().run_in_executor(None, _validate_and_save):
+        return JSONResponse(status_code=(500 if any(w in " ".join(errors) for w in ("写入失败", "OSError"))
+                                         else 400),
+                            content={"status": "rejected", "errors": errors})
+    # 写入成功 → 热重载（校验已在内存完成，reload 只会因文件竞争失败；其本体持同一把锁）
     ok, errors = await runtime.reload_from_file()
     if not ok:
         return JSONResponse(status_code=400, content={"status": "rejected", "errors": errors})
+    # 🔴 参数与官方档案的偏差**不在这里回话**：那条横幅只有一个主人
+    #    （`Runtime.config_warnings()` → 总览页 `.alert-warn`，与 ④ 推理遮蔽同一通道）。
+    #    写面再回执一份 = 同一件事两个出口，将来只改一个就是新的两套真相。
     return {"status": "ok", "message": "配置已保存并生效"}
 
 
@@ -786,23 +828,32 @@ async def put_enums(request: Request):
         return JSONResponse(status_code=400, content={"status": "rejected", "errors": [
             "entries 不能为空：清空枚举池会被网关回落为内置目录，等于没保存。"
             "要恢复内置目录请直接删除该文件：" + str(_enums_path(request))]})
-    entries = [EnumEntry(
-        name=i["name"], display=i.get("display", ""), aliases=list(i.get("aliases", [])),
-        group=i.get("group", ""), endpoint=i.get("endpoint", "chat"),
-        response_format_url_hours=i.get("response_format_url_hours"),
-        only_base64_image=bool(i.get("only_base64_image", False)),
-        vendor=i.get("vendor", ""),
-        context_window=i.get("context_window"), max_output=i.get("max_output"),
-        image_input=bool(i.get("image_input", False)),
-        video_input=bool(i.get("video_input", False)),
-        audio_input=bool(i.get("audio_input", False)),
-        reasoning=bool(i.get("reasoning", False)),
-        effort_levels=[str(x) for x in i.get("effort_levels", [])],
-        params_default=dict(i.get("params_default", {})),
-        # GET 会导出这个键，PUT 若不读回来 → 编辑一次枚举池就把
-        # 用户手写的 `tool_call: false` 全部抹回默认值
-        tool_call=bool(i.get("tool_call", True)),
-    ) for i in items]
+    try:
+        entries = [EnumEntry(
+            name=i["name"], display=i.get("display", ""), aliases=list(i.get("aliases", [])),
+            group=i.get("group", ""), endpoint=i.get("endpoint", "chat"),
+            response_format_url_hours=i.get("response_format_url_hours"),
+            only_base64_image=bool(i.get("only_base64_image", False)),
+            vendor=i.get("vendor", ""),
+            context_window=i.get("context_window"), max_output=i.get("max_output"),
+            image_input=bool(i.get("image_input", False)),
+            video_input=bool(i.get("video_input", False)),
+            audio_input=bool(i.get("audio_input", False)),
+            reasoning=bool(i.get("reasoning", False)),
+            effort_levels=[str(x) for x in i.get("effort_levels", [])],
+            params_default=dict(i.get("params_default", {})),
+            # 🔴 与下面 `tool_call` 同一课：GET 会导出 `param_fields`，PUT 不读回来
+            #    就等于"编辑一次枚举池把参数档案全部抹平"（界面依据列随之消失）。
+            param_fields={str(k): dict(v) for k, v in (i.get("param_fields") or {}).items()},
+            # GET 会导出这个键，PUT 若不读回来 → 编辑一次枚举池就把
+            # 用户手写的 `tool_call: false` 全部抹回默认值
+            tool_call=bool(i.get("tool_call", True)),
+        ) for i in items]
+    except (ValueError, TypeError) as e:
+        # 参数档案写坏（kind 不在册 / enum 没有 values / 缺省值与 kind 不匹配 /
+        # params_default 与派生不一致）⇒ 400 说清是哪一条，别甩 500 给用户
+        return JSONResponse(status_code=400, content={
+            "status": "rejected", "errors": [f"枚举池条目不合法：{e}"]})
     path.parent.mkdir(parents=True, exist_ok=True)
     _dump_enums(entries, path)
     ok, errors = await runtime.reload_from_file()
@@ -811,14 +862,14 @@ async def put_enums(request: Request):
     return {"status": "ok", "message": "枚举池已保存并生效"}
 
 
-# ---------- 厂商预设 ----------
+# ---------- 供应商预设 ----------
 
 @router.get("/admin/api/presets")
 async def get_presets():
-    """厂商预设清单（tech-design §4.7；PRD FR-1.2，INT-46）。
+    """供应商预设清单（tech-design §4.7；PRD FR-1.2，INT-46）。
 
     每条附 billing_display：空/未知计费口径 →「—」（前端渲染降级）；
-    原始 billing 保留。扩展原则：新增厂商 = 仅加一条预设数据，UI 零改动。
+    原始 billing 保留。扩展原则：新增供应商 = 仅加一条预设数据，UI 零改动。
     """
     return {"presets": [{**p, "billing_display": display_billing(p)}
                         for p in list_presets()]}

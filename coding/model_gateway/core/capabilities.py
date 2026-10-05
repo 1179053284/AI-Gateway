@@ -27,7 +27,7 @@ def _flag(entry_value: Any, *, tool_call: bool = False, endpoint: str = "chat") 
       - `supportsToolCall` 且端点不是 chat ⇒ `False`：**有依据的否**（图像端点没有 tools 参数，
         与 `EnumEntry.__post_init__` 同一条不变量，这里只是把它用到"目录里没有这条模型"的场合）；
         同一条不变量由**唯一出口** `_enforce_endpoint()` 压（三条返回路径全过）——
-        账号目录能把 `tool_call=True` 并进来、目录条目本身也可能是 chat 名而系统模型被改成
+        账号目录能把 `tool_call=True` 并进来、目录条目本身也可能是 chat 名而网关模型被改成
         images，只在某一条来源的算法里守就等于只拦了一半（评审 R8-报备 R-8 / R9-声明 6）。
       - 其余 ⇒ `None` = **不知道**，🔴 不得印成 `false`：`false` 是对工具的 affirmative 承诺
         "这个模型干不了这件事"，而我们并没有这个证据 —— 那正是 §12 要消灭的"无报错的失败"的
@@ -45,20 +45,20 @@ def _flag(entry_value: Any, *, tool_call: bool = False, endpoint: str = "chat") 
 
 def build_model_caps(model: Any, enum_pool: Any, dialects: Any = None, *, spec: Any = None
                     ) -> dict[str, Any]:
-    """组装单个系统模型的**能力位**（在原有 6 字段之外追加的部分）。
+    """组装单个网关模型的**能力位**（在原有 6 字段之外追加的部分）。
 
     返回 8 个键（`caps` 单独在 `build_caps_block` 里组装，便于 M3-2/M3-4 分期）：
     `name` / `vendor` / `maxInputTokens` / `maxOutputTokens` /
     `supportsToolCall` / `supportsImages` / `supportsReasoning` / `specStale`
 
-    **自定义系统模型**（不在内置目录，Q19-② 允许就地新建）→ 走最小字段集，**不崩**；
+    **自定义网关模型**（不在内置目录，Q19-② 允许就地新建）→ 走最小字段集，**不崩**；
     能力位此时是 `null`（= 不知道），不是 `false`（= 明确不支持）—— 见 `_flag`。
     **目录缺某属性**（如 `claude-sonnet-4` 无 `context_window`）→ 输出 `None`，
     工具回退自身兜底值，**与现状等价，不臆造数值**。
 
     🔴 `spec`（Q33-④，`core/model_spec.ModelSpec`）= 这个模型**在所有生效资源上**合并出来的
     规格。传进来时按「固定最大标准」合并：
-      - 数值（输入/输出）取**较大值** —— 同一系统模型挂着 1M 窗口的账号与 262K 窗口的
+      - 数值（输入/输出）取**较大值** —— 同一网关模型挂着 1M 窗口的账号与 262K 窗口的
         按量 Key 时，对外承诺的是 1M（用户 2026-10-02 定的口径）；
       - 布尔位取**并**（任一资源具备即具备），且**能把 `null`（不知道）升成 `true`**；
         规格说得出 `false`（= 每个开过口的来源都明说不具备）时也能把 `null` 落成 `false`；
@@ -102,7 +102,7 @@ def _enforce_endpoint(caps: dict[str, Any], endpoint: str) -> dict[str, Any]:
     """非 chat 端点的 `supportsToolCall` 只能是 `false` —— **在唯一出口**压一次。
 
     🔴 评审 R8-报备 R-8：这条不变量原先只压在合并腿（`spec` 在场）上，而"目录里有同名条目
-    但系统模型是 images 端点 + 没传规格"那条路（`entry.tool_call=True` 直出 `base`）根本没经过它 ⇒
+    但网关模型是 images 端点 + 没传规格"那条路（`entry.tool_call=True` 直出 `base`）根本没经过它 ⇒
     对外承诺了一句图像端点做不到的事。不变量属于**出口**，不属于某一条来源的计算方式。
     """
     if endpoint != "chat":
@@ -135,7 +135,7 @@ def _merge_spec_maxima(caps: dict[str, Any], spec: Any) -> dict[str, Any]:
         # 那一步就是 R3-F-3 登记的"三态外泄"原缺陷。
     # 🔴 端点不变量不在这里压 —— 由唯一出口 `_enforce_endpoint()` 统一压（评审 R8-报备 R-8：
     #    原先只有"合并腿"守得住，而 `spec=None` + 目录条目 `tool_call=True` 那条路根本不经过这里，
-    #    `endpoint=images` 的系统模型照样对外承诺 `supportsToolCall: true`。）
+    #    `endpoint=images` 的网关模型照样对外承诺 `supportsToolCall: true`。）
     # 陈旧标注：合并规格里**至少有一个数**来自超 TTL 的目录缓存 ⇒ 声明侧如实带上这件事。
     out["specStale"] = bool(getattr(spec, "from_stale_cache", False))
     return out

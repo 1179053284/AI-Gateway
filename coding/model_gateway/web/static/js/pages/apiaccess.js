@@ -86,7 +86,7 @@ function draw(root) {
           ${endpoint("/v1/chat/completions", "对话（OpenAI 兼容）", "非流式 + 流式（SSE）")}
           ${endpoint("/v1/images/generations", "图像生成", "返回 URL 或 base64（按模型能力）")}
           ${endpoint("/v1/messages", "对话（Anthropic 兼容）", "双向转换，供 Claude 系工具直连")}
-          ${endpoint("/v1/models", "模型枚举", "仅返回已启用的系统模型")}
+          ${endpoint("/v1/models", "模型枚举", "仅返回已启用的网关模型")}
         </div>
       </div>
     </div>`;

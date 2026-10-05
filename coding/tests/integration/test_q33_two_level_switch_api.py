@@ -231,29 +231,52 @@ class TestAccountEnableInheritsMappings:
 
 
 class TestNoHalfApplied:
-    """🔴 产品位与条目必须"一起改或都不改"（Q33 评审 R1-① 判死的 P0）。"""
+    """🔴 产品位与条目必须"一起改或都不改"（Q33 评审 R1-① 判死的 P0）。
 
-    async def test_repoint_conflict_leaves_bit_and_entries_untouched(self, vendor,
-                                                                     make_gateway, client):
-        """把已挂在 A 模型的映射改挂到 B 模型 ⇒ 整条拒绝，**位与条目一个字节都不动**。
+    2026-10-05 随「改挂 = 一次动作」改写：本行原来那一侧**可以**搬（见
+    `test_accounts_catalog_mapping_api.py::test_repoint_moves_the_entry_instead_of_rejecting`），
+    但**别处还挂着同一组合**时仍然整条拒 —— 不变量没放宽，只是把"这一行自己的旧落点"
+    从冲突里摘出去，因为那正是用户要改的东西。
+    """
 
-        旧顺序是"先写位再扇出"，扇出发现冲突就跳过 ⇒ 位指向 B、条目还留在 A，
-        于是 **A 模型静默掉出 `/v1/models`**、B 模型没有条目、而回执是 200。
+    async def test_repoint_with_a_foreign_holder_leaves_everything_untouched(self, vendor,
+                                                                            make_gateway, client):
+        """位说 vm-x 挂 A，而某个号的条目被人为挪到了别的模型下 ⇒ 改挂 C 整条拒、零写盘。
+
+        这条形状是手改 YAML 造出的不一致（`mapping_enabled` 那条"位与目标不符 ⇒ 不进池"的告警
+        就是为它准备的）。两侧都搬 = 替用户决定"谁该从别的模型里掉出去"；只搬位所指那一侧 =
+        vm-x 仍住两个模型、位与实际继续不符。所以一个都不动，并把原话报进 `skipped`。
         """
         gw = await make_gateway(_cfg(vendor.port, models=[]))
         _seed("buddy", "atom-a")
+        _seed("buddy", "atom-b")
         url = f"{gw.base_url}/admin/api/accounts/mappings"
-        await client.post(url, json={"product": "buddy",
-                                     "items": [{"model": "vm-x", "target": "glm-5.3"}]})
-        before = _saved(gw)
-        r = await client.post(url, json={"product": "buddy",
-                                         "items": [{"model": "vm-x", "target": "kimi-k3"}]})
-        assert r.status_code == 200, r.text
-        out = r.json()
+        first = (await client.post(url, json={
+            "product": "buddy", "items": [{"model": "vm-x", "target": "glm-5.3"}]})).json()
+        assert first["added"] == 2, first
+        stray = next(a["resource_id"] for a in first["accounts"] if a["name"] == "atom-b")
+
+        # 把 atom-b 那条从 glm-5.3 挪到另一个网关模型下（制造"位与条目不一致"）
+        cfg = yaml.safe_load(Path(gw.config_path).read_text(encoding="utf-8"))
+        holder = next(m for m in cfg["models"] if m["name"] == "glm-5.3")
+        holder["resources"] = [e for e in holder["resources"] if e["resource"] != stray]
+        cfg["models"].append({"name": "other", "endpoint": "chat",
+                              "resources": [{"resource": stray, "model": "vm-x"}]})
+        Path(gw.config_path).write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
+        assert (await client.post(f"{gw.base_url}/admin/api/config/reload")).status_code == 200
+
+        out = (await client.post(url, json={
+            "product": "buddy", "items": [{"model": "vm-x", "target": "kimi-k3"}]})).json()
+        assert out["moved"] == 0 and out["added"] == 0, out
         assert out["product_models"] == []                       # 本条一位未写
-        assert out["added"] == 0 and out["turned_on"] == 0
+        assert out["created_models"] == []                       # 不留下空模型
         assert len(out["skipped"]) == 1 and "整体未生效" in out["skipped"][0]["reason"]
-        assert _saved(gw) == before                              # 配置逐字未动
+        saved = _saved(gw)
+        assert "kimi-k3" not in {m["name"] for m in saved["models"]}
+        assert next(pm for pm in saved["product_models"]
+                    if pm["model"] == "vm-x")["system_model"] == "glm-5.3"   # 位没被改指
+        stray_after = next(m for m in saved["models"] if m["name"] == "other")["resources"]
+        assert [e["resource"] for e in stray_after] == [stray]   # 别人那一侧一条没动
         ids = [m["id"] for m in (await client.get(
             f"{gw.base_url}/v1/models",
             headers={"Authorization": "Bearer gw-user"})).json()["data"]]
@@ -416,17 +439,17 @@ class TestSwitchCountersAndBanner:
 
 
 class TestDisabledAccountEntriesAreInScope:
-    """🔴 INT-81 · 预检扫描面必须含**停用号**的旧条目（复验轮 R4 阻塞项 2）。
+    """🔴 INT-81 · 预检与搬运的扫描面必须含**停用号**的旧条目（复验轮 R4 阻塞项 2）。
 
     形状：两个号都把 `vm-x` 挂在 A 上 → 停用其中一个（条目照旧留着）→ 把产品位改挂到 B。
-    旧实现只扫启用号 ⇒ 预检放行、位改成 B、A 上那条仍挂着；等这个号被重新启用，
-    `sync_product_models` 再按位补一条到 B ⇒ **同一 `(资源, 厂商模型)` 同时挂两个系统模型**，
-    正是本写面自己宣布禁止的形状（`_mapping_holder` 的组合唯一判据），
-    而且此后该组合再映射永远 `skipped`，提示还指向一个已经不再服务它的模型。
+    只扫启用号的旧实现会留下那个洞：位改成 B、A 上停用号那条仍挂着；号一被重新启用，
+    `sync_product_models` 再按位补一条到 B ⇒ **同一 `(资源, 供应商模型名)` 同时住两个网关模型**。
+    2026-10-05 随「改挂 = 一次动作」改写：这一侧不再是整条拒，而是**一起搬** ——
+    不变量照旧成立（搬完仍只住一处），而"停用号身上留一条旧条目"这条路被正面堵死。
     """
 
-    async def test_repoint_blocked_by_a_disabled_accounts_stale_entry(self, vendor,
-                                                                      make_gateway, client):
+    async def test_repoint_carries_the_disabled_accounts_entry_too(self, vendor,
+                                                                   make_gateway, client):
         gw = await make_gateway(_cfg(vendor.port, models=[]))
         _seed("buddy", "ds-1")
         _seed("buddy", "ds-2")
@@ -434,26 +457,23 @@ class TestDisabledAccountEntriesAreInScope:
         first = (await client.post(url, json={"product": "buddy", "items": [
             {"model": "vm-x", "target": "glm-5.3"}]})).json()
         assert first["added"] == 2, first
+        rids = {a["name"]: a["resource_id"] for a in first["accounts"]}
 
         r = await client.post(_enable_url(gw, "buddy", "ds-2", "disable"))
         assert r.status_code == 200 and r.json()["changed"] is True
 
         out = (await client.post(url, json={"product": "buddy", "items": [
             {"model": "vm-x", "target": "kimi-k3"}]})).json()
-        # 逐号一条说明（启用号 ds-1 + 停用号 ds-2 都仍挂在 glm-5.3 上）
-        assert len(out["skipped"]) == 2, out["skipped"]
-        assert out["product_models"] == []
-        assert {s["reason"].split(" ")[1] for s in out["skipped"]} == {"ds-1", "ds-2"}
-        assert out["created_models"] == []
+        assert out["moved"] == 2 and out["skipped"] == [], out   # 停用号那条一起走
+        assert out["product_models"] == [{"model": "vm-x", "target": "kimi-k3",
+                                          "enabled": True}]
+        assert out["emptied_models"] == ["glm-5.3"]              # 旧模型被搬空 ⇒ 掉出 /v1/models
 
         saved = _saved(gw)
-        holders = {m["name"]: [e["resource"] for e in m["resources"] if e["model"] == "vm-x"]
+        holders = {m["name"]: sorted(e["resource"] for e in m["resources"] if e["model"] == "vm-x")
                    for m in saved["models"]}
-        assert holders.get("kimi-k3", []) == [], holders        # 没往新模型挂任何一条
-        assert sorted(holders["glm-5.3"]) == sorted(
-            {e["resource"] for e in next(m for m in saved["models"]
-                                         if m["name"] == "glm-5.3")["resources"]
-             if e["model"] == "vm-x"})                          # 旧挂载原样
+        assert holders["kimi-k3"] == sorted(rids.values()), holders
+        assert holders["glm-5.3"] == [], holders                 # 一条都没留在旧落点
 
         # 重新启用那个号 ⇒ 继承腿不得造出跨模型重复组合（判据 = 全配置唯一）
         r2 = await client.post(_enable_url(gw, "buddy", "ds-2", "enable"))
@@ -464,7 +484,10 @@ class TestDisabledAccountEntriesAreInScope:
             for e in m["resources"]:
                 seen[(e["resource"], e["model"])] = seen.get((e["resource"], e["model"]), 0) + 1
         dup = [k for k, v in seen.items() if v > 1]
-        assert dup == [], f"同一 (资源, 厂商模型) 被挂到两个系统模型：{dup}"
+        assert dup == [], f"同一 (资源, 供应商模型名) 被挂到两个网关模型：{dup}"
+        assert holders["kimi-k3"] == sorted(
+            e["resource"] for m in again["models"] if m["name"] == "kimi-k3"
+            for e in m["resources"] if e["model"] == "vm-x")     # 启用回来也不翻倍
 
 
 class TestPerAccountEntitlementGate:
@@ -578,7 +601,7 @@ class TestPerAccountSpecWiring:
         from model_gateway.accounts import catalog_cache
         from model_gateway.accounts.types import ModelInfo
 
-        # 系统模型**预先存在**：映射写面不自动新建用户无法追溯的名字（400 口径），
+        # 网关模型**预先存在**：映射写面不自动新建用户无法追溯的名字（400 口径），
         # 而这里要的正是一个**不在内置目录**里的名字 —— 否则枚举池那份数会顶掉账号侧的。
         gw = await make_gateway(_cfg(vendor.port, models=[
             {"name": target, "endpoint": "chat", "resources": []}]))
@@ -618,7 +641,7 @@ class TestPerAccountSpecWiring:
             self, vendor, make_gateway, client):
         """③ 的反证：只有按号缓存时对外也必须出数，且出的是**池内最大**（固定最大标准）。
 
-        系统模型名故意用**不在内置目录**里的 `cap-custom` —— 用 `glm-5.3` 会被枚举池
+        网关模型名故意用**不在内置目录**里的 `cap-custom` —— 用 `glm-5.3` 会被枚举池
         那份 131072 顶掉（取大规则本身正确），测不到"账号侧一份数都没声明出来"这个形状。
         """
         from model_gateway.accounts import catalog_cache
@@ -652,7 +675,7 @@ class TestPerAccountSpecWiring:
         reason = reject(Ir(), small)
         assert reason is not None
         assert reject(Ir(), big) is None
-        # 🔴 评审 R8-报备 R-9：拦人的理由必须用界面上那把名字（`备注名/厂商模型`），
+        # 🔴 评审 R8-报备 R-9：拦人的理由必须用界面上那把名字（`备注名/供应商模型名`），
         #    掺裸 `res-xxxxxxxx` 会让用户在自己没起过的串里找资源
         # 🔴 收紧（评审 R9-报备 R9-2：先前两条断言其实是同一个串，写成 `rid/vm-x` 照样不红）
         assert "res-" not in reason, f"理由串里仍有裸资源 id：{reason}"
@@ -660,10 +683,10 @@ class TestPerAccountSpecWiring:
 
     async def test_another_system_model_switch_cannot_erase_this_resources_spec(
             self, vendor, make_gateway, client):
-        """🔴 评审 R8-B-1：资源级规格**不得**带系统模型维度（别名形状会把它抹成空壳）。
+        """🔴 评审 R8-B-1：资源级规格**不得**带网关模型维度（别名形状会把它抹成空壳）。
 
-        `(资源, 厂商模型)` 在**别的**系统模型下也被引用是既有设计（别名 + 运行态按
-        `(rid, vendor_model)` 共享冷却，`schemas.py` 的去重明确只在同一系统模型内、
+        `(资源, 供应商模型名)` 在**别的**网关模型下也被引用是既有设计（别名 + 运行态按
+        `(rid, vendor_model)` 共享冷却，`schemas.py` 的去重明确只在同一网关模型内、
         UT-84 还专门留了反证腿），而 `Runtime.resource_specs` 的键就是 `(rid, vendor_model)`。
         值若由带映射判据的那条路算出来，另一头那条映射关着时空壳就**覆盖**生效那份 ⇒
         承载判据不再拦、缺省注入也不注（方向 = fail-open，真实上游 400），
@@ -688,7 +711,7 @@ class TestPerAccountSpecWiring:
             rid = {a["name"]: a["resource_id"] for a in out["accounts"]}["cap-alias"]
             assert gw.runtime.resource_specs[(rid, "vm-x")].max_output == 8192
 
-            # 同一个 (号, 厂商模型) 组合另挂到第二个系统模型上，那一头**关着**
+            # 同一个 (号, 供应商模型名) 组合另挂到第二个网关模型上，那一头**关着**
             saved = _saved(gw)
             other = next(m for m in saved["models"] if m["name"] == "cap-alias")
             other["resources"] = [{"resource": rid, "model": "vm-x", "enabled": False}]
@@ -772,7 +795,7 @@ class TestStaleSpecHasAUserVisibleExit:
 class TestProductModelRemoval:
     """🔴 INT-94 · 产品位**删除入口**（用户批准的契约扩展第二条，台账 §17）。
 
-    Q33-① 把 `(产品, 厂商模型) → 系统模型 + enabled` 定为账号侧映射的唯一真相，但界面上
+    Q33-① 把 `(产品, 供应商模型名) → 网关模型 + enabled` 定为账号侧映射的唯一真相，但界面上
     只有开/关两颗状态，**没有删除**：想"这个产品的这个模型我根本不想接"没有出口 ——
     关着的位永远留在配置里，而且号被重新启用时还会按它把条目**补回来**（继承腿读的就是位）。
     本类钉的是删除面必须成立的六件事，其中 ①② 是"删了但没删"的两种形状：
@@ -824,9 +847,9 @@ class TestProductModelRemoval:
 
     async def test_other_products_and_vendor_entries_are_untouched(self, vendor, make_gateway,
                                                                   client):
-        """🔴 删除的作用域 = **该产品的派生资源** × 这个厂商模型，别的二字不动。
+        """🔴 删除的作用域 = **该产品的派生资源** × 这个供应商模型名，别的二字不动。
 
-        故意让**厂商侧**资源也挂一个同名厂商模型 `vm-x`：按"厂商模型"一把删就会把
+        故意让**Key 接入侧**资源也挂一个同名供应商模型名 `vm-x`：按"供应商模型名"一把删就会把
         用户自己的按量 Key 映射一起清掉（那是另一类接入，与这个产品无关）。
         """
         gw = await make_gateway(_cfg(vendor.port, models=[
@@ -836,7 +859,7 @@ class TestProductModelRemoval:
         await self._map(gw, client)
         out = (await client.post(f"{gw.base_url}/admin/api/accounts/product-models/remove",
                                  json={"product": "buddy", "model": "vm-x"})).json()
-        assert out["emptied_models"] == [], out                  # 厂商侧那条还在 ⇒ 模型不该被清空
+        assert out["emptied_models"] == [], out                  # Key 接入侧那条还在 ⇒ 模型不该被清空
         model = next(m for m in _saved(gw)["models"] if m["name"] == "glm-5.3")
         assert [e["resource"] for e in model["resources"]] == ["res-A"], model
         assert model["resources"][0]["model"] == "vm-x", model
@@ -882,10 +905,10 @@ class TestProductModelRemoval:
             self, vendor, make_gateway, client):
         """🔴 复验 R10 报备 2 补的判据：作用域必须是**这一个产品**的派生资源。
 
-        前一条只钉了"厂商侧不许动"，把实现变异成 `rids = 全部账号侧资源`（跨产品）时六条**全绿**
+        前一条只钉了"Key 接入侧不许动"，把实现变异成 `rids = 全部账号侧资源`（跨产品）时六条**全绿**
         —— 那意味着"别的产品的账号映射被一起删掉"这条真实事故形状零覆盖。
-        这一条造两个产品（buddy + trae）各挂同一个厂商模型 `vm-x` 到同一系统模型，
-        删 buddy 的 ⇒ trae 的位与条目都必须还在，且系统模型不得被报成"清空"。
+        这一条造两个产品（buddy + trae）各挂同一个供应商模型名 `vm-x` 到同一网关模型，
+        删 buddy 的 ⇒ trae 的位与条目都必须还在，且网关模型不得被报成"清空"。
         """
         gw = await make_gateway(_cfg(vendor.port, models=[
             {"name": "glm-5.3", "endpoint": "chat", "resources": []}]))
@@ -919,7 +942,7 @@ class TestProductModelRemoval:
 
         把实现里的 `if m.resources and not keep` 放宽成 `if m.resources`（删过任何条目就报清空）
         时，原有六条全绿 —— 而这正是界面会撒谎的那个字段：模型明明还有别的资源在承接，
-        回执却说"它掉出 /v1/models 了"。这一条造"同一系统模型挂两条不同厂商模型"的形状。
+        回执却说"它掉出 /v1/models 了"。这一条造"同一网关模型挂两条不同供应商模型名"的形状。
         """
         gw = await make_gateway(_cfg(vendor.port, models=[
             {"name": "glm-5.3", "endpoint": "chat", "resources": []}]))

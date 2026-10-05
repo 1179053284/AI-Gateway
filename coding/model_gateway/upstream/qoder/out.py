@@ -247,7 +247,7 @@ class QoderOut(ProductOutAdapter):
             "id": "chatcmpl-qoder",
             "object": "chat.completion",
             "created": 0,
-            "model": vendor_model,     # 调度器统一替换为系统模型名（scheduler §5.1）
+            "model": vendor_model,     # 调度器统一替换为网关模型名（scheduler §5.1）
             "choices": [{"index": 0, "message": message,
                          "finish_reason": finish or "stop"}],
             "usage": usage or {},

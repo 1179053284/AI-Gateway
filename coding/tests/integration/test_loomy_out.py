@@ -142,7 +142,7 @@ async def test_loomy_nonstream_end_to_end(make_gateway, client):
     assert CONFIG_KEY not in json.dumps(dict(req.headers))  # 配置 Key 绝不外发（铁律 1）
     assert req.headers["accept"] == "text/event-stream"     # loomy.ts:227
     payload = json.loads(req.content)
-    assert payload["model"] == VENDOR_MODEL                 # 映射里的厂商模型名
+    assert payload["model"] == VENDOR_MODEL                 # 映射里的供应商模型名
 
     await gw.drain_events()
     ev = gw.read_events()[-1]

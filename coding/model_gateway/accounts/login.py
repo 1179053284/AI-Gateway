@@ -63,7 +63,7 @@
 
     start(local_callback)      → 先 `CallbackListener.start()` **绑定 127.0.0.1**，
                                  实际端口交给产品 `login_start` 拼授权 URL
-    浏览器被厂商 302 回本机端口 → 接收端把**整串回跳地址**灌进
+    浏览器被供应商 302 回本机端口 → 接收端把**整串回跳地址**灌进
                                  `_deliver()` → 与粘贴通道**同一条** `_single_flight`
                                  + `_advance` + `login_callback` 钩子（参数就是
                                  `{"url": 整串}`，校验/换 token 一行都不重复实现）

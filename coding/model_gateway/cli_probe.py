@@ -84,7 +84,7 @@ async def _run(args: argparse.Namespace) -> int:
     if args.model:
         missing = [n for n in args.model if n not in {m.name for m in config.models}]
         if missing:
-            print(f"✗ 未定义的系统模型：{', '.join(missing)}", file=sys.stderr)
+            print(f"✗ 未定义的网关模型：{', '.join(missing)}", file=sys.stderr)
             return 2
 
     if not targets:

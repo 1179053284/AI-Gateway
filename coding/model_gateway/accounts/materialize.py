@@ -193,7 +193,7 @@ def _backfill_product_models(config: AppConfig, product: str, rid: str,
                              skipped_out: list[str] | None = None) -> int:
     """把该产品开着的产品位落成这条资源的映射条目，返回新增条数（已存在的不重复加）。
 
-    只认**在册的系统模型**：`AppConfig` 的跨节校验已保证 `product_models[].system_model`
+    只认**在册的网关模型**：`AppConfig` 的跨节校验已保证 `product_models[].system_model`
     必须在 `models[]` 里，所以这里查不到就是配置被外部改坏 —— 跳过而不是编造一个模型。
     """
     added = 0
@@ -203,7 +203,7 @@ def _backfill_product_models(config: AppConfig, product: str, rid: str,
         model = next((m for m in config.models if m.name == bit.system_model), None)
         if model is None:
             continue
-        # 🔴 唯一性按 **(资源, 厂商模型) 组合全配置**判，不是"只在目标模型里查有没有"
+        # 🔴 唯一性按 **(资源, 供应商模型名) 组合全配置**判，不是"只在目标模型里查有没有"
         #    （复验轮 R4 阻塞项 2 的下半句）：号停用期间旧条目仍挂在别的模型上，
         #    只看目标模型就会给同一号补出第二份条目 ⇒ 调度按模型复制资源、统计口径打架。
         if any(e.resource == rid and e.model == bit.model
@@ -228,7 +228,7 @@ def _backfill_product_models(config: AppConfig, product: str, rid: str,
 
 def sync_product_models(product: str, name: str, *, config_path: Path | str | None = None,
                         skipped_out: list[str] | None = None) -> int:
-    """`skipped_out`：传入一个列表即可收下**被按号权益闸门拦下**的厂商模型名。
+    """`skipped_out`：传入一个列表即可收下**被按号权益闸门拦下**的供应商模型名。
 
     🔴 R5-⑧：这条腿原先只 `logger.warning`，回执仍是 200 + `changed: true` ⇒
     用户看到"已启用"，而映射其实一条都没落地（"看着成了、盘上没写"那一类假态）。

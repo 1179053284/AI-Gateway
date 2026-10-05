@@ -1,4 +1,4 @@
-"""FakeVendor：本地假厂商后端（test-cases.md §1.2）。
+"""FakeVendor：本地假供应商后端（test-cases.md §1.2）。
 
 - OpenAI 兼容端点：POST /v1/chat/completions（流式/非流式）、POST /v1/images/generations
 - 按 key 可编程脚本（按序消费，耗尽后重复最后一步）：

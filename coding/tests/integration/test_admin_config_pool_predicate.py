@@ -1,12 +1,12 @@
 """INT · `/admin/api/config` 的映射条目必须带**同一个进池判据**（Q33-① 的界面出口）。
 
 为什么要这一份：「网关模型管理」的资源池行与「N 个资源」计数此前直接读条目位
-`resources[].enabled`，而 Q33 之后账号侧资源的真相是 **(产品, 厂商模型) 产品位 + 号开关**
+`resources[].enabled`，而 Q33 之后账号侧资源的真相是 **(产品, 供应商模型名) 产品位 + 号开关**
 （`AppConfig.mapping_enabled`，调度 / `/v1/models` / 映射弹窗都读它）。两处各判一次就是
 两套真相：弹窗那颗开关说「已进池」，资源池表却说「没有这一行」。本文件钉三件事：
 
 1. 出口把派生位 `mapping_enabled` 带上，且**账号侧以产品位为准**（条目位反过来也不受影响）；
-2. 厂商侧维持条目位语义（零变化）；
+2. Key 接入侧维持条目位语义（零变化）；
 3. 这个派生位是**只读视图**——把它原样 PUT 回去不会污染配置文件（Pydantic 忽略未知键）。
 """
 
@@ -59,7 +59,7 @@ async def _entries(client, gw, model_name: str = "sys-a") -> list[dict]:
 
 
 class TestProviderSideStillEntryBit:
-    """厂商侧（`product` 空）：派生位 == 条目位，语义零变化。"""
+    """Key 接入侧（`product` 空）：派生位 == 条目位，语义零变化。"""
 
     async def test_open_and_closed_entries_report_their_own_bit(
             self, vendor, make_gateway, client, cfg_factory):
@@ -96,9 +96,9 @@ class TestAccountSideFollowsProductBit:
 
     async def test_bit_pointing_elsewhere_is_not_this_model(
             self, vendor, make_gateway, client, cfg_factory):
-        """位指向别的系统模型（手改 YAML 的不一致形态）⇒ **只有位指的那个模型算进池**。
+        """位指向别的网关模型（手改 YAML 的不一致形态）⇒ **只有位指的那个模型算进池**。
 
-        同一 `(资源, 厂商模型)` 组合出现在两个系统模型下时，读侧只在**同一个模型内**去重
+        同一 `(资源, 供应商模型名)` 组合出现在两个网关模型下时，读侧只在**同一个模型内**去重
         （`schemas.py` 的组合唯一 = per-model），跨模型由写面拦；判据因此必须逐模型算，
         不能"有一条开着就算进池"。
         """

@@ -115,7 +115,7 @@
       <!-- 形态预演声明 -->
       <div class="alert alert-info" style="margin-bottom:0;">
         <div class="alert-title">需求形态预演 · 非线上功能</div>
-        <div>本页数据为虚构演示数据。当前网关真实运行态：<span class="mono">1 个资源 / 1 个厂商 / 7 个系统模型</span>（<span class="mono">GET /admin/api/overview</span>），且不含任何产品级授权账号。</div>
+        <div>本页数据为虚构演示数据。当前网关真实运行态：<span class="mono">1 个资源 / 1 个供应商 / 7 个网关模型</span>（<span class="mono">GET /admin/api/overview</span>），且不含任何产品级授权账号。</div>
       </div>
 
       <!-- 头卡：产品 logo + 名称 + 副行 + 徽章 + 操作 -->
@@ -1117,7 +1117,7 @@
   -H "Authorization: Bearer mg-3f9a****c7e8" \
   -H "Content-Type: application/json" \
   -d '{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"ping"}]}'</div>
-              <div class="form-hint">下游只认网关端点与系统模型名；上游哪个产品的哪个账号承接，由网关按权重 / 额度 / 健康度调度。</div>
+              <div class="form-hint">下游只认网关端点与网关模型名；上游哪个产品的哪个账号承接，由网关按权重 / 额度 / 健康度调度。</div>
             </div>
           </div>
         </div>
@@ -1127,7 +1127,7 @@
           <div class="card flush">
             <div class="card-head inset">
               <span class="card-title">可用模型范围</span>
-              <span class="value">产品内模型名 → 系统模型池（7 个）</span>
+              <span class="value">产品内模型名 → 网关模型池（7 个）</span>
               <span style="margin-left:auto; display:flex; align-items:center; gap:8px;">
                 <span class="badge b-gray">未核实项不下发到拓扑</span>
                 <button class="btn btn-sm btn-primary" onclick="showToast('已发起 8 条映射的能力取证')">取证刷新</button>
@@ -1138,7 +1138,7 @@
                 <thead>
                   <tr>
                     <th>产品内模型名</th>
-                    <th>映射到的系统模型</th>
+                    <th>映射到的网关模型</th>
                     <th>分组</th>
                     <th class="num">上下文</th>
                     <th class="num">最大输出</th>
@@ -1235,14 +1235,14 @@
 
           <div class="card">
             <div class="sec-head">
-              <span class="t">产品 × 系统模型覆盖矩阵</span>
+              <span class="t">产品 × 网关模型覆盖矩阵</span>
               <span class="d">✓= 至少一个账号可用 · —= 无账号映射</span>
             </div>
             <div class="matrix-container">
               <table class="matrix-table">
                 <thead>
                   <tr>
-                    <th>系统模型（网关池）</th>
+                    <th>网关模型（网关池）</th>
                     <th>ZCode</th>
                     <th>WorkBuddy</th>
                     <th>Trae</th>
@@ -1302,7 +1302,7 @@
                 </tbody>
               </table>
             </div>
-            <div class="form-hint" style="margin-top:12px;">同一系统模型可被多个产品承接（如 deepseek-v4-flash 由 ZCode 与 WorkBuddy 双供给），网关按健康度自动切换。</div>
+            <div class="form-hint" style="margin-top:12px;">同一网关模型可被多个产品承接（如 deepseek-v4-flash 由 ZCode 与 WorkBuddy 双供给），网关按健康度自动切换。</div>
           </div>
         </div>
 
@@ -1788,7 +1788,7 @@
           </div>
           <div class="alert alert-info" style="margin-bottom:0;">
             <div class="alert-title">这个空态不是假想的</div>
-            <div>当前真实网关正是这个形态：<span class="mono">1 个资源 / 1 个厂商 / 7 个系统模型</span>，没有产品级授权账号；本页其余视图均为需求形态预演。</div>
+            <div>当前真实网关正是这个形态：<span class="mono">1 个资源 / 1 个供应商 / 7 个网关模型</span>，没有产品级授权账号；本页其余视图均为需求形态预演。</div>
           </div>
         </div>
 

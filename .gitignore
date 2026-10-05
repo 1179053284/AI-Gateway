@@ -4,7 +4,11 @@ data/
 # 运行时数据：CLI/setup 工具写的产品记忆（setup_tools.py / cli.py）
 .workbuddy-ai/
 # pytest 残留（test_v2_wiring_guard 以 pid 命名的金丝雀包）
+# 🔴 2026-10-05 S-4：源码迁入 coding/ 后原锚点 `model_gateway/_wiring_canary_pkg_*`
+# 失配（实测 check-ignore rc=1，`?? coding/model_gateway/_wiring_canary_pkg_*` 挂在
+# git status），按新布局补锚；旧锚点保留（防工作区里还有旧布局副本）。
 model_gateway/_wiring_canary_pkg_*
+coding/model_gateway/_wiring_canary_pkg_*
 
 # ===== AI 工具管理过程文件（内部工作区，不上传）=====
 # AGENTS.md = AI 导航总文件（项目管理入口）

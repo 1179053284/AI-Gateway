@@ -9,7 +9,7 @@
 | 鉴权 | `Authorization: Bearer workos:<access_token>`（**前缀不可剥**） | `cline-product.ts:96-115`；`cline.ts:159-182` | 复用 `protocol.auth_headers`（内含 `bearer_value` 幂等补齐） |
 | 客户端标识头 | `HTTP-Referer` / `X-Title` / `X-IS-MULTIROOT` / `X-CLIENT-TYPE` | `cline-product.ts:269-274`（`DEFAULT_CLINE_REQUEST_HEADERS`） | 同上（`protocol.CLIENT_HEADERS`） |
 | `Accept` | `text/event-stream` | `cline-adapter.ts:571-577` | `protocol.auth_headers` 的 `extra` 覆写 |
-| 请求体 | 标准 OpenAI（**唯一一家推理体无自有塑形**） | `cline-product.ts:13` 的协议表 | 不写 `prepare_body`（基类默认只落厂商模型名） |
+| 请求体 | 标准 OpenAI（**唯一一家推理体无自有塑形**） | `cline-product.ts:13` 的协议表 | 不写 `prepare_body`（基类默认只落供应商模型名） |
 | **非流式响应** | **`{success, data:{choices…}, model}` 信封** | **2026-10-01 :8300 实网实测**（顶层键 = `["data","success","model"]`，`choices/usage` 全在 `data` 内） | `_shape_response` 解包（仅"顶层无 `choices` 且内层 `data` 含 `choices`"时；流式帧实测无信封，不受影响） |
 
 🔴 **`workos:` 前缀**（`cline.ts:159-182`，实测坑位）：前缀只在**解码 JWT** 时被剥，

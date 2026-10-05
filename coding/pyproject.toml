@@ -1,7 +1,7 @@
 [project]
 name = "model-gateway"
 version = "0.2.0"
-description = "本地 LLM 网关：聚合多厂商/多账号模型资源，统一 OpenAI 兼容 API，故障自动重试与切换续跑（纯本地、全明文配置）"
+description = "本地 LLM 网关：聚合多供应商/多账号模型资源，统一 OpenAI 兼容 API，故障自动重试与切换续跑（纯本地、全明文配置）"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
@@ -47,3 +47,8 @@ packages = ["model_gateway"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# 🔴 S-4（2026-10-05 架构审计）：收编 `tests/verify_v*_repro.py`（2,958 行行为判据）。
+# 旧默认 `python_files = "test_*.py"` 让五支 repro **永远不被收集** —— 仓库重要的
+# 架构自检件在 HEAD 克隆里一行都不跑（审计 R1-F-15 / R3 / R5 三路同证）。
+# 文件名保持不变（台账/评审大量引用），靠显式 python_files 扩充收集面。
+python_files = ["test_*.py", "verify_v*_repro.py"]

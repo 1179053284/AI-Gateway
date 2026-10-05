@@ -2,7 +2,7 @@
 
 - 全部字段明文 YAML；密钥仅存本地（铁律 1）。
 - 数值边界（tech-design §4.7 ③）：x>=1、y>=1、m>=0、冷却>=0、退避>=0、超时>=1、总预算>=超时。
-- 资源模型扁平化（Q18-②）：resources[] = 厂商 + Key（账号标识为次要备注），
+- 资源模型扁平化（Q18-②）：resources[] = 供应商 + Key（账号标识为次要备注），
   ID 由系统自动生成（管理 API 保存时补齐），用户无需输入。
 - 引用完整性（resources <-> models[].resources）在 AppConfig 根校验器。
 - P1 字段（quotas 等）读入保留、不校验语义（tech-design §4.7 P1 预留条目）。
@@ -83,7 +83,11 @@ class ZcodeUpstreamConfig(BaseModel):
 
 
 class GatewayConfig(BaseModel):
-    host: str = "0.0.0.0"
+    # 🔴 默认只回环（S-5 收口，2026-10-05 用户批准）：`/admin/` 免鉴权 + `get_config`
+    #    默认出 `access_tokens[].value` 明文，都是按「自用本地系统」裁定的（api/auth.py）；
+    #    旧默认 `0.0.0.0` 让这个前提对同网段设备不成立 ⇒ 任一设备可读走全部接入密钥并
+    #    消费真实账号额度。要局域网访问必须在配置里显式写 `host: 0.0.0.0`。
+    host: str = "127.0.0.1"
     port: int = Field(default=8300, ge=1, le=65535)
     # 以下运行参数见 tech-design §4.7 参数表（终审确认点 4 的默认值）
     max_concurrent_requests: int = Field(default=0, ge=0)  # 0 = 不限（FR-4.2）
@@ -137,7 +141,7 @@ class ErrorRule(BaseModel):
 
 
 class ReasoningDefault(BaseModel):
-    """资源级推理默认（Q15 / FR-3.16）：请求级指定 > 资源级默认 > 厂商默认（不注入）。
+    """资源级推理默认（Q15 / FR-3.16）：请求级指定 > 资源级默认 > 不注入（该供应商通道默认）。
 
     enabled/effort 均可选；effort 为 opaque 字符串透传（如 low/high/max），不做枚举强校验。
     仅 chat 类资源有效（images 类配置会被忽略并警告，tech-design §4.7 ⑥）。
@@ -148,12 +152,13 @@ class ReasoningDefault(BaseModel):
 
 
 class Resource(BaseModel):
-    """资源 = 厂商 + 账号 + Key（调度与计费最小单元，Q18-② / Q20-③）。
+    """资源 = 供应商 + 账号 + Key（调度与计费最小单元，Q18-② / Q20-③）。
 
     - id：系统自动生成（res_ 前缀），用户无需关心；
-    - vendor：厂商名称（自定义，Q20-①）；
-    - preset：厂商预设标识（sensenova-api / sensenova-tokenplan…；统计「按厂商」口径）；
-    - account：账号（资源身份组成，Q20-③ 界面必填；同一厂商可挂多组「账号 + Key」组合）；
+    - vendor：供应商名称（自定义，Q20-①）；🔴 与内置目录 `EnumEntry.vendor`（承载**厂商**=生产公司）
+      同名不同义，判身份看它在哪一层（定义见 PRD §2）；
+    - preset：供应商预设标识（sensenova-api / sensenova-tokenplan…；统计「按供应商」口径）；
+    - account：账号（资源身份组成，Q20-③ 界面必填；同一供应商可挂多组「账号 + Key」组合）；
     - name：备注（显示用，可空）；
     - enabled：资源开关，false 时退出全部调度。
 
@@ -165,8 +170,8 @@ class Resource(BaseModel):
 
     id: str = Field(min_length=1)
     name: str = ""
-    vendor: str = ""  # 厂商名称（自定义，可空；为空时降级 preset 展示名，Q20-①）
-    preset: str = ""  # 厂商预设标识（sensenova-api / sensenova-tokenplan…；统计「按厂商」口径）
+    vendor: str = ""  # 供应商名称（自定义，可空；为空时降级 preset 展示名，Q20-①）
+    preset: str = ""  # 供应商预设标识（sensenova-api / sensenova-tokenplan…；统计「按供应商」口径）
     access_mode: AccessMode = "api"
     protocol: Protocol = "openai"
     base_url: str = ""
@@ -206,7 +211,7 @@ class Resource(BaseModel):
 
 
 class ModelResource(BaseModel):
-    """系统模型资源引用：resource（资源 id）+ 厂商侧模型 + 资源级推理默认 + **映射级开关**。
+    """网关模型资源引用：resource（资源 id）+ 供应商模型名 + 资源级推理默认 + **映射级开关**。
 
     🔴 `enabled` 是**这条映射**参不参与调度，与 `Resource.enabled`（那颗资源开关）是两把位：
       - 映射关 ⇒ 该 `(resource, model)` **不进资源池**（`ResourceManager.rebuild` 跳过）、
@@ -218,13 +223,13 @@ class ModelResource(BaseModel):
     """
 
     resource: str = Field(min_length=1)
-    model: str = Field(min_length=1)  # 厂商侧模型 ID
+    model: str = Field(min_length=1)  # 供应商模型名
     reasoning: ReasoningDefault | None = None
     enabled: bool = Field(default=True, strict=True)
 
 
 class ProductModelMapping(BaseModel):
-    """**产品维度**的模型映射位（Q33-①）：某产品的某厂商模型 → 哪个网关系统模型，以及是否进池。
+    """**产品维度**的模型映射位（Q33-①）：某产品的某供应商模型名 → 哪个网关模型，以及是否进池。
 
     🔴 为什么需要它（而不是继续用 `ModelResource.enabled` 当产品开关）：
     账号资源是「一个产品 × N 个账号」，产品维度的开关若靠往每个账号的映射条目上刷一遍
@@ -235,7 +240,7 @@ class ProductModelMapping(BaseModel):
 
     两级开关的判定式（Q33-①②，`core/resources.py` 落地）::
 
-        可调用 = 系统模型开
+        可调用 = 网关模型开
                ∧ 产品位开（本字段）
                ∧ 号开（`Resource.enabled`，由账号页那颗开关同步驱动）
 
@@ -253,13 +258,13 @@ class ProductModelMapping(BaseModel):
     """
 
     product: str = Field(min_length=1)        # 产品 id（`accounts/registry.py` 在册）
-    model: str = Field(min_length=1)          # 厂商侧模型 ID（该产品目录里的 id）
-    system_model: str = Field(min_length=1)   # 网关系统模型 name
+    model: str = Field(min_length=1)          # 供应商模型名（该产品目录里的 id）
+    system_model: str = Field(min_length=1)   # 网关模型 name
     enabled: bool = Field(default=True, strict=True)
 
 
 # 已知参数键的取值范围（Q24）：模块级常量（类内带注解会被 Pydantic 当私有属性）。
-# 未知键不校验直接放行——开放扩展，错误由厂商 400 兜底。
+# 未知键不校验直接放行——开放扩展，错误由供应商 400 兜底。
 PARAM_RANGES: dict[str, tuple[float, float]] = {
     "temperature": (0.0, 2.0),
     "top_p": (0.0, 1.0),
@@ -269,11 +274,11 @@ PARAM_RANGES: dict[str, tuple[float, float]] = {
 
 
 class SystemModel(BaseModel):
-    """系统模型：网关对外统一模型名 + 资源池（有序 = 优先级）。
+    """网关模型：网关对外统一模型名 + 资源池（有序 = 优先级）。
 
     调度参数（x/y/m/超时/冷却）全局唯一（Q18-③），不在模型级覆盖。
     params（Q24）：网关级参数默认（temperature/top_p/max_tokens 等，仅 chat 端点
-    出站注入）——优先级 = 工具调用传参 > 此处 > 厂商内置默认（ir.apply_model_params）。
+    出站注入）——优先级 = 工具调用传参 > 此处 > 供应商通道默认（ir.apply_model_params）。
     开放 dict 为将来扩展自定义键预留（用户 2026-09-05 定论：暂不支持自定义、架构可扩展）；
     已知键做取值范围校验，未知键放行。
     """
@@ -295,7 +300,7 @@ class SystemModel(BaseModel):
     @field_validator("params")
     @classmethod
     def _validate_params(cls, v: dict[str, Any]) -> dict[str, Any]:
-        """已知键取值范围校验（Q24）；未知键放行（开放扩展，错误由厂商 400 兜底）。"""
+        """已知键取值范围校验（Q24）；未知键放行（开放扩展，错误由供应商 400 兜底）。"""
         for k, val in v.items():
             if k in PARAM_RANGES:
                 lo, hi = PARAM_RANGES[k]
@@ -320,7 +325,7 @@ class SystemModel(BaseModel):
 class Pricing(BaseModel):
     """成本估算（双口径，P1 预留）：api 模式 token 单价/图像按张；plan 模式积分系数。"""
 
-    provider: str = Field(min_length=1)  # 厂商标识（预设 id 或资源备注）
+    provider: str = Field(min_length=1)  # 供应商标识（预设 id 或资源备注）
     model: str = Field(min_length=1)
     currency: str = ""
     input_per_1m: float | None = Field(default=None, ge=0)
@@ -337,7 +342,7 @@ class AppConfig(BaseModel):
     error_rules: list[ErrorRule] = Field(default_factory=list)
     resources: list[Resource] = Field(default_factory=list)
     models: list[SystemModel] = Field(default_factory=list)
-    #: 🔴 产品维度的模型映射位（Q33-①）：账号侧「产品 × 厂商模型」的唯一真相。
+    #: 🔴 产品维度的模型映射位（Q33-①）：账号侧「产品 × 供应商模型名」的唯一真相。
     #: 空 = 旧配置 ⇒ 产品资源回落到条目 `ModelResource.enabled`（零迁移）。
     product_models: list[ProductModelMapping] = Field(default_factory=list)
     pricing: list[Pricing] = Field(default_factory=list)
@@ -368,12 +373,12 @@ class AppConfig(BaseModel):
             raise ValueError(f"models[].name 重复：'{dup}'")
 
         # —— 产品维度映射位（Q33-①）：唯一性 + 目标可追溯 ——
-        # 一个 (产品, 厂商模型) 只允许有一个真相位：两条位会让「产品开关」重新变成
+        # 一个 (产品, 供应商模型名) 只允许有一个真相位：两条位会让「产品开关」重新变成
         # 一个需要聚合的状态（聚合语义一旦不一致，就又是那个「既关不掉也打不开」的洞）。
         #
         # 🔴 坏位**只丢不炸**（Q33 评审 R2-④ 判死后的修正）：原先用 `raise` 表达"位无效"，
         #    后果是**整份配置加载失败** ⇒ 网关把所有模型一起停服，而界面上没有任何自救入口
-        #    （删掉一个系统模型就能把用户推到这一步 = 灾难级可用性）。有效/无效的把关属于
+        #    （删掉一个网关模型就能把用户推到这一步 = 灾难级可用性）。有效/无效的把关属于
         #    **写面**的职责（`POST /admin/api/accounts/mappings` 在动盘前就拒，回执 400 可执行），
         #    读面的职责是"能起就起、坏的那条丢掉并如实告警"。
         pm_seen: dict[tuple[str, str], int] = {}
@@ -383,22 +388,22 @@ class AppConfig(BaseModel):
             if key in pm_seen:
                 w.append(f"product_models[{i}] 重复：'{pm.product}/{pm.model}'"
                          f"（与 product_models[{pm_seen[key]}] 同键）—— 已忽略本条，"
-                         "同一产品同一厂商模型只能有一个映射位")
+                         "同一产品同一供应商模型名只能有一个映射位")
                 continue
             if pm.system_model not in set(model_names):
                 w.append(f"product_models[{i}]('{pm.product}/{pm.model}').system_model "
-                         f"'{pm.system_model}' 不是 models[] 里在册的系统模型 —— 已忽略本条"
+                         f"'{pm.system_model}' 不是 models[] 里在册的网关模型 —— 已忽略本条"
                          "（该模型可能已被删除；请到「接入账号资源」页的模型映射弹窗重新指定目标）")
                 continue
             pm_seen[key] = i
             keep_bits.append(pm)
         self.product_models = keep_bits
 
-        # —— 引用完整性（资源必须存在）+ 🔴 **同一系统模型内**的组合唯一 ——
+        # —— 引用完整性（资源必须存在）+ 🔴 **同一网关模型内**的组合唯一 ——
         # 后果（评审 R1-§二实测）：同一条 `models[].resources[]` 里出现两次
         # `(resource, model)` ⇒ 生效集窗口被算成 `[a, a]`，承诺 x=2 实际只有 1 条能承接，
         # 池宽与统计口径一起虚增。
-        # 🔴 作用域只在**本模型内**：**跨系统模型**挂同一组合是既有设计（一条上游模型起两个
+        # 🔴 作用域只在**本模型内**：**跨网关模型**挂同一组合是既有设计（一条上游模型起两个
         #    网关名，运行态按 `(rid, vendor_model)` 共享冷却 —— 判据
         #    `tests/unit/test_scheduler.py::TestGlobalResourceState::
         #    test_cooldown_shared_across_system_models` 钉着）；在跨节校验里把它丢掉，
@@ -414,7 +419,7 @@ class AppConfig(BaseModel):
                     raise ValueError(f"{loc}: 引用不存在的 resource '{r.resource}'")
                 key = (r.resource, r.model)
                 if key in combo_seen:
-                    w.append(f"{loc}: 同一系统模型 '{m.name}' 里 (resource '{r.resource}', "
+                    w.append(f"{loc}: 同一网关模型 '{m.name}' 里 (resource '{r.resource}', "
                              f"model '{r.model}') 出现两次（首条在 resources[{combo_seen[key]}]）"
                              " —— 已忽略本条：重复条目会让生效集把同一条算两遍，"
                              "承诺的 x 条并行实际能承接的更少")
@@ -435,7 +440,7 @@ class AppConfig(BaseModel):
     # —— 映射开关的唯一取数入口（Q33-①）——
 
     def product_mapping(self, product: str, model: str) -> "ProductModelMapping | None":
-        """按 `(产品, 厂商模型)` 取产品位；无该产品位返回 `None`（= 旧配置回落路径）。"""
+        """按 `(产品, 供应商模型名)` 取产品位；无该产品位返回 `None`（= 旧配置回落路径）。"""
         if not product:
             return None
         for pm in self.product_models:
@@ -445,15 +450,15 @@ class AppConfig(BaseModel):
 
     def mapping_enabled(self, resource: "Resource", entry: "ModelResource",
                         system_model: str) -> bool:
-        """这条「资源 × 厂商模型 → 系统模型」映射**是否参与调度与对外声明**（唯一判据）。
+        """这条「资源 × 供应商模型名 → 网关模型」映射**是否参与调度与对外声明**（唯一判据）。
 
-        - **厂商侧资源**（`product` 空）⇒ 条目位 `entry.enabled` 说了算（既有语义，零变化）；
+        - **按 Key 接入的供应商资源**（`product` 空）⇒ 条目位 `entry.enabled` 说了算（既有语义，零变化）；
         - **账号侧资源** ⇒ 产品位说了算，四种情形：
-          · 有位、开关开、目标就是本系统模型 → 进；
+          · 有位、开关开、目标就是本网关模型 → 进；
           · 有位、开关关 → 不进（该产品**全部账号**一起退出，含已停用的号——
             这正是产品位独立存一份的理由：号开关是另一条正交轴，不能拿来当映射存在性的前置，
             否则「产品开关对停用号的映射既关不掉也打不开」那个洞必然复发）；
-          · 有位、但目标指向别的系统模型 → 不进（手改 YAML 造成的不一致，
+          · 有位、但目标指向别的网关模型 → 不进（手改 YAML 造成的不一致，
             由 `rebuild` 侧出告警，不静默放行到错误的池里）；
           · **无位**（旧配置零迁移）→ 回落到条目位 `entry.enabled`。
         """

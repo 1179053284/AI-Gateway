@@ -24,7 +24,7 @@ import httpx
 # 🔴 处理点选**上游文本进入系统的唯一入口**（`UpstreamError.__init__`）+
 #    `error_summary` 出口兜底：三处出口全部读这两处产出的文本，脱敏一次即全覆盖，
 #    且**只处理上游提供的文本**（客户端请求内容不经过这里，绝不改动）。
-# 🔴 只遮凭据形态：其余厂商原文（message/type/code/自定义字段）一个字不改
+# 🔴 只遮凭据形态：其余供应商原文（message/type/code/自定义字段）一个字不改
 #    —— §6「不修饰透传」的契约只在凭据这一处让步（§22.2 不变式②是绝对口径）。
 
 #: 登记的本网关凭据字面值（**只在内存**，不落盘、不进日志；装配/凭据读取面登记）
@@ -119,13 +119,13 @@ class UpstreamError(Exception):
     """上游调用失败（网络异常 / HTTP 错误响应 / 下载失败等）。
 
     - status_code=None → 网络类异常（连接失败/超时/中断）
-    - error_body: 响应体文本（**厂商原文，仅凭据被脱敏**，供透传）
+    - error_body: 响应体文本（**供应商原文，仅凭据被脱敏**，供透传）
     - error_type: 从错误体 JSON 解析出的 type（如 not_found_error）
     - no_failover: True → 换资源无帮助（如 URL 下载失败），仅同资源重试（INT-31）
 
     🔴 F3（M6 面板修复轮-2）：`message` / `error_body` 在**本构造函数**里过统一脱敏
     （`scrub_upstream_text`）—— 这是上游文本进入系统的唯一入口，事件 JSONL、
-    响应体、日志三条出口全部读它，脱敏一次即全覆盖；除凭据形态外厂商原文一字不改。
+    响应体、日志三条出口全部读它，脱敏一次即全覆盖；除凭据形态外供应商原文一字不改。
     """
 
     def __init__(
@@ -149,7 +149,7 @@ class UpstreamError(Exception):
 
 
 def extract_error_type(error_body: str | None) -> str | None:
-    """从厂商错误体提取 type 字段（OpenAI 兼容形态 {"error":{"type":...}}）。"""
+    """从供应商错误体提取 type 字段（OpenAI 兼容形态 {"error":{"type":...}}）。"""
     if not error_body:
         return None
     try:
@@ -193,7 +193,7 @@ class ErrorClassifier:
         if status in self._by_http:
             return self._by_http[status]
 
-        # 3) 商汤/厂商错误 type 表
+        # 3) 商汤/供应商错误 type 表
         if etype and etype in VENDOR_TYPE_TABLE:
             return VENDOR_TYPE_TABLE[etype]
 
@@ -211,7 +211,7 @@ class ErrorClassifier:
         # 且该响应在**空 model、缺 `messages` 的畸形体**下也一样 ⇒ 额度门跑在模型校验之前
         # （这是**单个号**上的观察，不外推成"402 只可能是额度"）。
         # 顺序保障：`error_rules` 的 (http,type) 精确覆写与本表都排在前面 ⇒
-        # 某厂商若用 402 表达别的语义，可在配置里精确覆写回来，不必改代码。
+        # 某供应商若用 402 表达别的语义，可在配置里精确覆写回来，不必改代码。
         if status == 402:
             return ErrorClass.QUOTA
         if status == 408:

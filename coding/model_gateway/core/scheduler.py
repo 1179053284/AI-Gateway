@@ -69,7 +69,7 @@ class GatewayError(Exception):
         self.attempts = attempts or []
 
     def to_openai_error(self) -> dict:
-        """统一 OpenAI 标准 error 格式（UT-09/INT-13：含系统模型名与原因摘要）。"""
+        """统一 OpenAI 标准 error 格式（UT-09/INT-13：含网关模型名与原因摘要）。"""
         if self.error_body is not None:
             body = self.error_body
             if isinstance(body, str):
@@ -166,7 +166,7 @@ class ExecMeta:
     status: str = "failed"  # success | failed | aborted
     attempts: list[_ResourceAttempt] = field(default_factory=list)
     final_resource: str | None = None
-    provider: str | None = None  # 厂商展示名（资源 preset 口径，Q18-②）
+    provider: str | None = None  # 供应商展示名（资源 preset 口径，Q18-②）
     account: str | None = None  # 账号标识（资源次要备注）
     retry_count: int = 0
     switch_count: int = 0
@@ -236,7 +236,7 @@ class Scheduler:
 
     def _out_body(self, ir: IRRequest, resource) -> dict:
         """每次尝试独立构造出站请求体（推理参数按当前资源默认重算，INT-37；
-        网关级模型参数字段级注入：工具传参 > 网关设置 > 厂商内置，Q24，仅 chat）。"""
+        网关级模型参数字段级注入：工具传参 > 网关设置 > 供应商通道默认，Q24，仅 chat）。"""
         body = dict(ir.body)
         body["model"] = resource.vendor_model
         if ir.endpoint == "chat":
@@ -244,29 +244,48 @@ class Scheduler:
             # 🔴 Q33-④：调用方与网关设置都没写输出上限时，按统一规格的**最大输出**注入。
             # 取的是**这条资源自己**的那份规格（`resource_specs`），不是模型级的池内最大
             # （R1-⑤：拿池内最大去请求一个上限更小的号 = 我主动制造 400）；
-            # 规格里没有这个数就什么都不注入，继续走厂商内置默认（不编数）。
+            # 规格里没有这个数就什么都不注入，继续走该供应商通道默认（不编数）。
             apply_spec_defaults(body, getattr(self.runtime, "resource_specs", {})
                                 .get((resource.rid, resource.vendor_model)))
-        # 🔴 查表带**系统模型**这一维（评审 R9-B-1'）：推理默认住在条目上
-        #    （`(系统模型, 资源, 厂商模型)`），别名时两个系统模型各填各的，少一维就会后写覆盖。
+        # 🔴 查表带**网关模型**这一维（评审 R9-B-1'）：推理默认住在条目上
+        #    （`(网关模型, 资源, 供应商模型名)`），别名时两个网关模型各填各的，少一维就会后写覆盖。
         merged = merge_reasoning(ir.reasoning, self.runtime.resource_reasoning.get(
             (ir.system_model, resource.rid, resource.vendor_model)))
         # 网关层档位兜底（v2.0 §13.2）：**只降不升**，就近取值。
         # 🔴 仅在"请求的档位不在该模型支持列表内"时才动 —— 工具已 clamp（值本身受支持）
         #    时原样透传，**不做二次 clamp**（§13.2 明确要求）。规范外档位原样保留。
-        merged = self._degrade_effort_if_needed(merged, resource)
+        merged = self._degrade_effort_if_needed(merged, resource, ir.system_model)
         inject_reasoning_into_body(body, merged)
         return body
 
-    def _degrade_effort_if_needed(self, spec, resource):
-        """档位兜底（§13.2）：目标档不受支持 → 就近降级；受支持 → 原样透传。"""
+    def _degrade_effort_if_needed(self, spec, resource, system_model: str | None = None):
+        """档位兜底（§13.2）：目标档不受支持 → 就近降级；受支持 → 原样透传。
+
+        🔴 查表的第二级用**本次请求的网关模型**（`ir.system_model`），不是"这条资源在配置里
+           挂到的第一个网关模型"（`_system_model_of`）：别名形状下两者不同 ⇒ 拿**另一家厂商**的
+           档位表来降这一条请求的档，降什么结果取决于 `models[]` 的书写顺序（A2-P0-1 实测三态：
+           静默失去兜底 / 支持档被别家表降掉 / 顺序翻转答案就翻转）。
+        """
         if spec is None or not spec.effort:
             return spec
-        entry = self.runtime.enum_pool.get(resource.vendor_model) or \
-            self.runtime.enum_pool.get(self._system_model_of(resource))
+        pool = self.runtime.enum_pool
+        entry = pool.get(resource.vendor_model) or \
+            pool.get(system_model or self._system_model_of(resource))
         supported = list(getattr(entry, "effort_levels", None) or []) if entry else []
         if not supported:
             return spec  # 目录无档位信息 → 不臆断，原样透传
+        # 🔴 关闭档不参与"就近升降"（升降的依据是强度序，关闭没有强度）；
+        #    只在该厂商自己的表里**有**关闭词时，把网关规范词归一成它在册的那个词
+        #    —— 这是在根因处把输入整形成上游能收的形状（PRD Q35-③），不是跳过它/瞒住判据。
+        from model_gateway.core.dialects import CLOSED_LEVELS, is_closed
+        if is_closed(spec.effort):
+            if spec.effort in supported:
+                return spec
+            alias = next((w for w in supported if w.lower() in CLOSED_LEVELS), None)
+            if alias is None:
+                return spec        # 该厂商没有关闭词：原样透传，由通道的答复告诉我们（未知=不拦）
+            from dataclasses import replace as _rep
+            return _rep(spec, effort=alias)
         from dataclasses import replace
 
         from model_gateway.core.dialects import degrade_effort
@@ -321,7 +340,7 @@ class Scheduler:
                 raise asyncio.CancelledError("client_disconnected")
 
     def _usage_from(self, usage: dict | None, meta: ExecMeta, ir: IRRequest) -> None:
-        """usage 落盘口径：厂商 usage 优先；缺失时本地估算（FR-5.8）。"""
+        """usage 落盘口径：供应商 usage 优先；缺失时本地估算（FR-5.8）。"""
         if usage and (usage.get("prompt_tokens") or usage.get("completion_tokens")):
             meta.input_tokens = usage.get("prompt_tokens") or 0
             meta.output_tokens = usage.get("completion_tokens") or 0
@@ -378,7 +397,7 @@ class Scheduler:
         cap = getattr(spec, "max_output", None) if spec is not None else None
         if cap is None or asked <= cap:
             return None
-        # 🔴 用界面同一把尺的名字（`label/厂商模型`），不用裸 `res-xxxxxxxx`
+        # 🔴 用界面同一把尺的名字（`label/供应商模型名`），不用裸 `res-xxxxxxxx`
         #    （评审 R8-报备 R-9：同一条链路上日志前缀、`GatewayError` 的"已尝试：资源B/glm-5.2×1"、
         #    请求日志与总览页都是 `resource_id_str`，这里掺裸 id 会让用户读到自己没起过的串）
         return (f"{resource.resource_id_str} 的最大输出上限 {cap} < 本次请求的输出上限 {asked}"
@@ -541,7 +560,7 @@ class Scheduler:
                         meta.final_resource = rec.resource
                         meta.provider = resource.vendor
                         meta.account = resource.account or None
-                        # usage 在落盘前吸收（厂商值优先，缺失本地估算，FR-5.8）
+                        # usage 在落盘前吸收（供应商值优先，缺失本地估算，FR-5.8）
                         self._usage_from(result.get("usage") if isinstance(result, dict) else None,
                                          meta, ir)
                         if on_success is not None:
@@ -582,12 +601,25 @@ class Scheduler:
     # —— 公开入口 ——
 
     async def execute_chat(self, ir: IRRequest, ctx: CallCtx) -> tuple[dict, ExecMeta]:
-        """chat 非流式：返回厂商响应（已归一化思考字段），失败抛 GatewayError。"""
+        """chat 非流式：返回供应商响应（已归一化思考字段），失败抛 GatewayError。"""
 
         async def call(resource, body: dict) -> dict:
-            return await self._adapter(resource).chat_nonstream(
+            result = await self._adapter(resource).chat_nonstream(
                 self._key_value(resource), resource.vendor_model, body,
                 ctx.snapshot.gateway.attempt_timeout_seconds)
+            if not isinstance(result, dict) or not chunk_is_content(result):
+                # 🔴 零内容不得记 success（S-1，2026-10-05 架构审计）：上游回 200 但没有任何
+                #    内容（choices 缺失 / 正文空 / 只剩信封壳）= 「无报错的失败」这一整类故障，
+                #    旧实现照记 success 并把失败计数清零 ⇒ 故障自动切换在这类通道上失效，
+                #    用户拿到一条空 200 而界面显示成功。现按**可重试类**抛出（502 → RETRYABLE）：
+                #    同资源重试 m 次 → 计 C → 达 y 冷却换号；全部候选回空时客户端拿 503。
+                #    判据与流式同一条谓词（`chunk_is_content`：正文/推理/工具调用任一即内容）；
+                #    content_filter 带正文仍算成功（UT-16），带零正文按本条处理 ——
+                #    「模型真的决定回空」与「通道回空」在网关侧不可区分，统一按故障换号。
+                raise UpstreamError(
+                    f"上游 200 但零内容（{resource.resource_id_str} 的响应没有正文/推理/工具调用）",
+                    status_code=502, error_type="empty_content")
+            return result
 
         result, meta = await self._execute(ir, ctx, call)
         self._usage_from(result.get("usage") if isinstance(result, dict) else None, meta, ir)
@@ -599,9 +631,17 @@ class Scheduler:
         """images 生成：调度/重试/切换/取消同样适用（tech §4.1）。"""
 
         async def call(resource, body: dict) -> dict:
-            return await self._adapter(resource).images_generate(
+            result = await self._adapter(resource).images_generate(
                 self._key_value(resource), resource.vendor_model, body,
                 ctx.snapshot.gateway.attempt_timeout_seconds)
+            data = result.get("data") if isinstance(result, dict) else None
+            if not isinstance(data, list) or not data:
+                # 🔴 零内容不得记 success（S-1，与 chat 同判）：images 空列表/缺 data 同属
+                #    「通道回空」，按可重试抛出走重试/换号，不把空手而归记成成功。
+                raise UpstreamError(
+                    f"上游 200 但图像列表为空（{resource.resource_id_str} 的响应没有 data 项）",
+                    status_code=502, error_type="empty_content")
+            return result
 
         def on_success(result: dict, meta: ExecMeta) -> None:
             # 必须在 _execute 落盘前设置（on_success 时机）——放在 _execute 返回后
@@ -706,7 +746,7 @@ class Scheduler:
                                     continue
                                 err = chunk.get("error")
                                 if isinstance(err, dict):
-                                    # 厂商 SSE 内 error 帧（INT-11 形态）→ 中途失败
+                                    # 供应商 SSE 内 error 帧（INT-11 形态）→ 中途失败
                                     e = UpstreamError(
                                         f"upstream stream error: {err.get('message', '')}",
                                         status_code=err.get("code") or err.get("http_status"),
@@ -730,6 +770,17 @@ class Scheduler:
                                 else:
                                     buffer.append(chunk)
                             # 流正常结束（[DONE] 消费完毕）
+                            if not committed:
+                                # 🔴 零内容不得记 success（S-1，2026-10-05 架构审计）：一帧内容/
+                                #    推理/工具调用都没收到就干净收尾 = 「通道回空」故障，与非流式
+                                #    「200 零 choices」同判。旧实现照记 success 并把失败计数清零，
+                                #    故障自动切换在这一整类上失效（R3 T-2 / R2a F-3 / Z20 实测）。
+                                #    按可重试抛出（502 → RETRYABLE）：走既有窗口重试/换号机制，
+                                #    客户端零感知；全部候选回空才以 503 终局。
+                                raise UpstreamError(
+                                    f"上游流已收尾但零内容"
+                                    f"（{resource.resource_id_str} 未产生任何内容/推理/工具调用帧）",
+                                    status_code=502, error_type="empty_content")
                             self.runtime.resources.note_success(resource)
                             self.runtime.resources.settle_quota(resource)  # 预留转消耗（M5-3）
                             stream_settled = True
@@ -879,7 +930,7 @@ class Scheduler:
             self._usage_from(usage, meta, _EMPTY_IR)
         else:
             for delta in _iter_deltas(chunk):
-                # 估算口径对齐厂商：completion_tokens 含 reasoning_tokens（FR-3.12
+                # 估算口径对齐供应商通道：completion_tokens 含 reasoning_tokens（FR-3.12
                 # aborted「含已产生的 token」；中途停止的思考流也应计入已产文本）
                 for key in ("content", "reasoning_content"):
                     c = delta.get(key)
@@ -894,7 +945,7 @@ class Scheduler:
 
     @staticmethod
     def _parsed_body(e: UpstreamError) -> Any:
-        """中途失败 error 帧体：厂商原始错误不修饰（§6-b）。"""
+        """中途失败 error 帧体：供应商原始错误不修饰（§6-b）。"""
         if e.error_body:
             try:
                 return json.loads(e.error_body) if isinstance(e.error_body, str) else e.error_body

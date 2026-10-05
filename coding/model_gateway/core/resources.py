@@ -1,7 +1,7 @@
 """资源池/生效集/冷却/连续失败计数（tech-design §4.3 / §5.3；Q18-② 扁平资源模型）。
 
 - 全局注册表：resource_id=(resource_id, vendor_model) → 状态全局唯一（PRD Q11）
-  （资源 = 厂商 + Key；同一资源可服务多个系统模型，各自携带厂商侧模型名）
+  （资源 = 供应商 + Key；同一资源可服务多个网关模型，各自携带**供应商模型名**）
 - 生效集选路（§5.3）：top-x 可用资源（x 全局唯一，Q18-③）；集内在途最少者承接，平局取优先级高
 - 选路与在途 +1 在同一同步段（pick_and_acquire，无 await）
 - 冷却懒恢复：读时归位（选路 / 出快照两条读取路径共用同一组动作）——
@@ -61,9 +61,9 @@ def _conn_fingerprint(r, credential_fp: str = "") -> str:
 
 
 def vendor_label(preset: str, vendor: str = "", name: str = "", rid: str = "") -> str:
-    """资源厂商展示名（事件 provider 字段 / 统计「按厂商」维度口径，Q20-①）。
+    """资源供应商展示名（事件 provider 字段 / 统计「按供应商」维度口径，Q20-①）。
 
-    自定义厂商名（resources[].vendor）优先 → 已知预设名 → 预设 id → 资源备注 → id → 'custom'。
+    自定义供应商名（resources[].vendor）优先 → 已知预设名 → 预设 id → 资源备注 → id → 'custom'。
     """
     if vendor:
         return vendor
@@ -75,7 +75,7 @@ def vendor_label(preset: str, vendor: str = "", name: str = "", rid: str = "") -
 class QuotaPool:
     """**一把凭据**的额度桶（v2.0 §19 M5-3）。
 
-    粒度 = 资源 id（`rid`）：一个资源（厂商+账号+Key）可同时映射多个厂商模型，
+    粒度 = 资源 id（`rid`）：一个资源（供应商+账号+Key）可同时映射多个供应商模型名，
     而额度是**账号侧**共享的。早先每个 `(rid, vendor_model)` 各记一份余量 →
     同账号有 N 个映射就能各放行 1 个，余量 1 也并发超发 N 个（验收 S-1）。
 
@@ -118,7 +118,7 @@ def display_label(r: "Resource") -> str:
     理由串里读到的是自己从没起过的串，与同一条链路上其它文案（资源页备注、
     `GatewayError` 的"已尝试：资源B/glm-5.2×1"）不同尺。
     回落顺序 = 备注名 → **账号名**（账号侧资源一定有 `account_ref`，且它就是界面上那一行）→ id。
-    厂商侧资源没有账号名 ⇒ 与改动前逐字一致，零行为变化。
+    按 Key 接入的供应商资源没有账号名 ⇒ 与改动前逐字一致，零行为变化。
     """
     return r.name or r.account_ref or r.id
 
@@ -134,9 +134,9 @@ class ResourceState:
                  account: str, access_mode: str, enabled: bool,
                  quota: QuotaPool | None = None, src_fp: str = ""):
         self.rid = rid  # 资源 id（config.resources[].id）
-        self.vendor_model = vendor_model  # 厂商侧模型名（来自模型资源引用）
+        self.vendor_model = vendor_model  # 供应商模型名（来自模型资源引用）
         self.label = label  # 显示名（资源备注或 id）
-        self.vendor = vendor  # 厂商展示名（事件 provider 字段）
+        self.vendor = vendor  # 供应商展示名（事件 provider 字段）
         self.account = account  # 账号标识（次要备注，事件 account 字段）
         self.status = "active"  # active | cooldown | disabled | invalid
         self.C = 0  # 连续失败计数（跨请求累计，成功清零）
@@ -258,7 +258,7 @@ def _rendered_last_error(entries: list["ResourceState"], status: str,
 #: 原先「接入模型资源」/「网关模型管理」这类页名在 `main.config_warnings()` 与
 #: `cli_setup._CAUSE_HINTS` 各写一份 —— 两处漂移时前端门照样全绿（它只验"文案原样透传"）。
 ROUTE_POOL_PAGE = "「网关模型管理」页"      # 模型 ↔ 资源的映射、档位、优先级
-RESOURCE_PAGE = "「接入模型资源」页"        # 供应商侧资源的启用开关、Key
+RESOURCE_PAGE = "「接入模型资源」页"        # Key 接入侧资源的启用开关、Key
 ACCOUNT_RESOURCE_PAGE = "「接入账号资源」页"  # 🔴 产品账号供给的资源（`product` 非空）只在这里管
 OVERVIEW_HEALTH_PAGE = "「总览」页的资源健康表"   # 「最近错误」/「冷却剩余」两列在这里
 
@@ -295,7 +295,7 @@ class ResourceRegistry(dict):
 
 
 def servable_models(config: AppConfig, registry: dict | None = None) -> set[str]:
-    """**可服务**的系统模型集合（BUG-1 修正，v2.0 §12.1「消灭静默降级」）。
+    """**可服务**的网关模型集合（BUG-1 修正，v2.0 §12.1「消灭静默降级」）。
 
     🔴 判据 = 「至少有一条**已启用的资源映射**且其运行态未失效」。
     只看 `enabled` 是不够的：`/v1/models` 与 `mgw setup` 曾把「映射为空 / 资源全停用 /
@@ -328,7 +328,7 @@ def servable_models(config: AppConfig, registry: dict | None = None) -> set[str]
                 continue
             # 🔴 映射关 ⇒ 不对外声明（/v1/models 与 setup 都不出）。判据与 `rebuild`
             # **同一条**（`AppConfig.mapping_enabled`，Q33-①）：两处各写一份就会分叉 ——
-            # 账号侧看产品位、厂商侧看条目位。
+            # 账号侧看产品位、Key 接入侧看条目位。
             if not config.mapping_enabled(r, ref, m.name):
                 continue
             if premise is not None:
@@ -350,17 +350,17 @@ class ResourceManager:
     def __init__(self, clock: Callable[[], float] = time.monotonic):
         self.clock = clock
         self.registry: ResourceRegistry = ResourceRegistry()
-        # 每系统模型有序资源列表（优先序）；x 全局唯一（Q18-③）
+        # 每网关模型有序资源列表（优先序）；x 全局唯一（Q18-③）
         self.pools: dict[str, list[ResourceState]] = {}
         #: 额度池（按 rid 共享；跨热重载保留，与 registry 同口径）
         self.quotas: dict[str, QuotaPool] = {}
         self.x = 2  # 全局并发溢出生效集（rebuild 时从配置刷新）
-        #: 🔴 号间轮转游标（Q33-③）：`系统模型 → 下一次选路的起点`（池内下标）。
+        #: 🔴 号间轮转游标（Q33-③）：`网关模型 → 下一次选路的起点`（池内下标）。
         #: 有界：键集 ⊆ `self.pools` 的键集，`rebuild` 里随池一起回收（§22.8-9「无全局列表无界增长」）。
         #: 只影响"平局给谁"，不影响能不能被选中 —— 冷启动等价于游标 0（池首优先，旧行为）。
         self._cursor: dict[str, int] = {}
         #: 🔴 **活跃组**（Q33-③ 的两级开关配套，评审 R2-① 判死后的修正）：
-        #: `系统模型 → 此刻正在承接流量的那批资源的 rid`，长度恒 ≤ x。
+        #: `网关模型 → 此刻正在承接流量的那批资源的 rid`，长度恒 ≤ x。
         #: 为什么光有游标 + 窗口不够：窗口是"从游标起 x 条"，但**排空一个号就把游标推到它之后**，
         #: 于是别的仍在途的号会落到窗口外，新流量照旧能在窗口里再开 x 个新号 ⇒
         #: 同时承接者可达 x+1、x+2……"最多 x 个资源并行"（用户指令 1 里 x 的定义）当场失效。
@@ -428,7 +428,7 @@ class ResourceManager:
             self._bench_held_by_circuit = prev
 
     def _pool_for(self, rid: str) -> QuotaPool:
-        """取/建该**资源**的额度池（同 rid 的多个厂商模型共享同一实例）。"""
+        """取/建该**资源**的额度池（同 rid 的多个供应商模型名共享同一实例）。"""
         pool = self.quotas.get(rid)
         if pool is None:
             pool = QuotaPool()
@@ -449,7 +449,7 @@ class ResourceManager:
                 referenced.add(rid)      # 仍算"被引用"：关掉的映射不回收状态，打开即恢复
                 r = res_index[ref.resource]
                 # 🔴 映射关 ⇒ **不进资源池**（调度取不到它）。判据唯一入口 =
-                # `AppConfig.mapping_enabled`（Q33-①）：厂商侧看条目位、
+                # `AppConfig.mapping_enabled`（Q33-①）：Key 接入侧看条目位、
                 # 账号侧看**产品位**（含已停用的号，产品开关对它们同样有效）。
                 if not config.mapping_enabled(r, ref, m.name):
                     continue
@@ -872,7 +872,7 @@ class ResourceManager:
         return True
 
     def snapshot_by_resource(self, config: AppConfig) -> list[dict]:
-        """按资源聚合快照（总览「资源健康」/「资源总数」口径：资源 = 厂商+账号+Key，
+        """按资源聚合快照（总览「资源健康」/「资源总数」口径：资源 = 供应商+账号+Key，
         一行一资源；映射条目 (rid, vendor_model) 的运行态聚汇到所属资源）。
 
         资源级状态聚合：**资源开关关闭 → disabled**；条目里**任一 active → active**

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import yaml
+
 from model_gateway.enums.matcher import (
     BUILTIN_ENTRIES, EnumPool, normalize_name, resolve_request_model,
 )
@@ -76,7 +78,7 @@ class TestNoMatch:
 
 
 class TestResolveRequestModel:
-    """请求模型解析（tech §4.2）：系统模型精确 → 枚举池别名 → 规范化 → 404 候选。"""
+    """请求模型解析（tech §4.2）：网关模型精确 → 枚举池别名 → 规范化 → 404 候选。"""
 
     def _models(self):
         from model_gateway.config.schemas import SystemModel
@@ -92,12 +94,12 @@ class TestResolveRequestModel:
         assert m is not None and m.name == "deepseek-v4-flash" and cands == []
 
     def test_via_enum_alias(self):
-        """系统模型未直接命中，但别名（如日期变体）映射到枚举规范名后命中。"""
+        """网关模型未直接命中，但别名（如日期变体）映射到枚举规范名后命中。"""
         m, _ = resolve_request_model("deepseek-v4-flash-0731", self._models(), _pool())
         assert m is not None and m.name == "deepseek-v4-flash"
 
     def test_via_normalization_on_custom_model(self):
-        """自定义系统模型不在枚举池 → 规范化兜底命中。"""
+        """自定义网关模型不在枚举池 → 规范化兜底命中。"""
         from model_gateway.config.schemas import SystemModel
         models = [SystemModel.model_validate({"name": "my-custom-model", "endpoint": "chat",
                                               "resources": []})]
@@ -200,11 +202,20 @@ class TestBuiltinCatalogHunyuanMiniMaxGemini:
 
     def test_params_default_follows_official_publication(self):
         """MiniMax 的 temperature/top_p 是官方 schema `default` 在册值 ⇒ 写入；
-        混元（只有示例 0.9）与 Gemini（「varies by model」+ 3.5-lite/3.6+ 设置被忽略）⇒ 一律留空。"""
+        混元与 Gemini ⇒ 一律留空（混元只有**平台级**默认表、页首自带「以对应模型的能力为准」；
+        Gemini 逐模型只写 varies by model，且 3.6+ 设了被忽略）。
+
+        🔴 2026-10-04 参数档案轮回填时按证据改的一处：M2.7 两条的 top_p 种子值原注 **0.90** 读的是
+        description 正文，三份端点 OpenAPI（chat-openai / chat-anthropic / responses）的
+        `top_p.default` 都是 **0.95** —— r1-D 取证与 r2-2 独立复核同判、零推翻。
+        这里跟着官方走；实盘 `data/config.yaml` 里已落盘的 0.9 不受影响（那是用户层值，
+        要跟进就在参数卡改值或点「恢复官方配置」）。档案与出处见
+        `docs/changes/reviews/20261004-param-fields/`。
+        """
         pool = _pool()
         assert pool.get("MiniMax-M3").params_default == {"temperature": 1.0, "top_p": 0.95}
         for name in ["MiniMax-M2.7", "MiniMax-M2.7-highspeed"]:
-            assert pool.get(name).params_default == {"temperature": 1.0, "top_p": 0.90}, name
+            assert pool.get(name).params_default == {"temperature": 1.0, "top_p": 0.95}, name
         for name in self.HUNYUAN + self.GEMINI:
             assert pool.get(name).params_default == {}, name
 
@@ -237,3 +248,41 @@ class TestBuiltinCatalogHunyuanMiniMaxGemini:
         assert _pool().match("minimax-m3") == ("MiniMax-M3", 0.7)
         assert _pool().match("MiniMax-M2.7-highspeed") == ("MiniMax-M2.7-highspeed", 1.0)
         assert _pool().match("gemini-3.8-flash") == ("gemini-3.8-flash", 1.0)
+
+
+class TestUserOverlaySemantics:
+    """S-3（2026-10-05 架构审计）：`model-enums.yaml` = **内置目录打底 + 用户增量覆写**。
+
+    旧语义「文件存在 ⇒ 整池替换」的两个静默失败：① 代码新增目录项对该安装永久不生效；
+    ② 缺省注入/规格来源读不到条目（R1-F-3 实算 36→1）。现钉三条：覆写保留内置、
+    新增追加、内置条目永不在池中消失。
+    """
+
+    def test_overlay_keeps_builtin_and_overrides_same_name(self, tmp_path):
+        from model_gateway.enums.matcher import BUILTIN_ENTRIES, load_enum_pool
+
+        f = tmp_path / "model-enums.yaml"
+        f.write_text(yaml.safe_dump({"entries": [{
+            "name": BUILTIN_ENTRIES[0].name, "display": "用户改名",
+        }]}, allow_unicode=True), encoding="utf-8")
+        pool = load_enum_pool(f)
+        assert len(pool.entries) >= len(BUILTIN_ENTRIES), "内置条目不得因用户文件而消失"
+        assert pool.entries[BUILTIN_ENTRIES[0].name].display == "用户改名"  # 同名覆写
+
+    def test_overlay_appends_user_only_entry(self, tmp_path):
+        from model_gateway.enums.matcher import BUILTIN_ENTRIES, load_enum_pool
+
+        f = tmp_path / "model-enums.yaml"
+        f.write_text(yaml.safe_dump({"entries": [{
+            "name": "my-own-model", "display": "自定义",
+        }]}, allow_unicode=True), encoding="utf-8")
+        pool = load_enum_pool(f)
+        assert pool.entries["my-own-model"].display == "自定义"
+        assert pool.match("my-own-model")[0] == "my-own-model"
+        assert len(pool.entries) == len(BUILTIN_ENTRIES) + 1  # 追加而非替换
+
+    def test_no_file_yields_pure_builtin(self, tmp_path):
+        from model_gateway.enums.matcher import BUILTIN_ENTRIES, load_enum_pool
+
+        pool = load_enum_pool(tmp_path / "missing.yaml")
+        assert len(pool.entries) == len(BUILTIN_ENTRIES)

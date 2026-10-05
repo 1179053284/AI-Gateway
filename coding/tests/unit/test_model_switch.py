@@ -1,8 +1,8 @@
 """UT-24：禁用模型解析拒绝（纯逻辑层，不触网、不建服务器）。
 
 针对 openai_compat._resolve_model_or_404（chat / images 两端点共用的解析层）：
-- ① 系统模型名直接命中 enabled=false → 404 + code=model_disabled
-- ② 枚举池别名命中 disabled 模型（别名 → 系统模型 → enabled=false）→ 同样拒绝
+- ① 网关模型名直接命中 enabled=false → 404 + code=model_disabled
+- ② 枚举池别名命中 disabled 模型（别名 → 网关模型 → enabled=false）→ 同样拒绝
 - ③ enabled=true → 正常返回 model_def
 - 与「未命中」（model_not_found + 候选建议）明确区分：不进入选路。
 
@@ -60,7 +60,7 @@ class TestDisabledModelRejection:
         assert e["requested_model"] == "deepseek-v4-flash"
 
     def test_alias_hit_disabled_rejected(self):
-        """别名 deepseek-v4-flash-0731 → 系统模型 deepseek-v4-flash（enabled=false）。"""
+        """别名 deepseek-v4-flash-0731 → 网关模型 deepseek-v4-flash（enabled=false）。"""
         model_def, err = _resolve(_disabled_models(), "deepseek-v4-flash-0731")
         assert model_def is None
         assert err.status_code == 404

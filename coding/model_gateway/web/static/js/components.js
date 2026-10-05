@@ -12,13 +12,39 @@ export function toast(msg, type = "") {
   setTimeout(() => el.remove(), type === "err" ? 6000 : 3000);
 }
 
+/** 结果浮层（富 toast）：标题 + 计数行 + 逐条明细 + 手动关闭，`ms` 后自动消失。
+ *  🔴 2026-10-03 用户裁定「各类处理结果，不允许用这种形式固化显示。执行完毕，弹窗提示具体执行结果，
+ *  3s 后自动消失，也可以手动关闭」⇒ 批量动作的结果不再往面板里写一块常驻"回执区"：
+ *  ① 它是**浮层**，与 `toast()` 同一个载体（`#toast-wrap`），不新增第二种提示位置；
+ *  ② 它**不是 modal** ⇒ 旧实现里"等待期用户已开弹窗 ⇒ 迟到回执只能塞就地槽"那条判遮罩的构造性
+ *     权衡整族作废，单层弹窗红线（`.modal-mask` ∈ {0,1}）由构造保证而不是由分支保证；
+ *  ③ 权威状态在表里（回执发出前已按服务端重取过视图），浮层只说"这一批发生了什么"
+ *     ⇒ **3 秒读不完的内容不许放正文**（术语解释挂计数行悬停）。
+ * `html` 由调用方拼（`.t-sum` / `.t-rows` / `.t-row`，值一律先 `esc`），本函数只管载体、时长与关闭。 */
+export function toastCard(title, html, { type = "", ms = 3000 } = {}) {
+  const wrap = document.getElementById("toast-wrap");
+  if (!wrap) return;
+  const el = document.createElement("div");
+  el.className = `toast card${type ? " " + type : ""}`;
+  el.setAttribute("role", "status");
+  el.innerHTML = `<div class="t-head"><b class="t-title">${esc(title)}</b>`
+    + `<button class="t-close" type="button" aria-label="关闭提示">`
+    + `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>`
+    + `</button></div><div class="t-body"></div>`;
+  el.querySelector(".t-body").innerHTML = html;
+  const kill = () => { if (el.isConnected) el.remove(); };
+  el.querySelector(".t-close").onclick = kill;
+  wrap.appendChild(el);
+  setTimeout(kill, ms);
+}
+
 /* ---------- 弹窗（宽大方：modal-wide 800px）---------- */
-export function modal({ title, body, footer, wide = false, onClose }) {
+export function modal({ title, body, footer, wide = false, cls = "", onClose }) {
   const root = document.getElementById("modal-root");
   const mask = document.createElement("div");
   mask.className = "modal-mask";
   mask.innerHTML = `
-    <div class="modal${wide ? " wide" : ""}">
+    <div class="modal${wide ? " wide" : ""}${cls ? " " + cls : ""}">
       <div class="modal-head"><h3>${esc(title)}</h3>
         <button class="modal-close" aria-label="关闭"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button></div>
       <div class="modal-body"></div>

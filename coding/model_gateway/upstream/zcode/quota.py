@@ -986,7 +986,7 @@ def sync_circuit_to_runtime(runtime) -> tuple[int, int]:
 def resource_ids_of_account(account: str, config=None) -> list[str]:
     """反查该 ZCode 账号映射到哪些网关资源 id。
 
-    约定：资源 `account` 备注 == ZCode 账号名（资源定义 = 厂商 + 账号 + Key，Q20-③），
+    约定：资源 `account` 备注 == ZCode 账号名（资源定义 = 供应商 + 账号 + Key，Q20-③），
     **且**该资源声明了自己属于 `product: zcode`（D7 字段）。
 
     🔴 为什么要 `product` 这一层（验收 eng-M-4）：只按备注字符串相等匹配时，

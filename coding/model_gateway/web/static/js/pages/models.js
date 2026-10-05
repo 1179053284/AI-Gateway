@@ -1,11 +1,11 @@
-/** 资源池设置（原「系统模型」，Q24 · 2026-09-05 定版）——
+/** 资源池设置（旧页名「系统模型」，Q24 · 2026-09-05 定版后更名——
  * 左子侧栏 = 按「厂商归属」分组卡片（内置模型目录 GET /admin/api/enums 的 vendor 字段，
- * 与「接入模型资源」页接入商解耦：如 deepseek-v4-* 经商汤接入，仍归 DeepSeek 卡）；
- * 卡内行 = 该厂商已接入的系统模型 + 启用状态点（绿点 = 对外可调用生效中）；
+ * 与「接入模型资源」页供应商解耦：如 deepseek-v4-* 经商汤接入，仍归 DeepSeek 卡）；
+ * 卡内行 = 该厂商已接入的网关模型 + 启用状态点（绿点 = 对外可调用生效中）；
  * 厂商名行右侧「＋」icon（icon-btn sm）= 从该厂商内置目录弹窗选型新建（官方默认参数自动带入，覆盖 Q19-②）。
  * 右侧 = 头卡（启停语义 = 网关统一对外模型能否被调用）+ 模型属性（目录只读）+
- * 资源池 + 参数配置（工具传参 > 网关设置 > 厂商内置；仅 chat 注入）。
- * 端点/分组为系统模型级数据字段（创建时由目录带入），页面不提供编辑区（2026-09-05 用户定版去掉「基本属性」板块）。
+ * 资源池 + 参数配置（工具传参 > 网关设置 > 供应商通道默认；仅 chat 注入）。
+ * 端点/分组为网关模型级数据字段（创建时由目录带入），页面不提供编辑区（2026-09-05 用户定版去掉「基本属性」板块）。
  * 交互 = 操作即保存（D3）：变更确认后直接 PUT 并以服务端最新配置重渲染。 */
 
 import { GET, PUT, esc, isDerivedResource } from "../api.js";
@@ -15,7 +15,7 @@ let cfg = null;
 let presets = [];
 let catalog = {};         // name → 内置目录条目（enums API）
 let vendorOrder = [];     // 厂商名按目录出现顺序
-let selected = null;      // 当前选中系统模型名
+let selected = null;      // 当前选中网关模型名
 
 const SHOW_DELETE = false; // Q24-④：删除按钮暂时隐藏（恢复 = 改 true；后端能力保留）
 const TRASH = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>`;
@@ -52,7 +52,7 @@ async function persist(root, okMsg = "已保存并生效") {
 const off = (m) => m.enabled === false;
 const vendorOf = (m) => catalog[m.name]?.vendor || "";
 
-/** 厂商图标 = 各厂商**官方图标资产**（2026-10-03 与账号页产品图标同一口径，来源逐条记台账）。
+/** 厂商图标 = 各**厂商**（模型生产公司）的官方图标资产（2026-10-03 与账号页产品图标同一口径，来源逐条记台账）。
  *  键是内置目录 `vendor` 字段的**原文** ⇒ 目录改中文名而这里没跟上，界面会静默退回首字母，
  *  由 `tests/unit/test_v2_vendor_icons.py` 按目录实际取值集合钉住。
  *  没在册的厂商（用户自定义 / 未来新增条目）**回落首字母**：宁可朴素，不编造别人的 logo。 */
@@ -120,9 +120,9 @@ function draw(root) {
   root.innerHTML = `
     <style>
       /* 参数配置两列栅格：单元格不继承 .list-row 兄弟分割线（网格中左右线错位），
-         行距对齐 12px 节奏；窄屏回退单列 */
-      #md-params .list-row + .list-row { border-top: 0; }
-      @media (max-width: 1080px) { #md-params { grid-template-columns: minmax(0,1fr) !important; } }
+         行距对齐 12px 节奏；窄屏回退单列。🔴 下段「网关还会注入」同网格 ⇒ 同一课一起覆写 */
+      #md-params .list-row + .list-row, #md-injected .list-row + .list-row { border-top: 0; }
+      @media (max-width: 1080px) { #md-params, #md-injected { grid-template-columns: minmax(0,1fr) !important; } }
     </style>
     <div class="panel-split">
       <aside class="subnav">
@@ -242,29 +242,133 @@ function attrRows(e) {
     </div>`;
 }
 
-/* ---------- 参数配置行：网关值（可编辑）+ 官方默认 + 一键带入 ---------- */
+/* ---------- 参数配置：控件形状与依据文字都由目录的官方参数档案（`param_fields`）驱动 ---------- */
 const PARAM_LABEL = {
   temperature: "温度 temperature", top_p: "核采样 top_p", top_k: "top_k",
   min_p: "min_p", max_tokens: "最大输出 max_tokens",
   presence_penalty: "存在惩罚 presence_penalty", frequency_penalty: "频率惩罚 frequency_penalty",
   repetition_penalty: "重复惩罚 repetition_penalty", stop: "停止词 stop",
-  do_sample: "采样开关 do_sample",
+  do_sample: "采样开关 do_sample", seed: "随机种子 seed", n: "生成条数 n",
 };
-const paramVal = (v) => typeof v === "boolean" ? String(v) : String(v);
+const paramVal = (v) => (typeof v === "boolean" ? String(v)
+  : Array.isArray(v) ? v.join(", ") : String(v));
+
+/** 未取证 / 自定义模型用的通用参数名候选 —— 🔴 只是"给你个拼写参考"，不是"厂商官方支持"的声明，
+ *  datalist 里逐条标开这个区别（把候选说成清单就是编证据）。 */
+const COMMON_PARAM_KEYS = ["temperature", "top_p", "top_k", "min_p", "max_tokens",
+  "presence_penalty", "frequency_penalty", "repetition_penalty", "seed", "stop", "do_sample", "n"];
+
+/** 这个键在该模型上的官方档案（没在册 = null ⇒ 不猜类型、不装知道） */
+function pfield(e, key) {
+  return (e && e.param_fields && e.param_fields[key]) || null;
+}
+
+/** 一行的"依据"文字（常驻可见，不只住 tooltip：悬停不算看见过） */
+function paramBasisText(field) {
+  if (!field) return "未取证：该键不在这个模型的官方参数档案里，网关照原样发出";
+  const known = field.default !== undefined && field.default !== null;
+  /* 「官方缺省」与「官方推荐值」是两种事实（商汤那六键官方只给了推荐值）——混着写就是把
+     证据说重一档。而"网关到底注不注入"必须按**派生的真值**说：`ignored/rejected` 档即便官方
+     公布了缺省也不参与派生 ⇒ 绝不许写"按它注入"（第一版就在这条上自己写了假陈述，被真机
+     判据抓出：同一行同时出现"按它注入"与"官方对非默认值返回报错"）。 */
+  const dLabel = field.default_source === "recommended" ? "厂商推荐值" : "厂商官方缺省";
+  const willInject = known && field.availability === "supported" && field.inject !== false;
+  const bits = [
+    known
+      ? `${dLabel} ${paramVal(field.default)}`
+        + (willInject ? " · 网关按它注入" : " · 网关不注入这一项（走供应商通道默认）")
+      : "厂商未公布缺省值（网关不替你猜）",
+  ];
+  if (field.kind === "number" || field.kind === "integer") {
+    if (field.min != null || field.max != null) {
+      bits.push(`官方范围 ${field.min == null ? "" : field.min}~${field.max == null ? "" : field.max}`);
+    }
+  }
+  if (field.kind === "string_list") bits.push("多个值用英文逗号分隔");
+  if (field.kind === "enum" && (field.values || []).length) {
+    bits.push(`官方枚举 ${field.values.map(paramVal).join(" / ")}`);
+  }
+  if (field.availability === "deprecated") bits.push("⚠ 厂商已标注废弃");
+  if (field.availability === "ignored") bits.push("⚠ 厂商明确忽略该参数，设了不生效");
+  if (field.availability === "rejected") bits.push("⚠ 厂商对非默认值直接返回报错");
+  const src = [field.note, field.source].filter(Boolean).join(" · ");
+  return bits.join(" · ") + (src ? `（${src}）` : "");
+}
+
+/** 值输入控件：形状跟着官方档案走（布尔给下拉、枚举给下拉、数组给逗号分隔文本） */
+function paramControl(field, key, cur) {
+  const name = esc(key);
+  const val = cur == null ? "" : paramVal(cur);
+  if (field && field.kind === "boolean") {
+    const opt = (v, t) => `<option value="${v}"${String(cur) === v ? " selected" : ""}>${t}</option>`;
+    return `<select class="in" data-pkey="${name}" style="flex:1;min-width:60px">`
+      + `<option value=""${cur == null ? " selected" : ""}>空 = 不注入（走供应商通道默认）</option>`
+      + opt("true", "true") + opt("false", "false") + `</select>`;
+  }
+  if (field && field.kind === "enum" && (field.values || []).length) {
+    const opts = field.values.map((v) => `<option value="${esc(paramVal(v))}"${String(val) === paramVal(v) ? " selected" : ""}>${esc(paramVal(v))}</option>`);
+    return `<select class="in mono" data-pkey="${name}" style="flex:1;min-width:60px">`
+      + `<option value=""${cur == null ? " selected" : ""}>空 = 不注入（走供应商通道默认）</option>`
+      + opts.join("") + `</select>`;
+  }
+  const ph = field
+    ? (field.kind === "string_list" ? "多个值用英文逗号分隔"
+      : (field.min != null || field.max != null) ? `${field.min ?? ""}~${field.max ?? ""}`
+        : "空 = 不注入（走供应商通道默认）")
+    : "空 = 不注入（走供应商通道默认）";
+  return `<input class="in mono" data-pkey="${name}" value="${esc(val)}" placeholder="${esc(ph)}" style="flex:1;min-width:60px">`;
+}
 
 function paramRow(m, e, key) {
+  const field = pfield(e, key);
+  const official = key in (e?.params_default || {});
+  /* 🔴 `max_tokens` 的"清空"不是回到供应商通道默认：这张卡没写它时，统一规格那一腿还会补
+     （`core/scheduler.py::_out_body` 先 `apply_model_params` 再 `apply_spec_defaults`）。
+     方向说反过一次，所以这一行按当前合并规格把实际后果写出来。 */
+  const delTip = key === "max_tokens" && m?.spec?.max_output != null
+    ? `清空后这一项改由统一规格注入 ${m.spec.max_output}（见下方「网关还会注入」）`
+    : (official
+      ? "清空网关值（不再注入，走供应商通道默认；可用「恢复官方配置」一键还原）"
+      : "删除该自定义参数");
   return `
-    <div class="list-row" style="padding:0;height:40px;gap:10px;min-width:0">
-      <span style="flex:none;width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:600;color:var(--text-soft)"
-        title="${esc(key)}">${esc(PARAM_LABEL[key] || key)}</span>
-      <input class="in mono" data-pkey="${esc(key)}" value="${m.params?.[key] != null ? esc(paramVal(m.params[key])) : ""}"
-        placeholder="空 = 不注入（走厂商内置）" style="flex:1;min-width:60px">
-      <button class="icon-btn sm" data-pdel="${esc(key)}" aria-label="移除参数"
-        title="${key in (e?.params_default || {}) ? "清空网关值（不再注入，走厂商内置；可用「恢复官方配置」一键还原）" : "删除该自定义参数"}"
-        style="flex:none">
-        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
-      </button>
+    <div class="list-row" style="padding:6px 0;height:auto;min-width:0;flex-direction:column;align-items:stretch;gap:4px">
+      <div style="display:flex;align-items:center;gap:10px;min-width:0">
+        <span style="flex:none;width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:600;color:var(--text-soft)"
+          title="${esc(key)}">${esc(PARAM_LABEL[key] || key)}</span>
+        ${paramControl(field, key, m.params?.[key])}
+        <button class="icon-btn sm" data-pdel="${esc(key)}" aria-label="移除参数"
+          title="${esc(delTip)}" style="flex:none">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+        </button>
+      </div>
+      <div class="pbasis" style="font-size:11px;font-weight:500;line-height:1.35;color:var(--text-muted);padding-left:180px;overflow-wrap:anywhere">${esc(paramBasisText(field))}</div>
     </div>`;
+}
+
+/** 只读段：网关**确实会发**、但不住在这张卡上的两腿（缺了这段，空卡就在谎称"网关没设参数"） */
+function injectedElsewhereHTML(m) {
+  const cap = m?.spec?.max_output;
+  const reasoningRows = (m.resources || []).filter((r) => r.reasoning
+    && (r.reasoning.effort || r.reasoning.enabled !== undefined));
+  const cell = (k, v, where) => `
+    <div class="list-row" style="padding:6px 0;height:auto;min-width:0;flex-direction:column;align-items:stretch;gap:4px">
+      <div style="display:flex;align-items:baseline;gap:10px;min-width:0">
+        <span class="mono" style="flex:none;width:170px;font-size:13px;font-weight:600;color:var(--text-soft)">${esc(k)}</span>
+        <span style="flex:1;min-width:0;font-size:12px;color:var(--text-soft);overflow-wrap:anywhere">${esc(v)}</span>
+        <span class="badge b-muted" style="flex:none" title="这一项不在本卡配置">只读</span>
+      </div>
+      <div style="font-size:11px;font-weight:500;line-height:1.35;color:var(--text-muted);padding-left:180px;overflow-wrap:anywhere">${esc(where)}</div>
+    </div>`;
+  return cell("max_tokens",
+    cap == null
+      ? "合并规格里没有这个数 ⇒ 不注入（走供应商通道默认）"
+      : `按「承接这条请求的资源自己」的最大输出注入（本模型对外承诺上限 ${cap}；逐号更小则按其自身值）`,
+    "来源 = 统一规格（Q33-④）· 改法：在本卡写 max_tokens，或调整资源池成员")
+    + cell("thinking / reasoning_effort",
+      reasoningRows.length
+        ? `资源池里 ${reasoningRows.length} 条映射设了推理默认，按承接资源注入`
+        : "资源池没有资源级推理默认 ⇒ 不注入",
+      "来源 = 资源池行内 effort 下拉（请求携带时以请求为准）");
 }
 
 /** 网关侧合并规格的三态呈现（数据 = `GET /admin/api/config` 每条模型上的只读派生位 `spec`）。
@@ -294,7 +398,7 @@ function specRows(m) {
       <div class="form-row" style="margin-bottom:0"><label title="${esc(tip)}">规格新鲜度</label>
         <div>${badge}</div></div>
     </div>
-    ${s && s.sources ? `<p class="form-hint" style="margin-top:10px">合并自 ${s.sources} 份来源（同一系统模型下所有生效资源的并集；数值取大 = 对外承诺上限）。</p>` : ""}`;
+    ${s && s.sources ? `<p class="form-hint" style="margin-top:10px">合并自 ${s.sources} 份来源（同一网关模型下所有生效资源的并集；数值取大 = 对外承诺上限）。</p>` : ""}`;
 }
 
 function drawDetail(root) {
@@ -307,7 +411,11 @@ function drawDetail(root) {
   const disabled = m.enabled === false;
   const e = catalog[m.name] || null;
   const isChat = m.endpoint !== "images";
+  /* 行集合 = 官方档案的键 ∪ 有缺省值的键 ∪ 用户已设的键（自定义键排最后）。
+   * 🔴 不能只取 `params_default`：那等于把"官方有这个参数、只是没公布缺省"这类模型整张卡判空
+   *   （2026-10-04 排查的那条根因就在这里）。 */
   const pkeys = [...new Set([
+    ...Object.keys(e?.param_fields || {}),
     ...Object.keys(e?.params_default || {}), ...Object.keys(m.params || {})])];
 
   box.innerHTML = `
@@ -330,7 +438,7 @@ function drawDetail(root) {
              挂载点由 bindDetail 每次重绘重绑（D3：绑在当下这颗开关上，不绑 id 找旧元素）。 -->
         <span id="md-toggle" style="display:inline-flex;align-items:center"></span>
         ${SHOW_DELETE ? `<button class="icon-btn lg danger" id="md-del" aria-label="删除模型"
-          title="删除该系统模型（工具端调用将立即 404）">${TRASH}</button>` : ""}
+          title="删除该网关模型（工具端调用将立即 404）">${TRASH}</button>` : ""}
       </div>
     </div>
 
@@ -363,29 +471,47 @@ function drawDetail(root) {
           <div style="font-size:12px;font-weight:500;color:var(--text-faint)">顺序 = 优先级：生效集 top-x 承接、失败切换按序补位</div>
         </div>
         <div id="md-pool" style="display:flex;flex-direction:column">${poolRows(m)}</div>
-        <p class="form-hint" style="margin-top:12px">新增 / 调整映射：供应商侧在「接入模型资源」页编辑对应资源，账号侧在「接入账号资源」页用「模型映射」（产品 × 模型）${isChat ? "；行内 effort 为该资源推理默认（请求级指定优先，空 = 不注入）" : ""}。</p>
+        <p class="form-hint" style="margin-top:12px">新增 / 调整映射：Key 接入在「接入模型资源」页编辑对应资源，账号接入在「接入账号资源」页用「模型映射」（产品 × 模型）${isChat ? "；行内 effort 为该资源推理默认（请求级指定优先，空 = 不注入）" : ""}。</p>
       </section>
 
-      <!-- 参数配置：工具传参 > 网关设置 > 厂商内置（Q24，仅 chat 注入） -->
+      <!-- 参数配置：工具传参 > 网关设置 > 供应商通道默认（Q24，仅 chat 注入）。
+           两段式（2026-10-04）：上段 = 这张卡能改的；下段 = 网关照样会发、但不住这张卡的
+           （max_tokens 走统一规格、推理档走资源池，见 core/scheduler.py 的 _out_body 两次注入）。
+           只画上段的话，空卡就在谎称"网关没设参数"。 -->
       ${isChat ? `
       <section class="card" style="margin-top:12px">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px">
-          <div style="font-size:13px;font-weight:800;color:var(--text-soft)">参数配置</div>
-          <div style="display:flex;align-items:center;gap:12px">
-            <span style="font-size:12px;font-weight:500;color:var(--text-faint)">优先级：工具调用传参 &gt; 此处网关设置 &gt; 模型厂商官方内置</span>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+          <div style="display:flex;align-items:baseline;gap:14px;min-width:0">
+            <div class="card-title" style="font-size:14px;font-weight:800;color:var(--text)">参数配置</div>
+            <span style="font-size:12px;font-weight:500;color:var(--text-muted)">行 = 厂商官方暴露的参数 · 依据来自内置目录取证</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:12px;flex:none">
+            <span style="font-size:12px;font-weight:500;color:var(--text-muted)">优先级：工具调用传参 &gt; 此处网关设置 &gt; 供应商通道默认</span>
             <button class="btn btn-sm" id="md-preset" ${e && Object.keys(e.params_default || {}).length ? "" : "disabled"}
               title="一键将该模型全部参数重置为官方默认（当前值与自定义参数将被覆盖）">恢复官方配置</button>
           </div>
         </div>
-        <div id="md-params" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 28px">
+        <div id="md-params" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 28px;margin-top:12px">
           ${pkeys.map((k) => paramRow(m, e, k)).join("") ||
-            `<p class="form-hint" style="padding:2px 0">该模型暂无官方参数参考，也未设置网关参数——可在下方手动添加。</p>`}
+            `<p class="form-hint" style="padding:2px 0">厂商官方没有公布这个模型的参数缺省值${e ? "（未核实的值网关不替你猜）" : "（该模型不在内置目录，无官方档案）"}，你也还没设过任何参数 ⇒ 这些参数一律不注入，走供应商通道默认。可在下方按参数名手动添加；网关另会注入的内容见本卡下方「网关还会注入」。</p>`}
         </div>
         <div style="display:flex;gap:8px;margin-top:12px;align-items:center">
-          <input class="in mono" id="md-pnew" placeholder="添加参数名（如 top_k）" style="width:220px">
+          <input class="in mono" id="md-pnew" list="md-pkey-list" placeholder="添加参数名（如 top_k）" style="width:220px">
+          <datalist id="md-pkey-list">
+            ${[...new Set([...pkeys, ...COMMON_PARAM_KEYS])].map((k) => `<option value="${esc(k)}">${esc(PARAM_LABEL[k] || k)}${k in (e?.param_fields || {}) ? "（该模型官方在册）" : "（通用参数名，未取证）"}</option>`).join("")}
+          </datalist>
           <button class="btn" id="md-padd">添加参数</button>
         </div>
-        <p class="form-hint" style="margin-top:12px">行内值即网关注入值（初始化 = 官方默认）；清空 = 不注入（走厂商内置默认）；同一参数请求已携带时以请求为准。行尾 ×：清空该参数（自定义参数 = 删除该行），「恢复官方配置」可一键还原全部默认。推理开关与档位属推理参数体系，在资源池行内按资源配置。仅 chat 端点注入；images 不注入。</p>
+        <div style="border-top:1px solid var(--border);margin-top:16px;padding-top:12px">
+          <div style="display:flex;align-items:baseline;gap:14px;min-width:0">
+            <div style="font-size:14px;font-weight:800;color:var(--text)">网关还会注入 · 不住这张卡</div>
+            <span style="font-size:12px;font-weight:500;color:var(--text-muted)">只读 · 这一段的值不在上面的表格里，但确实会随请求发出去</span>
+          </div>
+          <div id="md-injected" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 28px;margin-top:10px">
+            ${injectedElsewhereHTML(m)}
+          </div>
+        </div>
+        <p class="form-hint" style="margin-top:12px">行内值 = 网关注入值（厂商公布了缺省的那几项，初始化即带入官方默认）；某行留空 = 该键不注入、走该供应商通道默认（<span class="mono">max_tokens</span> 例外：本卡没写时由统一规格补，见上段）。同一参数请求已携带时以请求为准。行尾 ×：清空该参数（自定义参数 = 删除该行），「恢复官方配置」可一键还原全部官方默认。厂商未公布的缺省值一律不替你猜（未核实不注入）。仅 chat 端点注入；images 不注入。</p>
       </section>` : ""}
     </div>`;
 
@@ -396,7 +522,7 @@ function drawDetail(root) {
 const EFFORT_LABEL = { low: "low · 轻量", medium: "medium · 中档", high: "high · 增强", max: "max · 深度" };
 
 /** 池的「配置单元」= 界面上的一行。两类两种维度（2026-10-02 用户裁决收敛）：
- *  - **供应商侧**：一条映射 = 一行（模型供应商 + Key 维度，维持既有形式）；
+ *  - **Key 接入侧**：一条映射 = 一行（供应商 + Key 维度，维持既有形式）；
  *  - **账号侧**：同一 `(产品, 上游模型)` 的多条派生映射**聚成一行**（产品 × 模型维度）——
  *    账号页「模型映射」的落点是"每个已启用账号的物化资源"
  *    （`api/admin_accounts.py:1355-1358`），所以 CodeBuddy 两个账号 × 同一模型
@@ -404,7 +530,7 @@ const EFFORT_LABEL = { low: "low · 轻量", medium: "medium · 中档", high: "
  * 🔴 只与**相邻**同组条目合并：`m.resources[]` 的下标就是调度优先级，
  *    被别的条目隔开说明这一组在两处各有一个优先级位，合成一行就是在撒谎（也会让"上移"跨位移动）。 */
 /** 这条映射**当下进不进池**：只读后端派生的 `mapping_enabled`（= `AppConfig.mapping_enabled`，
- *  厂商侧看条目位、账号侧看产品位 + 号开关）。🔴 判据不在前端再写一份——写一份就是两套真相
+ *  Key 接入侧看条目位、账号侧看产品位 + 号开关）。🔴 判据不在前端再写一份——写一份就是两套真相
  *  （映射弹窗那颗开关说进池、这张表说不进池）。字段缺失（旧 payload / 别的出口）才回落条目位。 */
 const poolOff = (e) => (typeof e.mapping_enabled === "boolean"
   ? e.mapping_enabled === false : e.enabled === false);
@@ -473,7 +599,7 @@ function poolRows(m) {
         </span>
         ${m.endpoint === "chat" ? `
         <select class="in mono" data-effort="${idxs}" title="${esc(effTitle)}" style="width:150px;flex:none">
-          <option value="" ${curEffort ? "" : "selected"}>${mixed ? "组内不一致（改以统一）" : "不注入（厂商默认）"}</option>
+          <option value="" ${curEffort ? "" : "selected"}>${mixed ? "组内不一致（改以统一）" : "不注入（供应商通道默认）"}</option>
           ${levels.map((lv) => `<option value="${esc(lv)}" ${lv === curEffort ? "selected" : ""}>${esc(EFFORT_LABEL[lv] || lv)}</option>`).join("")}
         </select>` : ""}
         <span style="display:flex;gap:4px;flex:none;margin-right:12px">
@@ -482,7 +608,7 @@ function poolRows(m) {
           <button class="icon-btn sm danger" data-rmres="${idxs}" title="${isAcc ? `移除该组 ${u.idxs.length} 个账号的映射` : "移除该映射"}">${TRASH}</button>
         </span>
       </div>`;
-  }).join("") || `<p class="form-hint" style="padding:2px 0">无资源（调用将无可用资源 503）——供应商侧到「接入模型资源」页添加映射，账号侧到「接入账号资源」页做「模型映射」</p>`;
+  }).join("") || `<p class="form-hint" style="padding:2px 0">无资源（调用将无可用资源 503）——Key 接入请到「接入模型资源」页添加映射，账号接入请到「接入账号资源」页做「模型映射」</p>`;
 }
 
 /** 当前模型目录的官方推理档位（无 = null，用通用三档兜底） */
@@ -499,6 +625,21 @@ function coerceParam(raw) {
   if (s === "false") return false;
   if (/^-?\d+(\.\d+)?$/.test(s)) return Number(s);
   return s;
+}
+
+/** 按官方档案的 kind 解析输入（没档案才回落到上面那套猜类型的老规矩） */
+function coerceParamFor(raw, field) {
+  const s = String(raw ?? "").trim();
+  if (s === "") return null;
+  if (field && field.kind === "string_list") {
+    const arr = s.split(",").map((x) => x.trim()).filter(Boolean);
+    return arr.length ? arr : null;
+  }
+  if (field && field.kind === "boolean") {
+    if (s === "true") return true;
+    if (s === "false") return false;
+  }
+  return coerceParam(s);
 }
 
 /** 本页自带开关（与 accounts.js 同一份契约：`role="switch"` + `aria-checked` + `aria-label`，
@@ -546,7 +687,7 @@ function bindDetail(root, m, e) {
       (next) => toggleEnabled(root, m, next)));
   }
   if (SHOW_DELETE) root.querySelector("#md-del").onclick = async () => {
-    if (!await confirmDialog("删除系统模型",
+    if (!await confirmDialog("删除网关模型",
       `确定删除「${m.name}」？工具端调用将立即 404；资源与其 Key 不受影响（仅移除映射条目）。`)) return;
     cfg.models = cfg.models.filter((x) => x.name !== m.name);
     selected = cfg.models[0]?.name || null;
@@ -588,21 +729,26 @@ function bindDetail(root, m, e) {
       await persist(root, idxs.length > 1 ? `映射已移除（${idxs.length} 条）` : "映射已移除");
     });
 
-  /* 参数配置（Q24）：编辑 / 官方默认带入 / 新增键 */
+  /* 参数配置（Q24）：编辑 / 官方默认带入 / 新增键。
+   * 🔴 取值必须按该键的官方 kind 解析：档案写 `string_list` 却存成字符串，
+   *    后端 `stop` 校验与上游拿到的形状就不是一个东西（数组才是官方形状）。 */
+  const applyParam = async (key, raw, okMsg) => {
+    const v = coerceParamFor(raw, pfield(e, key));
+    if (v === null) {
+      if (!(key in (m.params || {}))) return;
+      delete m.params[key];
+      await persist(root, key === "max_tokens" && m.spec?.max_output != null
+        ? `已移除 ${key}（改由统一规格注入 ${m.spec.max_output}）`
+        : `已移除 ${key}（恢复供应商通道默认）`);
+    } else {
+      const same = JSON.stringify((m.params || {})[key]) === JSON.stringify(v);
+      if (same) return;
+      m.params = { ...(m.params || {}), [key]: v };
+      await persist(root, okMsg || `${key} 已更新（请求携带时以请求为准）`);
+    }
+  };
   root.querySelectorAll("[data-pkey]").forEach((input) =>
-    input.addEventListener("change", async () => {
-      const key = input.dataset.pkey;
-      const v = coerceParam(input.value);
-      if (v === null) {
-        if (!(key in (m.params || {}))) return;
-        delete m.params[key];
-        await persist(root, `已移除 ${key}（恢复厂商内置默认）`);
-      } else {
-        if ((m.params || {})[key] === v) return;
-        m.params = { ...(m.params || {}), [key]: v };
-        await persist(root, `${key} 已更新（请求携带时以请求为准）`);
-      }
-    }));
+    input.addEventListener("change", () => applyParam(input.dataset.pkey, input.value)));
   /* 恢复官方配置：全部参数一键重置为目录官方默认（覆盖当前值与自定义参数） */
   const preset = root.querySelector("#md-preset");
   if (preset) preset.onclick = async () => {
@@ -623,7 +769,11 @@ function bindDetail(root, m, e) {
         return;
       }
       delete m.params[key];
-      await persist(root, official ? `${key} 已清空（不再注入，走厂商内置）` : `已删除参数 ${key}`);
+      await persist(root, official
+        ? (key === "max_tokens" && m.spec?.max_output != null
+          ? `${key} 已清空（改由统一规格注入 ${m.spec.max_output}）`
+          : `${key} 已清空（不再注入，走供应商通道默认）`)
+        : `已删除参数 ${key}`);
     });
   const pnew = root.querySelector("#md-pnew");
   if (pnew) root.querySelector("#md-padd").onclick = () => {
@@ -639,7 +789,7 @@ function bindDetail(root, m, e) {
     root.querySelector("#md-params").appendChild(rowEl);
     const input = rowEl.querySelector("[data-pkey]");
     input.addEventListener("change", async () => {
-      const v = coerceParam(input.value);
+      const v = coerceParamFor(input.value, pfield(e, key));
       if (v === null) return; /* 空值 = 尚未设置，不写配置 */
       m.params = { ...(m.params || {}), [key]: v };
       await persist(root, `${key} 已更新（请求携带时以请求为准）`);

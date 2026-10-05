@@ -23,8 +23,8 @@ from model_gateway.core.resources import normalize_base_url
 
 
 def _is_local_target(url: str) -> bool:
-    """本机/私网目标 → 不走环境代理（E2E 实测校准：公网厂商直连不稳定时，
-    环境代理（如系统 Clash）是可靠路径；localhost 假厂商/局域网厂商则必须绕过）。"""
+    """本机/私网目标 → 不走环境代理（E2E 实测校准：公网供应商直连不稳定时，
+    环境代理（如系统 Clash）是可靠路径；localhost 假供应商/局域网供应商则必须绕过）。"""
     try:
         host = (urlparse(url).hostname or "").strip("[]").lower()
     except ValueError:
@@ -56,8 +56,8 @@ class OpenAIOutAdapter:
         # 与运行态指纹共用 `normalize_base_url`。此处不 strip 的话，带空格的 URL
         # 会让两处口径再次分叉（复用判定恒不等 → 每次热重载都重建客户端连接）。
         self.base_url = normalize_base_url(base_url)
-        # 公网厂商 → trust_env=True（环境代理可用则走，直连不稳定时是可靠路径，E2E 实测）；
-        # 本机/私网厂商（INT 假厂商、局域网自建）→ trust_env=False 直连
+        # 公网供应商 → trust_env=True（环境代理可用则走，直连不稳定时是可靠路径，E2E 实测）；
+        # 本机/私网供应商（INT 假供应商、局域网自建）→ trust_env=False 直连
         self._client = client or httpx.AsyncClient(
             timeout=httpx.Timeout(60.0), trust_env=not _is_local_target(self.base_url)
         )
@@ -169,7 +169,7 @@ class OpenAIOutAdapter:
                     if raw.startswith("data:"):
                         data_lines.append(raw[5:].strip())
                     elif raw.startswith(":"):
-                        continue  # 厂商注释帧（如 keep-alive）
+                        continue  # 供应商注释帧（如 keep-alive）
         except UpstreamError:
             raise
         except httpx.TimeoutException as e:

@@ -38,6 +38,7 @@
   --card-border: transparent;
   --seg-bg: #f3f4f6;
   --switch-off: #d8dde2;
+  --progress-track: #cfd6dd;   /* 占比条的"已用掉"那一段（2026-10-03 用户：用完的部分要看得出是灰的） */
   --dot-on: #16d76d; --dot-off: #c9ced3;
   /* 侧边栏（浅色 = 白底侧栏，参考规范） */
   --side: #ffffff; --side-text: #7b858f; --side-strong: #171b22;
@@ -66,6 +67,7 @@
   --card-border: #262a31;
   --seg-bg: #22252b;
   --switch-off: #3a3f47;
+  --progress-track: #4a515c;   /* 深色下的"已用掉"段（比 --switch-off 亮一档，条的总长才看得出来） */
   --dot-on: #16d76d; --dot-off: #4a5058;
   --side: #17191d; --side-text: #8b929c; --side-strong: #ecedf0;
   --side-hover: rgba(255,255,255,.05); --side-active: var(--brand); --side-text-active: var(--on-brand);
@@ -347,7 +349,6 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .form-row input:focus, .form-row select:focus, .form-row textarea:focus {
   border-color: var(--text); background: var(--surface); box-shadow: var(--ring); }
 .form-row input.invalid { border-color: var(--err); }
-.form-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
 .form-hint { font-size: 12px; color: var(--text-faint); line-height: 1.6; font-weight: 500; }
 
 /* 通用行内输入（弹窗内映射行等 · 参考 h-9 rounded-10） */
@@ -368,6 +369,14 @@ select.in option { background: var(--surface); color: var(--text); }
   width: 560px; max-width: 100%; max-height: 86vh; display: flex; flex-direction: column;
   animation: modal-in .18s cubic-bezier(.2,.9,.3,1.2); }
 .modal.wide { width: 800px; }
+/* 「模型映射」弹窗专属宽度（2026-10-03 用户实拍「进池列标题和开关要左对齐，并调整好弹窗总宽度」）：
+   800px 时五列里固定列占掉 480px，模型名只剩 260px ⇒ 一行目录事实折成三行，而进池列 72px 里
+   只住一颗 40px 开关、右缘还空着。880px + 进池列收到 44px ⇒ 模型名 360px，右侧不留空洞。
+   窄屏由 `.modal{max-width:100%}` 兜底，不另立断点。 */
+.modal.wide.map-modal { width: 880px; }
+/* 进池格：表头与开关**同侧左对齐**（旧实现写死 `justify-content:flex-end` ⇒ 标题在列左、开关在列右，
+   差 31.4px 肉眼可见）。开关是这一列的唯一内容，格内不再做二次对齐。 */
+.map-sw { display: block; }
 .modal-head { display: flex; align-items: center; padding: 14px 18px;
   border-bottom: 1px solid var(--border); }
 .modal-head h3 { font-size: 15px; font-weight: 800; letter-spacing: -.005em; }
@@ -448,9 +457,63 @@ select.in option { background: var(--surface); color: var(--text); }
   border-radius: var(--radius-full); background: #fff;
   box-shadow: 0 3px 8px rgba(15,23,42,.18); transition: transform .18s; }
 [data-theme="dark"] .switch::after { background: #d7dbe2; }
-.switch.on { background: var(--brand); }
+/* 🔴 开启态**不用主色**（2026-10-03 用户指示）：`--brand` 浅色是近黑 #171b22、深色是近白，
+ * 与全站主色同值 ⇒ 开关既"看不出是开的"，又和按钮/选中的分段控件撞成同一种"强调"。
+ * 改走语义成功色 `--ok`（浅 #20a877 / 深 #3ddc97）= 与状态点、b-ok 徽章同一个"通/开"语言。 */
+.switch.on { background: var(--ok); }
 .switch.on::after { transform: translateX(16px); background: var(--on-brand); }
 [data-theme="dark"] .switch.on::after { background: var(--on-brand); }
+/* ---------- 额度格 `.qcell`（2026-10-03 用户实拍重做：照 zcode-switch / ZCode-Panel 的机制）
+   四行结构 = 主行（名称 …… 剩余/总量）· **占比条自占一行、画满格宽** ·
+   chips 行（多组时 ≤3 组 + `+N 类`）· meta 行（最早到期 · 相对新鲜度 · 已失效数 · 注记）。
+   🔴 条为什么不再内联（2026-10-03 用户第二次实拍「进度条怎么还有错落啊，左对齐固定在一个位置」）：
+   内联在名称与数字之间时，条的左边缘随两侧文字宽度漂移（旧 `minmax(0,1fr) 56px auto`，
+   数字列 `auto` 一长短就把第一列的 `1fr` 挤掉，实盘两行差出 ~35px）；
+   改成"定宽三列"能把条钉住，却把数字挤到裁字（:8300 实测 `.qnum` 需 129px、只分到 90px ⇒ 溢出）。
+   条自占一行后，左边缘恒 = 格的左边缘 ⇒ **对齐由结构保证**，不依赖列宽算式；
+   顺带条从 64px 变满宽，2% 的余量也看得见。主行两列：名称可省略号（`title` 给全值），数值右对齐不裁字。 ---------- */
+/* 🔴 主行 = 「标签：数值」**同一排左对齐**（2026-10-03 用户裁定「合计：900 积分」）：
+   旧形态是 `grid: 1fr auto` 把数值推到列尾，左一个孤立标签、右一个粗数，中间大片空档，
+   读的人要自己把两头对起来。改 flex 后：标签可收缩（过长只省略号收在**标签**上，`title` 给全名），
+   数值 `flex:none` ⇒ **永不裁字**（被挤的只能是次要的那一半，与占比条那轮同一分工）。 */
+.qcell { display: grid; gap: 3px; min-width: 236px; text-align: left; }
+.qrow { display: flex; align-items: baseline; gap: 2px; min-width: 0; }
+.qname { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12px; font-weight: 600; color: var(--text-muted); }
+.qnum { flex: none; font-variant-numeric: tabular-nums; font-weight: 700; }
+/* 🔴 额度格字重档（2026-10-03 用户实拍「怎么有的字体加粗有的不加粗」）：
+   一格只有一处 700 = **主读数**（剩余/总量）；标签、档位词、meta 一律 600；chips 明细 400。
+   警示只走**颜色**（`.qcell.is-warn`），不走字重——整格加粗等于把标签也喊成主读数。 */
+.qbarline { display: block; }
+.qbar { display: block; height: 6px; border-radius: var(--radius-full);
+  background: var(--progress-track); overflow: hidden; }
+.qbar > i { display: block; height: 100%; border-radius: var(--radius-full);
+  background: var(--ok); transition: width .18s; }
+.qbar.is-mid > i { background: var(--warn); }        /* 剩余 ≤30% */
+.qbar.is-low > i { background: var(--err); }         /* 剩余 ≤10% */
+/* 逐组明细**另起一行**（2026-10-03 同一轮里试过并进「合计：」后面，实盘长包名在 268px 列里
+   折成 5~6 行、整格 112px 高 ⇒ 用户裁定改回本形态：数值贴标签，明细自己一行）。 */
+.qchips { display: flex; flex-wrap: wrap; gap: 2px 10px; font-size: 12px; color: var(--text-faint); }
+.qchip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qchip-more { color: var(--text-muted); font-weight: 600; }   /* 600 不是 700：主读数只许数值一处加粗（D4e） */
+.qmeta { font-size: 12px; font-weight: 600; color: var(--text-faint); }
+.qnone { font-weight: 600; color: var(--text-faint); }
+.qtier { font-weight: 600; }                            /* 档位词共用类：**只管字重**，颜色由所在格决定（已耗尽那格整格 is-warn ⇒ 自动琥珀；有余量不跟着变绿） */
+.qcell.is-warn { color: var(--warn); }                  /* 整格着色（D1b 读的就是这一格的计算色） */
+
+/* 🔴 操作列（2026-10-03 用户实拍「操作列线操作项，右侧边距调整到合适距离」）：
+   旧形态里操作列与额度列抢宽度 ⇒ 5 颗文字钮折成两行（第二行孤零零一颗「删除」），
+   右侧还留着一段说不清来路的空白。定版 = **表头定宽 1% + 单元格不换行**：
+   操作列只吃"内容真正需要"的宽度并贴右，余量全部让给额度列。
+   ≤768 条带下恢复换行（那里横滚不如多一行直观）。 */
+.tbl th.ops-col { width: 1%; }
+.tbl td.ops { white-space: nowrap; padding-right: 20px; }
+@media (max-width: 768px) { .tbl td.ops { white-space: normal; padding-right: 16px; } }
+
+/* 禁用态（映射弹窗里"这行还没有目标"的那颗）：可见但明显按不动，
+   不是消失——开关消失 = 用户以为功能没做（2026-10-02 用户「让增加的开关哪里去了」）。 */
+.switch:disabled { opacity: .38; cursor: not-allowed; }
+.switch:disabled:hover { opacity: .5; }
 
 /* ---------- 系统模型列表 / 锚点（参考 ProviderList：h-[38px] rounded-10 ·
    选中 bg #f7f8f9 + inset 描边 #eef1f3）---------- */
@@ -476,9 +539,6 @@ select.in option { background: var(--surface); color: var(--text); }
 .settings-half .card { overflow-y: auto; }
 
 /* 维护区（系统设置；分组块 = 标题 + 操作行；v2.0） */
-.maint-grid { display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start; }
-.maint-title { font-size: 13px; font-weight: 600; color: var(--text-muted); margin-bottom: 8px; }
-.maint-title.danger { color: var(--err); font-weight: 700; }
 .maint-ops { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
 /* ---------- API 接入页 ---------- */
@@ -591,6 +651,8 @@ select.in option { background: var(--surface); color: var(--text); }
   display: grid; place-items: center; background: var(--surface-muted);
   color: var(--text-muted); box-shadow: 0 10px 22px rgba(15,23,42,.06); }
 .logo-block svg { width: 20px; height: 20px; }
+/* 真图标（厂商官方图标，与 `.mark-sm img` 同一形状，只是块体 40px；无图标时退回字母 tile） */
+.logo-block img { width: 100%; height: 100%; display: block; object-fit: cover; }
 .logo-block.dark { background: var(--brand); color: var(--on-brand);
   box-shadow: 0 10px 22px rgba(0,0,0,.12); font-size: 20px; font-weight: 900; }
 
@@ -958,6 +1020,12 @@ body.rail-resizing .split-handle::after { background: var(--text-tertiary); }
 .mc-row .mc-ico { display: inline-flex; width: 16px; height: 16px; flex: none; color: var(--text-faint); }
 .mc-row .mc-result { font-size: 12px; font-weight: 700; color: var(--text-faint);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 不可用的原因必须是**读得完的具体原因**（2026-10-02 用户指令）：失败行放开折行、
+   行高自适应（成功行仍是单行 44px，不让一屏被长文案撑散）。 */
+.mc-row.mc-fail { height: auto; min-height: 44px; padding: 8px 0; align-items: flex-start; }
+.mc-row.mc-fail .mc-result { white-space: normal; overflow: visible; text-overflow: clip;
+  max-width: 62%; line-height: 1.5; word-break: break-word; }
+.mc-row.mc-fail .mc-ico { margin-top: 2px; }
 .mc-row.mc-run .mc-ico { animation: mgw-mc-blink 1s steps(1, end) infinite; }
 .mc-row.mc-run .mc-result { color: var(--warn); }
 .mc-row.mc-ok .mc-ico, .mc-row.mc-ok .mc-result { color: var(--cool); }
@@ -1180,7 +1248,7 @@ body.rail-resizing .split-handle::after { background: var(--text-tertiary); }
   .sidenav.open .nav-item { justify-content: flex-start; padding: 0 10px; }
   .sidenav.open .nav-item.active::after { display: block; }
   .nav-toggle { display: inline-flex; }
-  .split-37, .split-50, .form-grid2 { grid-template-columns: 1fr; }
+  .split-37, .split-50 { grid-template-columns: 1fr; }
   .endpoint-list { grid-template-columns: 1fr; }
   .settings-half { grid-template-rows: none; }
   .content { padding: 12px 10px 36px; }
@@ -1232,18 +1300,116 @@ body.rail-resizing .split-handle::after { background: var(--text-tertiary); }
   flex: none;
 }
 
-/* 批量动作的**就地回执槽**（单层弹窗红线的构造化落点，frontend-spec §7.11 / 规矩 16）。
-   住在卡体末尾 ⇒ 与 card-head 同框、看得见"刷新 N · 失败 K · 未发起 J"；
-   文本存模块级由 paintPanel() 回填，所以**整块重绘不会吃掉它**（PM r5 B-R4-5）。 */
-.bulk-receipt {
-  margin: 0 16px 16px;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--text);
-  border-radius: 6px;
-  background: var(--surface-2, var(--surface));
-  font-size: 13px;
-  color: var(--text);
-}
-.bulk-receipt[hidden] { display: none; }
-.bulk-receipt .list-row + .list-row { border-top: 1px solid var(--border); }
+/* ---------- 结果浮层（富 toast · 2026-10-03 用户裁定「各类处理结果，不允许用这种形式固化显示。
+   执行完毕，弹窗提示具体执行结果，3s 后自动消失，也可以手动关闭」）----------
+   旧的"就地回执槽"（`.bulk-receipt`）整族删除：那块东西会一直挂在面板上直到下一批，
+   而且为了"重绘不吃掉它"背了一整套模块级文本 + 回填 + 判遮罩的机器。
+   新形态复用**同一个载体**（`#toast-wrap` 顶部居中 + `.toast` 的壳）⇒ 不新增第二种提示位置；
+   它不是 modal ⇒ 单层弹窗红线由构造保证。色值全部走令牌，无一处硬编码。 */
+/* 🔴 宽度写**定值 380px**，窄屏靠 `.toast` 自带的 `max-width: min(560px, calc(100vw - 32px))` 收
+   （全站每一条提示都是这套规矩，浮层不另发明一套）。
+   第一版我写的是 `width: min(380px, calc(100vw - 32px))`，在 0 宽的探针视口里 `100vw`=0 ⇒
+   `max-width` 被钳到 0、只剩 `min-width: 200px`，计数行折成三行 —— 量出来的"宽度 200"是
+   **探针环境的产物**，不是页面的病（同一条「量错对象」的课，这次是量错了视口）。 */
+.toast.card { display: block; text-align: left; padding: 10px 12px; width: 380px; }
+.toast.card::before { display: none; }   /* 色调由逐行结果词承担，不需要一个孤点占一行 */
+.t-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.t-title { flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 700; color: var(--text); }
+.t-close { flex: none; display: inline-grid; place-items: center; width: 22px; height: 22px;
+  border: 0; border-radius: var(--radius-sm); background: transparent;
+  color: var(--text-muted); cursor: pointer; }
+/* 🔴 悬停底色用 `--surface-muted`（`.nav-toggle:hover` 同一颗钮的既有语法）。
+   这里**不能**写 `--surface-2`：那个令牌根本不存在 —— 旧的 `.bulk-receipt` 写的是
+   `var(--surface-2, var(--surface))`，靠回退值才没暴露，我照抄时丢了回退 ⇒ 属性整条失效。 */
+.t-close:hover { background: var(--surface-muted); color: var(--text); }
+/* 计数行 = 这一批的结论本体；术语解释挂 `title`（3 秒读不完的定义不许做成正文必读） */
+.t-sum { font-size: 12px; font-weight: 600; color: var(--text-soft); line-height: 1.5; cursor: help; }
+.t-rows { display: grid; gap: 3px; margin-top: 6px; }
+.t-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px;
+  align-items: baseline; font-size: 12px; }
+.t-cell { display: flex; gap: 6px; min-width: 0; align-items: baseline; }
+.t-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--mono); font-weight: 600; color: var(--text-soft); }
+.t-detail { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-weight: 500; color: var(--text-faint); }
+/* 结果词的字重 600（不是 700：主读数才用 700，同「额度格」那条字重律）；警示只走颜色 */
+.t-tag { flex: none; font-weight: 600; color: var(--text-muted); }
+.t-tag.is-ok { color: var(--ok); }
+.t-tag.is-warn { color: var(--warn); }
+.t-tag.is-err { color: var(--err); }
+.t-empty { font-size: 12px; font-weight: 500; color: var(--text-faint); }
+
+/* ================= 参数行（系统设置 12 项 · v2.31 · 2026-10-03）=================
+   来由 = 用户实拍「现在的结构不符合页面设计规范。信息太分散并且一个输入框那么宽，设计很不合理很丑」。
+   `.form-row` 的满宽表单行（§7.13 Field：label 在上 + input 100% 宽 / 44px）是给**弹窗表单**的规格，
+   搬到 12 个整数参数的页面上就是一屏 24 个视觉块、一个 4 位数住进 579~819px 的框里。本档口径：
+   名称在左（`.pk`，`for` 关联 ⇒ 点名称即聚焦）、数值在右 **128px 定宽 + 右缘对齐**（成一条可扫读的数值列），
+   框体复用全站 `.in` 的 36px 高度（不另立一套行高），每组两列、≤1080 回退单列（与 models 页参数配置同断点）。 */
+/* 🔴 子板块之间用**分割线**（2026-10-03 用户实拍「板块内部子板块之间用分割线分割开」）：
+   首组前不画线，线走 --border 令牌 ⇒ 双主题自适应。 */
+/* 🔴 板块（卡片）头：**标题 + 描述同一行，描述弱化**（2026-10-03 用户第四次实拍
+   「板块标题描述板块的描述信息，放到板块标题后面 弱化显示，不要单独占一行」）。
+   ⚠️ 这条**推翻同日 v2.34 定的「板块头两行制」**：当时用户抱怨的是「三行文字挤在一起看不出谁是板块标题」，
+   病根其实是**两者字重字号相同、没有边界**（`.card-title` 13/800 挨着 `.value` 13/600 排成一句），
+   不是"同一行"本身。同一行 + 明显弱化 + 一条 1px 竖线分界 = 层级照样读得出来，且省一行垂直空间。
+   不许的仍然是：标题与描述**同字号同色**、中间无分界 ⇒ 那才叫"挤成一句"。 */
+.card-head.block-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 16px; }
+.block-head .card-title, .block-head .bh-t { flex: none; font-size: 14px; font-weight: 800; color: var(--text); letter-spacing: -.01em; }
+.block-head .bh-d { min-width: 0; position: relative; font-size: 12px; font-weight: 500; color: var(--text-muted); }
+/* 分界竖线画在**真实 gap 的正中**（gap 14 ⇒ 线在 -7px 处）：
+   🔴 第一版把 12px 写成 `.bh-d` 的 padding-left，盒子紧挨着 ⇒ 真机量「标题右缘→描述左缘」= 0，
+   又是「量盒子不等于量文本」那一课（撤证当场抓到）。间距必须是 flex gap，不是内边距。 */
+.block-head .bh-d::before { content: ""; position: absolute; left: -7px; top: 50%; margin-top: -5px;
+  width: 1px; height: 11px; background: var(--border); }
+.param-group { margin: 0 0 16px; padding: 12px 0 0; border-top: 1px solid var(--border); }
+.param-group:first-of-type { margin-top: 0; padding-top: 0; border-top: 0; }
+.param-group:last-of-type { margin-bottom: 0; }
+/* 子板块头 = **两行**（横向评审 P1：把标题与说明放同一行，是"板块那一行读成一句话"的错误
+   在组级重犯）。层级差不能靠字号倒挂：旧版组标题 12px **小于**字段名 13px ⇒ 子块标题比内容还轻。
+   定版 = 板块 14/800 › 子板块 13/800 `--text-soft` › 字段名 13/600 › 说明 12/500 `--text-muted`（6.3:1）。 */
+.sec-head.sub { display: block; margin: 0 0 12px; }
+.sec-head.sub .t { display: block; font-size: 13px; font-weight: 800; color: var(--text-soft); }
+.sec-head.sub .t.danger { color: var(--err); }
+.sec-head.sub .d { display: block; margin-top: 4px; font-size: 12px; font-weight: 500;
+  color: var(--text-muted); }
+/* 就近注记：约束贴在它管辖的那几行旁边（旧版是卡尾一整段灰字脚注） */
+.group-note { margin: 12px 0 0; font-size: 13px; font-weight: 500;
+  line-height: 1.6; color: var(--text-muted); }
+/* 系统设置页（2026-10-03 用户第二、三次实拍改版）：
+   ① 组内不画可见小标题 ⇒ 分组只留分割线 + `aria-label`；
+   ② 「保存配置」与脏态徽章搬进卡内 `.card-foot` ⇒ 原 `.page-head.st-head` 吸顶条随之作废（已删）。
+   ③ 🔴 说明**跟着分组走**（用户第三次纠正「这些说明信息不是让你集中放一起……放到每个配置分组
+      下面，下一组配置分割线之上」）：每个 `.param-group` 末尾一条 `.param-notes .pn`，
+      于是它天然坐在**下一组分割线之上**（最后一组坐在卡脚分割线之上）。
+      集中成卡尾一块 = 读的人要自己把说明对回哪一组，等于没写；那一版作废。
+      组名走 700（全页只有卡标题与这里的组名用 700 以上，行内名称/数值仍 600 = 字重是层级语言）；
+      12px 次级文字，一行一组，装不下就删字而不是换行（说明不该比参数本身占更多垂直预算）。
+      🔴 说明距本组末行 **6px < 组内行距 8px**：说明离它解释的那几行，要比那几行彼此之间还近，
+      归属才不会有第二种读法；这也是把整页压回一屏（真机 L11：内容高 ≤ 可视高 840）的那 10px。 */
+.param-notes { margin: 6px 0 0; }
+.param-notes .pn { font-size: 12px; font-weight: 500; line-height: 1.5; color: var(--text-muted); }
+.param-notes .pn b { font-weight: 700; color: var(--text-soft); margin-right: 6px; }
+/* 分割线**内缩**与 `.param-group` 的组间线同一把尺（都是内容盒宽度）：
+   原先写 `margin: 20px -20px -20px` 去贴卡边，但 `.card` 的 padding 实测是 12px ⇒ 溢出 7px，
+   脚钮区从卡的下沿漏出去（真机读数 footRect.bottom − cardRect.bottom = +7）。 */
+.card-foot { display: flex; align-items: center; gap: 12px;
+  margin: 12px 0 0; padding: 8px 0 0; border-top: 1px solid var(--border); }
+.card-foot .foot-hint { margin-right: auto; font-size: 12px; font-weight: 500; color: var(--text-muted); }
+/* 列宽收成 420px 而不是铺满整张卡：铺满时名称与自己的框之间会空出 ~300px（首版实拍就是这个），
+   "名称—值"的配对感靠距离表达；两列之间的分组间距交给 gap 48px。 */
+.param-list { display: grid; grid-template-columns: repeat(2, minmax(0, 420px)); gap: 8px 48px; }
+.param-row { display: grid; grid-template-columns: minmax(0, 1fr) 128px; gap: 24px;
+  align-items: center; min-height: 36px; }
+.param-row .pk { font-size: 13px; font-weight: 600; color: var(--text-soft); min-width: 0; }
+.param-row .in { width: 128px; min-width: 128px; text-align: right; }
+/* 🔴 校验错误态（2026-10-03 独立评审三方向共同缺失的一条）：跨字段约束（总预算 ≥ 尝试超时）
+   必须在**按下保存之前**就地显形——红边 + 字段下方一句原因，而不是等后端 400 再弹 toast。
+   错误色只上边框与文字，不整块铺红（specs.md §12）。*/
+/* 错误态**不靠 border-color**：实测 `.in.is-error { border-color }` 在本页不生效
+   （同一块里新加的 `.param-err` 生效，且给 input 写 inline border 也只改到 width 改不到 color），
+   继续追这条属于修级联而不是修设计 ⇒ 改用 outline + 底色承载，二者都不与 `.in` 的 border 抢。
+   错误文本那一行（.param-err）实测色值 rgb(217,87,87) = --err ✓ 可清除 ✓。 */
+.in.is-error { outline: 1.5px solid var(--err); outline-offset: -1px; background: var(--err-bg); }
+.param-err { grid-column: 1 / -1; margin-top: -2px; font-size: 12px; font-weight: 600; color: var(--err); }
+@media (max-width: 1080px) { .param-list { grid-template-columns: minmax(0, 420px); } }
+

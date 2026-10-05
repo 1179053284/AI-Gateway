@@ -3,9 +3,9 @@
 覆盖（真实商汤 E2E 实测暴露的两个缺口回归）：
 - INT-16：非流式（content 块/stop_reason/usage 映射）+ 流式事件语义
   （块生命周期：同类 delta 连续同块、异类 stop+start、message_delta 收尾）
-- 出站体必须携带 stream:true（缺失时厂商返回非流式 JSON → SSE 解析零事件 → 空流）
+- 出站体必须携带 stream:true（缺失时供应商返回非流式 JSON → SSE 解析零事件 → 空流）
 - INT-28：流式中途断连 → 上游取消、aborted、不计失败、不切换（同 INT-08 语义）
-- INT-33：Claude Code 风格 model id 别名（claude-sonnet-4-20250514）命中系统模型
+- INT-33：Claude Code 风格 model id 别名（claude-sonnet-4-20250514）命中网关模型
 """
 
 from __future__ import annotations
@@ -150,7 +150,7 @@ class TestAnthropicStream:
 
     async def test_stream_outbound_body_carries_stream_flag(
             self, vendor, make_gateway, client):
-        """回归（E2E 实测 Bug）：出站体缺失 stream:true → 厂商返回非流式 → 空流。"""
+        """回归（E2E 实测 Bug）：出站体缺失 stream:true → 供应商返回非流式 → 空流。"""
         vendor.set("sk-A", StreamOk(chunks=["好"]))
         gw = await make_gateway(gateway_config(vendor.port, models=[chat_res("A")]))
         resp = await client.post(f"{gw.base_url}{MESSAGES_URL}",
@@ -190,7 +190,7 @@ class TestAnthropicStream:
 
 
 class TestAnthropicAlias:
-    """INT-33：Claude Code 风格 model id 别名命中系统模型。"""
+    """INT-33：Claude Code 风格 model id 别名命中网关模型。"""
 
     async def test_alias_model_id_resolves(self, vendor, make_gateway, client):
         vendor.set("sk-A", Ok(content="ok"))
@@ -201,7 +201,7 @@ class TestAnthropicAlias:
                                  headers=_headers())
         assert resp.status_code == 200
         d = resp.json()
-        assert d["model"] == "claude-sonnet-4"  # 响应体为规范系统模型名
+        assert d["model"] == "claude-sonnet-4"  # 响应体为规范网关模型名
         assert d["content"] == [{"type": "text", "text": "ok"}]
-        # 出站到厂商的是资源声明的厂商模型名（vm-A），而非别名
+        # 出站到厂商的是资源声明的供应商模型名（vm-A），而非别名
         assert vendor.bodies_for("sk-A")[0]["model"] == "vm-A"

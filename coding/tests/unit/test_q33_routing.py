@@ -1,7 +1,7 @@
 """Q33 · 两级开关（产品位 × 号位）与号间轮转的选路判据（纯内存，无网络）。
 
 覆盖三条定论（用户 2026-10-02 第九轮指令）：
-- ① **产品 × 厂商模型** 的映射位是账号侧的唯一真相（`AppConfig.product_models`），
+- ① **产品 × 供应商模型名** 的映射位是账号侧的唯一真相（`AppConfig.product_models`），
   关 ⇒ 该产品**所有号**一起出池并停止对外声明；
 - ② 号开关 = 该号派生资源的 `enabled`，关 ⇒ **只有那个号**出池，其余号照常参与；
 - ③ 号间轮转 = 生效集窗口随游标滑动（推翻 tech-design §5.3「低负载集中调用、不轮询」），
@@ -24,9 +24,9 @@ def _account_cfg(*, product: str = "buddy", accounts: tuple[str, ...] = ("a", "b
                  bits: tuple[tuple[str, str, str, bool], ...] = (),
                  x: int = 2, entry_enabled: dict[str, bool] | None = None,
                  resource_disabled: tuple[str, ...] = ()):
-    """「1 个产品 × N 个账号资源 + 1 个系统模型」的配置字典。
+    """「1 个产品 × N 个账号资源 + 1 个网关模型」的配置字典。
 
-    `bits` = `(产品, 厂商模型, 系统模型, enabled)`；空 = 不写产品位（走旧配置回落）。
+    `bits` = `(产品, 供应商模型名, 网关模型, enabled)`；空 = 不写产品位（走旧配置回落）。
     `entry_enabled` = `{账号: 映射条目位}`；`resource_disabled` = 哪些号的资源被关掉（号位）。
     """
     resources = [{"id": f"res-{a}", "name": f"号{a}", "product": product,
@@ -84,9 +84,9 @@ class TestProductSwitch:
         assert len(rt.resources.pools[MODEL]) == 4
 
     def test_bit_pointing_elsewhere_does_not_feed_this_model(self):
-        """产品位挂在别的系统模型上 ⇒ 本模型不得凭它进池（防"挂错池"静默放行）。
+        """产品位挂在别的网关模型上 ⇒ 本模型不得凭它进池（防"挂错池"静默放行）。
 
-        第二模型故意复用同一条 `(res-a, VM)`：**跨系统模型**挂同一组合是既有设计
+        第二模型故意复用同一条 `(res-a, VM)`：**跨网关模型**挂同一组合是既有设计
         （别名 + 运行态共享冷却，UT-84 的第二腿钉着它不被去重摘掉），
         所以本用例真正钉的是判据第三条腿 `pm.system_model == system_model`，不是组合形状。
         """
@@ -133,7 +133,7 @@ def test_account_resource_reads_as_the_account_name_not_a_bare_id():
 
     旧回落是 `name or id` ⇒ `materialize` 不填备注名的账号资源永远显示成 `res-9a17353a`，
     用户在请求日志 / 切换事件 / "装不下已换号"的理由串里读到的是自己从没起过的串
-    （同一条链路上其它文案都用 `resource_id_str`）。厂商侧资源没有账号名 ⇒ 逐字不变。
+    （同一条链路上其它文案都用 `resource_id_str`）。按 Key 接入的供应商资源没有账号名 ⇒ 逐字不变。
     """
     cfg = AppConfig.model_validate({
         "resources": [
@@ -149,7 +149,7 @@ def test_account_resource_reads_as_the_account_name_not_a_bare_id():
     })
     rm = ResourceManager()
     rm.rebuild(cfg)
-    assert rm.registry[("res-K", "vm-k")].resource_id_str == "res-K/vm-k"      # 厂商侧逐字不变
+    assert rm.registry[("res-K", "vm-k")].resource_id_str == "res-K/vm-k"      # Key 接入侧逐字不变
     assert rm.registry[("res-P", "vm-x")].resource_id_str == "ix-a/vm-x"       # 落到账号名
     assert rm.registry[("res-N", "vm-x")].resource_id_str == "我的备注/vm-x"     # 备注名优先
 
@@ -317,12 +317,12 @@ class TestRotation:
 
 
     def test_duplicate_combo_is_dropped_not_silently_doubled(self):
-        """🔴 UT-84 · **同一系统模型内** `(资源, 厂商模型)` 组合唯一进跨节校验（§6-8 授权落地）。
+        """🔴 UT-84 · **同一网关模型内** `(资源, 供应商模型名)` 组合唯一进跨节校验（§6-8 授权落地）。
 
         旧形状：组合唯一只由写面保证（`_mapping_holder` 扫一遍），手改 YAML 在一个模型的
         `resources[]` 里把同组合写两遍，读侧照单全收 ⇒ 生效集把同一条算两遍，
         承诺 x=2 实际只有 1 条能承接（评审 R1-§二实测）。
-        🔴 作用域只在本模型内：**跨系统模型**挂同一组合是既有设计（别名 + 运行态按
+        🔴 作用域只在本模型内：**跨网关模型**挂同一组合是既有设计（别名 + 运行态按
         `(rid, vendor_model)` 共享冷却），被 `test_scheduler.py::
         test_cooldown_shared_across_system_models` 钉着 —— 这里第二腿就把那条例别形状
         当作**必须保留**的反证，防止下一轮把去重做成全配置唯一。
@@ -375,7 +375,7 @@ class TestLegacyFallback:
     def test_duplicate_bit_dropped_with_warning_not_config_blowup(self):
         """🔴 坏位的处置 = **丢掉那一条 + 告警**，不是让整份配置加载失败（R2-④ 判死）。
 
-        原先 `raise` 的后果是"删掉一个系统模型 ⇒ 网关所有模型一起停服，而界面上没有任何
+        原先 `raise` 的后果是"删掉一个网关模型 ⇒ 网关所有模型一起停服，而界面上没有任何
         自救入口" —— 那是可用性灾难。有效/无效的把关属于**写面**（`POST …/mappings`
         动盘前就拒，回执 400 可执行），读面只负责"能起就起、坏的丢掉并如实说"。
         """
@@ -387,11 +387,11 @@ class TestLegacyFallback:
         assert any("重复" in w for w in got.warnings), got.warnings
 
     def test_bit_pointing_at_deleted_model_is_dropped_not_fatal(self):
-        """删系统模型后配置仍能加载（首条位被丢 + 告警），其余资源不受影响。"""
+        """删网关模型后配置仍能加载（首条位被丢 + 告警），其余资源不受影响。"""
         from model_gateway.config.schemas import AppConfig
 
         cfg = _account_cfg(bits=(("buddy", VM, "不存在-的模型", True),))
         got = AppConfig.model_validate(cfg)
         assert got.product_models == []
-        assert any("不是 models[] 里在册的系统模型" in w for w in got.warnings), got.warnings
+        assert any("不是 models[] 里在册的网关模型" in w for w in got.warnings), got.warnings
         assert len(got.resources) == 4 and any(m.name == MODEL for m in got.models)

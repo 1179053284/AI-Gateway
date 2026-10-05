@@ -150,7 +150,7 @@ async def test_cline_nonstream_end_to_end(make_gateway, client):
     assert req.headers["x-client-type"] == "cline-sdk"
     assert req.headers["accept"] == "text/event-stream"     # cline-adapter.ts:571-577
     payload = json.loads(req.content)
-    assert payload["model"] == VENDOR_MODEL                 # 映射里的厂商模型名
+    assert payload["model"] == VENDOR_MODEL                 # 映射里的供应商模型名
 
     await gw.drain_events()
     ev = gw.read_events()[-1]

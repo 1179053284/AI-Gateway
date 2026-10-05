@@ -4,7 +4,7 @@
 1. `merge_specs` 的合并规则（数值取大、布尔取并、`None` 不参与、档位并集按规范序回排）；
 2. 目录缓存的读写与**新鲜度**（陈旧仍可用但必须标注；空清单不覆盖好数据）；
 3. `build_model_caps` 带规格时按"固定最大标准"合并，不带规格时与改动前**逐字一致**；
-4. 出站默认注入的优先级：工具传参 > 网关设置 > 统一规格 > 厂商内置。
+4. 出站默认注入的优先级：工具传参 > 网关设置 > 统一规格 > 供应商通道默认。
 """
 
 from __future__ import annotations
@@ -203,7 +203,8 @@ class TestCatalogCache:
 
 
 class _Entry:
-    """枚举池条目的最小形状（厂商侧规格来源，测试用，不依赖内置目录真数据）。"""
+    """枚举池（= 厂商公开目录）条目的最小形状 —— **按量 Key 那一路**的规格来源，
+    测试用，不依赖内置目录真数据。"""
 
     def __init__(self, name="glm-5.3", *, context_window=262144, max_output=65536,
                  tool_call=True, image_input=False, reasoning=True,
@@ -221,9 +222,11 @@ class _Entry:
 class _Pool:
     """枚举池的最小替身。
 
-    🔴 键 = **厂商模型 id**（与生产 `EnumPool.get` 同口径），不是系统模型名 ——
-    `_two_path_config` 里厂商侧条目的厂商模型是 `vm-k`、系统模型是 `glm-5.3`，
-    先前这里按系统模型名回条目，正好把 `sources_for_entries` 用错键的缺陷掩盖了
+    🔴 查表用的**实参** = `entry.model`（供应商模型名），不是网关模型名 ——
+    生产 `EnumPool.get` 的**键空间是厂商模型标准名**（`EnumEntry.name`），这里让替身
+    只对 `vm-k` 应答，模拟"这条映射的供应商模型名正是目录里那个标准名"的常见形状。
+    `_two_path_config` 里Key 接入侧条目的供应商模型名是 `vm-k`、网关模型是 `glm-5.3`，
+    先前这里按网关模型名回条目，正好把 `sources_for_entries` 用错键的缺陷掩盖了
     （评审 R2-③ 的同一条：单元绿、接线红）。
     """
 
@@ -235,7 +238,7 @@ class _Pool:
 
 
 def _two_path_config(product_bit: bool = True):
-    """一份「同一系统模型同时挂 按量 Key 资源 + 账号资源」的配置（两类接入同级）。"""
+    """一份「同一网关模型同时挂 按量 Key 资源 + 账号资源」的配置（两类接入同级）。"""
     return AppConfig.model_validate({
         "resources": [
             {"id": "res-k", "api_key": "sk-k", "protocol": "openai", "base_url": "http://x/v1"},
@@ -251,7 +254,7 @@ def _two_path_config(product_bit: bool = True):
 
 
 class TestResolveAcrossBothAccessPaths:
-    """同一系统模型挂着「按量 Key 资源」与「账号资源」时，规格必须并成一份最大。"""
+    """同一网关模型挂着「按量 Key 资源」与「账号资源」时，规格必须并成一份最大。"""
 
     def test_maxima_and_union_over_both_access_paths(self, tmp_path):
         root = tmp_path / "buddy"
@@ -318,7 +321,7 @@ class TestResolveAcrossBothAccessPaths:
         """缓存没有 = 账号侧**没有来源**：不联网补、不拿厂商那份冒充、不编数。"""
         cfg = _two_path_config()
         spec = resolve(cfg, cfg.models[0], _Pool(), cache_root=tmp_path / "buddy", reader=_READER)
-        assert spec.sources == 1                       # 只剩厂商侧那一份
+        assert spec.sources == 1                       # 只剩Key 接入侧那一份
         assert spec.max_input == 262144
 
     def test_closed_product_bit_contributes_no_spec(self, tmp_path):
@@ -341,10 +344,10 @@ class TestResolveAcrossBothAccessPaths:
 
 
 def _two_account_config():
-    """同一产品两个号 × 同一系统模型（🔴 号级规格的判据对象 = R5-F-1 那条没接的腿）。
+    """同一产品两个号 × 同一网关模型（🔴 号级规格的判据对象 = R5-F-1 那条没接的腿）。
 
     两个号故意写成**同一 base_url**：唯一的差别只有"各自的目录缓存"，
-    这样任何数差都只能来自按号取数，不可能来自厂商侧/端点差异。
+    这样任何数差都只能来自按号取数，不可能来自Key 接入侧/端点差异。
     """
     return AppConfig.model_validate({
         "resources": [
@@ -376,7 +379,7 @@ def _write_only_for_account(root, account, **fields):
 
 
 class _Pool2:
-    """按**厂商模型 id** 索引的枚举池替身（键口径与生产同尺，见 M12 的教训）。"""
+    """按**厂商模型标准名**索引的枚举池替身（键口径与生产同尺，见 M12 的教训）。"""
 
     def get(self, name):
         return _Entry(name) if name == "glm-5.2" else None
@@ -481,17 +484,17 @@ class TestPerAccountSpec:
         assert spec.max_output is None and spec.sources == 0
 
     def test_a_disabled_mapping_never_erases_the_resource_fact(self):
-        """🔴 评审 R8-B-1 的语义那半句：资源级规格 = 这条 (资源, 厂商模型) **自己**的事实。
+        """🔴 评审 R8-B-1 的语义那半句：资源级规格 = 这条 (资源, 供应商模型名) **自己**的事实。
 
         开关（条目位 / 产品位）决定的是"进不进这个系统的池"，那份判据归 `sources_for_entries`
         （对外声明用）；把它同时压在资源级规格上，就会在**别名**形状下出事：
-        同一组合挂在第二个系统模型上而那一头关着 ⇒ 后算的那份空壳**覆盖**掉生效那份
-        （键 `(rid, vendor_model)` 没有系统模型维度），承载判据与缺省注入双双静默失效，
+        同一组合挂在第二个网关模型上而那一头关着 ⇒ 后算的那份空壳**覆盖**掉生效那份
+        （键 `(rid, vendor_model)` 没有网关模型维度），承载判据与缺省注入双双静默失效，
         而且红不红取决于配置书写顺序。端到端那条腿在
         `test_q33_two_level_switch_api.py::TestPerAccountSpecWiring::test_another_system_model_switch_cannot_erase_this_resources_spec`。
         """
         cfg = _two_path_config()
-        cfg.models[0].resources[0].enabled = False          # 厂商侧条目关着
+        cfg.models[0].resources[0].enabled = False          # Key 接入侧条目关着
         spec = resource_spec(cfg.resources[0], "vm-k", _Pool())
         assert spec.max_output == 65536, spec
         # 同一份配置走**声明**那条路：关着的映射不得把自己的窗口"顶上去"（判据仍在）
@@ -645,7 +648,7 @@ class TestCapsMerge:
         """🔴 评审 R8-报备 R-8：端点不变量原先**只在合并腿**上压。
 
         `spec=None` 的那条出口（`build_model_caps` 直接返回 `base`）根本不经过 `_merge_spec_maxima`，
-        于是"目录里有同名 chat 条目 + 系统模型被改成 images 端点"这种形状照样对外承诺
+        于是"目录里有同名 chat 条目 + 网关模型被改成 images 端点"这种形状照样对外承诺
         `supportsToolCall: true` —— 图像端点没有 `tools` 参数，那句承诺是空的。
         不变量属于**出口**，不属于某一条来源的算法。
         """
@@ -659,7 +662,7 @@ class TestCapsMerge:
         assert caps["maxInputTokens"] == 262144   # 其余字段照旧（不是把整块压成保守）
 
 class TestOutboundDefaultPriority:
-    """工具传参 > 网关设置 > 统一规格 > 厂商内置（Q24 与 Q33-④ 同一条优先级链）。"""
+    """工具传参 > 网关设置 > 统一规格 > 供应商通道默认（Q24 与 Q33-④ 同一条优先级链）。"""
 
     def test_caller_value_wins(self):
         body = {"max_tokens": 128}
@@ -684,7 +687,7 @@ class TestOutboundDefaultPriority:
         assert "max_tokens" not in body
 
     def test_no_spec_or_no_number_injects_nothing(self):
-        """🔴 规格没这个数就**什么都不注入**（继续走厂商内置默认，不编一个"看起来对"的数）。"""
+        """🔴 规格没这个数就**什么都不注入**（继续走该供应商通道默认，不编一个"看起来对"的数）。"""
         for spec in (None, ModelSpec(), ModelSpec(max_output=0)):
             body = {}
             apply_spec_defaults(body, spec)

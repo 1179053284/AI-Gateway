@@ -202,7 +202,7 @@ def test_admin_post_targets_mg_config_port(monkeypatch, tmp_path):
 # ---------- S-4：资源行聚合与到期归位（面板 ix S-2 / PM M-4）----------
 
 def _mgr_two_entries():
-    """一个资源两条映射（不同厂商模型），便于构造"一条判死一条正常"的混合态。"""
+    """一个资源两条映射（不同供应商模型名），便于构造"一条判死一条正常"的混合态。"""
     from model_gateway.core.resources import ResourceManager
 
     cfg = make_config(resources=[{"id": "res-a", "name": "资源A", "access_mode": "api",

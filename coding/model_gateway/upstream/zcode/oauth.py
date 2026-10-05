@@ -251,7 +251,7 @@ def _bridge_redirect_uri(app_version: str = DEFAULT_APP_VERSION) -> str:
     https://zcode.z.ai/app/oauth/login?redirect=zcode%3A%2F%2Foauth%2Fcallback&app_version=<ver>
     ```
     🔴 为什么必须用它（`oauth.rs:129-131` 原文）：服务端给的 `authorize_url` 里回跳参数
-    指向**厂商自己的回调**，那样的授权页走完后永远不会导航到捕获方 ——
+    指向**供应商自己的回调**，那样的授权页走完后永远不会导航到捕获方 ——
     换成桥接页才有 `zcode://oauth/callback`（或桥接页自身 query 里的 `code`）可接
     （`ZCode-Panel/main.js:1978-1986`：捕获侧同时接受深链与桥接页两种形态）。
     """

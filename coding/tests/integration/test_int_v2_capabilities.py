@@ -213,7 +213,7 @@ async def test_warning_for_enabled_resource_without_model(make_gateway):
         kinds = [w["kind"] for w in ws]
         assert "resource_without_model" in kinds
         msg = next(w["message"] for w in ws if w["kind"] == "resource_without_model")
-        assert "未被任何系统模型引用" in msg
+        assert "未被任何网关模型引用" in msg
     finally:
         await gw.stop()
 

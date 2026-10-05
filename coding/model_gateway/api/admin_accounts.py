@@ -21,14 +21,14 @@
 **模型映射轮增补（2026-10-01，超出上表 §22.7 冻结清单 —— 逐条语义见各函数）**::
 
     GET  /admin/api/accounts/{product}/catalog        产品级模型目录（映射弹窗的数据面）
-    POST /admin/api/accounts/mappings                 保存映射（目录条目 → 系统模型；整表提交）
+    POST /admin/api/accounts/mappings                 保存映射（目录条目 → 网关模型；整表提交）
     POST /admin/api/accounts/auto-map                 首次配置用的「初始化映射」：服务端整表匹配并落库
                                                       （模型分析优先，选不出腿/回答不可解析 ⇒ **整表**
                                                       降级正则；🔴 会真发一次出站请求，只在用户亲手点时）
     POST /admin/api/accounts/claim-all                一键领取（全局 / 单产品批量）
     GET  /admin/api/accounts/{product}/{name}/check-models
                                                       该账号**可检测**的模型清单（只列已生效映射）
-    POST /admin/api/accounts/product-models/remove    删除一条 (产品, 厂商模型) 映射
+    POST /admin/api/accounts/product-models/remove    删除一条 (产品, 供应商模型名) 映射
                                                       （🔴 位与派生条目**一起删**，判据见该函数）
 
 **错误语义**（§22.7）：
@@ -429,7 +429,7 @@ async def _set_enabled(request: Request, product: str, name: str, enabled: bool)
     #    用户刚刚的显式动作，不能靠轮询碰运气。与映射写面同一个收口 `reload_from_file()`。
     #    重载失败不回滚启停（盘上是事实），但必须在响应里如实说明未即时生效。
     reload_ok: bool | None = None
-    inherited_skipped: list[str] = []     # 按号权益闸门拦下的厂商模型（R5-⑧：必须让用户看见）
+    inherited_skipped: list[str] = []     # 按号权益闸门拦下的供应商模型名（R5-⑧：必须让用户看见）
     if enabled:
         try:
             await sync_product_models_async(product, name, config_path=cfg_path,
@@ -445,7 +445,7 @@ async def _set_enabled(request: Request, product: str, name: str, enabled: bool)
         reload_ok = False
     # 两条腿**同一键集**（`changed=False` 那条的字典被测试逐键钉住，多一个键就是契约漂移）：
     # `reload` = 启停是否即时落到运行态；`mapping_skipped` = 启用时**按号权益闸门**
-    # 拦下的厂商模型名（R5-⑧：这条腿原先只写日志，回执 200 而映射一条没落地 =
+    # 拦下的供应商模型名（R5-⑧：这条腿原先只写日志，回执 200 而映射一条没落地 =
     # "看着已启用、盘上没写"的假态）。空列表 = 没有被拦，界面据此决定要不要提示。
     return {"status": "ok", "product": product, "account": name,
             "enabled": enabled, "changed": True, "reload": reload_ok is True,
@@ -1230,14 +1230,14 @@ _FALLBACK_SOURCE = {"kind": "fallback", "account": "",
 
 
 def _enum_suggest(pool, cfg_names: set[str], mid: str) -> dict | None:
-    """目录条目 → 网关系统模型的**建议映射**（映射弹窗里的一键带出；服务端解析的读侧）。
+    """目录条目 → 网关模型的**建议映射**（映射弹窗里的一键带出；服务端解析的读侧）。
 
     算法（三级匹配 + 首段前缀剥离）：
     ① `pool.match(mid)` 直接命中（精确 1.0 / 别名 0.9 / 规范化 0.7，`via` 由置信度映射）；
     ② 未命中且 `mid` 含 `-` → 剥**第一段**再匹配（厂商前缀形态：`sn-glm-5-3` → `glm-5-3`）
        → `via="prefix"`、置信度 = min(命中值, 0.7)（前缀剥离是启发式，不冒充直配）；
     ③ 仍未命中 → `None`（**不编造建议**）。
-    仅当规范名**可落地**（已是现有系统模型，或枚举池条目可即时创建）才给出 ——
+    仅当规范名**可落地**（已是现有网关模型，或枚举池条目可即时创建）才给出 ——
     建议必须能一键变成配置，否则前端只能画一个"点了必然失败"的钮（§22.6 同口径）。
     """
     if pool is None or not mid:
@@ -1256,7 +1256,7 @@ def _enum_suggest(pool, cfg_names: set[str], mid: str) -> dict | None:
 
 
 def _mapped_to(cfg, product: str, product_rids: set[str], mid: str) -> list[str]:
-    """该条目已挂上的系统模型名（映射条目 `resource ∈ 本产品资源` 且 `model == mid`）。
+    """该条目已挂上的网关模型名（映射条目 `resource ∈ 本产品资源` 且 `model == mid`）。
 
     扫**生效配置**（`runtime.config`）——与「初始化映射」的去重判据同源
     ((resource, model) 组合不重复挂载）。弹窗据此把已映射条目显示为"已挂到 X"。
@@ -1278,22 +1278,37 @@ def _map_enabled(cfg, product: str, product_rids: set[str], mid: str):
     """该目录条目的**映射开关**状态：`None` = 未映射；`True` = 进池可对外调用；
     `False` = 已映射但关着（不参与资源池、不出现在 `/v1/models`）。
 
-    🔴 取数优先级与调度侧**逐字同一条**（`AppConfig.mapping_enabled`，Q33-①）：
-    账号侧先看**产品位**（`(产品, 厂商模型)` 的唯一真相），无位才回落到条目位聚合
-    （旧配置零迁移）。若这里继续按「组内至少一条开着就算开着」聚合，就会与调度分叉 ——
-    弹窗显示进池、实际不进池（或反过来），正是本轮要消灭的那类"两套真相"。
+    🔴 S-3（2026-10-05 架构审计）——与 `AppConfig.mapping_enabled` 完全合流，三条腿：
+    · **无位**（旧配置零迁移）：逐系统模型问同一条判据（回落条目位）——任一系统模型下
+      该条目按调度判据进池 ⇒ True；条目出现过但全部不进 ⇒ False；从未出现 ⇒ None
+      （None 是 AI 匹配闸门唯一认的"可自动补位"信号，V27/MS8）。
+    · **有位且开**：还必须**目标系统模型里真的挂着该条目**（`mapping_enabled` 的
+      「有位、但目标指向别的网关模型 → 不进」那条）——否则位开着、落点为空，
+      调度侧什么都不服务而弹窗说进池（R1-F-3 的 a4 形状）。注意这里只看**落点位置**，
+      不看号开关（Resource.enabled 是另一条正交轴，归 `_map_landing` 表达）。
+    · **有位但关**：False。
+    有位 ⇒ 永不为 None：已配置过的行绝不被 AI 自动补位覆盖。
     """
     bit = cfg.product_mapping(product, mid) if hasattr(cfg, "product_mapping") else None
-    if bit is not None:
-        return bool(bit.enabled)
-    seen = False
+    if bit is None:
+        seen = False
+        for m in getattr(cfg, "models", None) or []:
+            for e in m.resources:
+                if e.resource in product_rids and e.model == mid:
+                    seen = True
+                    res = next((r for r in (getattr(cfg, "resources", None) or [])
+                                if r.id == e.resource), None)
+                    if res is not None and cfg.mapping_enabled(res, e, m.name):
+                        return True
+        return False if seen else None
+    if not bit.enabled:
+        return False
     for m in getattr(cfg, "models", None) or []:
-        for e in m.resources:
-            if e.resource in product_rids and e.model == mid:
-                seen = True
-                if e.enabled:
-                    return True
-    return False if seen else None
+        if m.name != bit.system_model:
+            continue
+        if any(e.resource in product_rids and e.model == mid for e in m.resources):
+            return True
+    return False
 
 
 def _map_landing(cfg, product: str, product_rids: set[str], mid: str) -> bool:
@@ -1401,7 +1416,7 @@ async def account_catalog(request: Request, product: str):
     - `source`：`{kind: account|fallback, account, detail}`（见 `_catalog_models`）；
     - `models[]`：`asdict(ModelInfo)` 逐字段（**字段随冻结类型演进，不硬编码字段表**；
       目录条目扩展 `free`/`rate` 等字段时自动带出）+ `suggest`（枚举池建议，见
-      `_enum_suggest`）+ `mapped_to`（已挂上的系统模型名，见 `_mapped_to`）；
+      `_enum_suggest`）+ `mapped_to`（已挂上的网关模型名，见 `_mapped_to`）；
     - `accounts[]`：`{name, enabled, resource_id}`（`resource_id` 空串 = 尚未物化；
       **本端点不物化**）；
     - `checkin`：能力位（弹窗据此决定是否显示签到入口）。
@@ -1463,7 +1478,7 @@ def _create_system_model(config, pool, name: str) -> SystemModel:
     """
     entry = pool.get(name)
     if entry is None:
-        raise _ApiError(400, f"系统模型 {name!r} 不存在，且不是统一名枚举池条目：请先在"
+        raise _ApiError(400, f"网关模型 {name!r} 不存在，且不是统一名枚举池条目：请先在"
                              "「网关模型管理」页创建它，或改用枚举池里的名字"
                              "（不自动创建用户无法追溯的模型名）")
     model = SystemModel(name=name, group=entry.group, endpoint=entry.endpoint,
@@ -1474,23 +1489,34 @@ def _create_system_model(config, pool, name: str) -> SystemModel:
 
 
 def _mapping_holder(config, rid: str, mid: str):
-    """`(resource=rid, model=mid)` 组合当前挂在哪个系统模型上 → `(模型, 条目)`，无 → `None`。
+    """`(resource=rid, model=mid)` 组合当前挂在哪个网关模型上 → `(模型, 条目)`，无 → `None`。
 
-    判据扫**全部**系统模型：同一组合挂两处会让调度按模型复制资源、统计口径打架，
+    判据扫**全部**网关模型：同一组合挂两处会让调度按模型复制资源、统计口径打架，
     所以"已在别处"是拒绝理由（进 `skipped`）而不是幂等命中（幂等命中 = **已在目标模型**上）。
     🔴 一并返回**条目本体**：映射级开关（`ModelResource.enabled`）要写的就是这一条，
     只回模型会让调用方再扫一遍数组（两处扫描迟早分叉，与 §22.5-2 join 谓词同一条教训）。
     """
-    for m in config.models:
-        for e in m.resources:
-            if e.resource == rid and e.model == mid:
-                return m, e
+    for m, e in _mapping_holders(config, rid, mid):
+        return m, e
     return None
+
+
+def _mapping_holders(config, rid: str, mid: str) -> list[tuple]:
+    """同一组合挂着的**全部**位置 → `[(模型, 条目), …]`（正常配置下 0 或 1 条）。
+
+    🔴 为什么改挂的预检要看"全部"而不是第一个（2026-10-05 那条移动语义上线时抓出来的）：
+    跨网关模型挂同一组合是**既有设计**（一条上游模型起两个网关名，`schemas.py` 的唯一性校验
+    只查同一模型内重复），所以别名配置下这条组合可以合法地住在两个模型里。此时"本行原来挂
+    哪一侧"有**两个**答案，只取第一个就搬 = 把另一侧留成孤儿并让这一行同时住两处 ——
+    正是本写面自己宣布禁止的形状。看不全就是猜，猜错了红还看不出来。
+    """
+    return [(m, e) for m in config.models for e in m.resources
+            if e.resource == rid and e.model == mid]
 
 
 def _write_mappings_phase3(path, product: str, parsed, rids: dict[str, str],
                            names: list[str], pool):
-    """映射写面的阶段 3：**读整份配置 → 预检 → 写产品位 → 扇出条目 → 原子保存**，返回回执计数。
+    """映射写面的阶段 3：**读整份配置 → 预检 → 写产品位 → 改挂的先搬 → 扇出条目 → 原子保存**，返回回执计数。
 
     🔴 为什么是**独立同步函数**而不是端点里的一段（债务 Q33-债3，复验轮 R4-⑦）：
     这段含 `_load_config_for_write`（读盘）+ `save_config`（tempfile + **fsync** + replace）
@@ -1507,40 +1533,53 @@ def _write_mappings_phase3(path, product: str, parsed, rids: dict[str, str],
     with materialize_order_lock():
         config = _load_config_for_write(path)
         created: list[str] = []
-        added = already = turned_on = turned_off = 0
+        added = already = turned_on = turned_off = moved = 0
+        emptied: list[str] = []
         skipped: list[dict] = []
         bits: list[dict] = []
         for mid, target, enabled in parsed:
             if not target:
                 continue
+            moved_ids: set[int] = set()   # 本轮这一行搬过来的条目，扇出循环不再重复计数
             # ⓪ 🔴 **整体预检在先，写盘在后**（Q33 评审 R1-① 判死后的修正）：
-            #    原先的顺序是"先写产品位 → 再逐号扇出 → 扇出发现该 (资源, 厂商模型) 已挂在别的
-            #    系统模型上就跳过" ⇒ 位已经改指新目标了，条目却还留在旧模型下，而**旧模型就此
+            #    原先的顺序是"先写产品位 → 再逐号扇出 → 扇出发现该 (资源, 供应商模型名) 已挂在别的
+            #    网关模型上就跳过" ⇒ 位已经改指新目标了，条目却还留在旧模型下，而**旧模型就此
             #    静默掉出 `/v1/models`**，回执却仍是 200。要么位和条目一起改，要么一个都不动。
             #    🔴 扫描面 = 该产品**全部**派生资源，含**停用号**（复验轮 R4 阻塞项 2）：
             #    只扫启用号会漏掉"停用号身上还挂着旧条目"那一支 —— 改挂时预检放行，
             #    号被重新启用时 `sync_product_models` 按新位再补一条 ⇒ 同一
-            #    `(资源, 厂商模型)` 同时挂两个系统模型，正是本端点自己宣布禁止的形状
+            #    `(资源, 供应商模型名)` 同时挂两个网关模型，正是本端点自己宣布禁止的形状
             #    （`_mapping_holder` 的组合唯一判据），且此后该组合再映射永远进 `skipped`。
-            conflicts = []
+            #
+            # 🔴 2026-10-05 用户裁定「为什么要多保存这一步呢」⇒ **"本行原来挂的那一侧"不算冲突，
+            #    算移动**：产品位（无位时 = 那唯一一个持有该组合的模型）指的就是这一行当前的目标，
+            #    改挂 = 把条目从那一侧整条搬过来（位与条目仍一起动，"要么一起改要么都不动"没放宽）。
+            #    旧实现把它当冲突整条拒 ⇒ 用户改一次目标必须"先跳过保存一次、再选新目标保存一次"，
+            #    那就是那一步多余保存的真根因（只在前端连发两次请求是把刚性的服务端语义藏起来）。
+            bit = config.product_mapping(product, mid)
+            holders: list[tuple[object, tuple]] = []
             for prod_res in config.resources:
                 if (prod_res.product or "").strip() != product:
                     continue
-                found = _mapping_holder(config, prod_res.id, mid)
-                if found is not None and found[0].name != target:
-                    who = (prod_res.account_ref or prod_res.account or prod_res.id).strip()
-                    conflicts.append((who or prod_res.id, found[0].name))
+                for found in _mapping_holders(config, prod_res.id, mid):
+                    if found[0].name != target:
+                        holders.append((prod_res, found))
+            holder_models = {found[0].name for _r, found in holders}
+            movable = bit.system_model if bit is not None else (
+                next(iter(holder_models)) if len(holder_models) == 1 else None)
+            conflicts = [(prod_res, found) for prod_res, found in holders
+                         if found[0].name != movable]
             if conflicts:
-                for who, holder in conflicts:
+                for prod_res, (holder, _entry) in conflicts:
+                    who = (prod_res.account_ref or prod_res.account or prod_res.id).strip()
                     skipped.append({
                         "model": mid, "target": target,
-                        "reason": f"账号 {who} 的 {mid} 已挂在系统模型 {holder}"
+                        "reason": f"账号 {who or prod_res.id} 的 {mid} 已挂在网关模型 {holder.name}"
                                   f"（同一组合不重复挂载）—— 本条整体未生效：产品位与任何条目都没改动"
-                                  f"；确要改挂到 {target}，先在「网关模型管理」页把 {holder} 的该映射移除"})
+                                  f"；确要改挂到 {target}，先在「网关模型管理」页把 {holder.name} 的该映射移除"})
                 continue
-            # ① 再写**产品位**（Q33-① 的唯一真相）：一次点击 = 一个 (产品, 厂商模型) 的开关，
+            # ① 再写**产品位**（Q33-① 的唯一真相）：一次点击 = 一个 (产品, 供应商模型名) 的开关，
             #    不再"往每个号上各刷一遍然后靠聚合猜产品状态"。
-            bit = config.product_mapping(product, mid)
             if bit is None:
                 config.product_models.append(ProductModelMapping(
                     product=product, model=mid, system_model=target, enabled=enabled))
@@ -1553,13 +1592,26 @@ def _write_mappings_phase3(path, product: str, parsed, rids: dict[str, str],
             if model is None:
                 model = _create_system_model(config, pool, target)
                 created.append(target)
-            # ② 条目扇出：启用号（停用号由"号被启用时按产品位自动继承"覆盖，见阶段 2 注释）。
-            #    ⓪ 预检已把"挂在别的模型上"的号整条拦下 ⇒ 这里不再重复那道判断（判据只留一份）。
+            # ② **改挂 = 移动**（⓪ 已认定这一侧是本行原来的落点）：条目本体整条搬过来，
+            #    🔴 不删了重建 —— 推理默认（`reasoning`）住在条目上（第八轮 B-1' 那条：它是条目级
+            #    事实），删掉再建会把它悄悄清空；搬过去只改它挂在哪个模型下、开关随本次意图。
+            for _prod_res, (old_model, entry) in holders:
+                old_model.resources.remove(entry)
+                entry.enabled = bool(enabled)
+                model.resources.append(entry)
+                moved_ids.add(id(entry))
+                moved += 1
+                if not old_model.resources and old_model.name not in emptied:
+                    emptied.append(old_model.name)   # 旧网关模型一条映射不剩 ⇒ 会掉出 /v1/models
+            # ③ 条目扇出：启用号（停用号由"号被启用时按产品位自动继承"覆盖，见阶段 2 注释）。
+            #    ⓪ 预检已把"挂在别处（不是本行原落点）"的号整条拦下 ⇒ 这里不再重复那道判断。
             for name in names:
                 rid = rids[name]
                 found = _mapping_holder(config, rid, mid)
                 if found is not None:
                     entry = found[1]
+                    if id(entry) in moved_ids:
+                        continue                      # 本轮刚搬过来的那条 ⇒ 已计入 `moved`，不再重复计数
                     if entry.enabled == enabled:
                         already += 1                  # 幂等命中：目标与开关都没变
                     elif enabled:
@@ -1591,6 +1643,7 @@ def _write_mappings_phase3(path, product: str, parsed, rids: dict[str, str],
             raise _ApiError(500, f"配置写入失败：{e}") from None
     return {"created": created, "added": added, "already": already,
             "turned_on": turned_on, "turned_off": turned_off,
+            "moved": moved, "emptied_models": emptied,
             "skipped": skipped, "bits": bits}
 
 
@@ -1600,7 +1653,7 @@ async def _apply_mapping_items(request, product: str, meta,
 
     🔴 为什么是一段独立函数而不是端点内的代码：这张表有**两个生产者** ——
     弹窗「保存」（用户逐行手动选的）与「初始化映射」（`account_auto_map`：模型分析 / 正则匹配
-    自动出的）。判据（先拒后动、(资源, 厂商模型) 组合唯一、条目只落启用号、产品位是真相、
+    自动出的）。判据（先拒后动、(资源, 供应商模型名) 组合唯一、条目只落启用号、产品位是真相、
     回执字段集合）必须只有一份，否则两条路各长一套，很快就会变成
     「初始化能写进去的形状，保存写不进去」这种两套真相（Q33-① 同一课）。
     调用方负责 `parsed` 的**形态**校验（`account_mappings` 里那套逐条判据）；本函数不碰请求体。
@@ -1613,13 +1666,13 @@ async def _apply_mapping_items(request, product: str, meta,
     if runtime is None or path is None or pool is None:
         raise _ApiError(500, "运行态不可用（无配置快照），拒绝写入")
 
-    # 阶段 1（**零副作用预检**）：目标模型可追溯性 —— 现有系统模型 或 枚举池条目。
+    # 阶段 1（**零副作用预检**）：目标模型可追溯性 —— 现有网关模型 或 枚举池条目。
     # 全部通过后才开始物化写盘（"先拒后动"：坏输入不得留下任何半成品）。
     snapshot = _load_config_for_write(path)
     existing = {m.name for m in snapshot.models}
     for _, target, _ in parsed:
         if target and target not in existing and pool.get(target) is None:
-            raise _ApiError(400, f"系统模型 {target!r} 不存在，且不是统一名枚举池条目："
+            raise _ApiError(400, f"网关模型 {target!r} 不存在，且不是统一名枚举池条目："
                                  "请先在「网关模型管理」页创建它，或改用枚举池里的名字"
                                  "（不自动创建用户无法追溯的模型名）")
 
@@ -1665,6 +1718,9 @@ async def _apply_mapping_items(request, product: str, meta,
                "added": p3["added"], "already": p3["already"],
                "skipped": p3["skipped"], "reload": ok,
                "turned_on": p3["turned_on"], "turned_off": p3["turned_off"],
+               # 改挂的移动数与"旧网关模型被搬空"的名单（界面要说真话：搬空 = 那个模型
+               # 会掉出 `/v1/models`，与 `product-models/remove` 的 `emptied_models` 同口径）
+               "moved": p3["moved"], "emptied_models": p3["emptied_models"],
                # 🔴 Q33-①：产品位是真相 ⇒ 回执如实报"写了哪些位"与"本次扇出到几个号"。
                # 条目只落启用号（停用号在它被重新启用时按产品位自动继承，见 materialize
                # `sync_product_models`），所以 `accounts_mapped` 计的是**本轮扇出的号数**，
@@ -1680,7 +1736,7 @@ async def _apply_mapping_items(request, product: str, meta,
 @router.post("/admin/api/accounts/mappings")
 @_endpoint
 async def account_mappings(request: Request):
-    """保存映射表（「模型映射」弹窗的**手动提交面**）：把用户逐行选好的目录条目挂到系统模型。
+    """保存映射表（「模型映射」弹窗的**手动提交面**）：把用户逐行选好的目录条目挂到网关模型。
 
     🔴 2026-10-03 更名说明：这条 formerly 叫「初始化映射」，现在「初始化」另有专面
     （`account_auto_map` = 模型分析 / 正则降级），本端点只剩"手动提交"这一职 ——
@@ -1691,14 +1747,16 @@ async def account_mappings(request: Request):
     逐条语义：
     - 参数形态（先拒后动，全部在写盘前）：`product` 必须已登记；`items` 非空对象数组；
       `model` 非空字符串；`target` 为字符串（空串 = 跳过）；全部跳过 → 400（无动作不做假成功）；
-    - `target` 必须**可追溯**：现有系统模型，或枚举池条目名（缺失时**就地创建**，
+    - `target` 必须**可追溯**：现有网关模型，或枚举池条目名（缺失时**就地创建**，
       `name/group/endpoint/params=params_default`，Q19-② 同口径）；两者都不是 → 400；
     - 映射落点 = 每个**已启用**账号的物化资源（`ensure_resource` 幂等；显式钉到
       `runtime.config_path` —— 资源与本次映射写入必须是**同一份配置**，否则引用完整性
       校验必然失败）；停用账号不参与（与运营跳过停用同一判据）；产品没有已启用账号
       → 400（映射无处可落，拒绝而不是空跑：`added:0` 的成功形态会被误读成"已配置"）;
     - 去重判据 = (resource, model) 组合**全配置唯一**：已在目标模型 → 计入 `already`；
-      已在别的系统模型 → 进 `skipped`（附账号与占位模型名）；
+      挂在**本行原来的落点**（产品位所指；无位时 = 那唯一一个持有该组合的模型）→ 计入 `moved`
+      并把条目整条搬过来（2026-10-05 用户裁定：改挂是一次动作，不是"先跳过保存、再选新目标保存"
+      两次）；挂在**别处**（别的产品位/别的模型占着）→ 仍进 `skipped` 并整条不动（先拒后动）；
     - 写盘 = **既有保存链**（`config.loader.save_config` 原子写 + `runtime.reload_from_file`
       热重载，与 `PUT /admin/api/config` **同一实现**，不新造写盘通道）；`reload` 如实
       回报，失败时附 `reload_errors`（写入已发生但运行态未换代 —— 不谎报成功）;
@@ -1721,7 +1779,7 @@ async def account_mappings(request: Request):
             raise _ApiError(400, f"items[{i}] 必须是对象（{{model, target, enabled?}}）")
         mid = str(raw.get("model") or "").strip()
         if not mid:
-            raise _ApiError(400, f"items[{i}] 缺少 model（厂商侧模型 id）")
+            raise _ApiError(400, f"items[{i}] 缺少 model（供应商模型名）")
         target = raw.get("target") or ""
         if not isinstance(target, str):
             raise _ApiError(400, f"items[{i}].target 必须是字符串（空串 = 跳过该条）")
@@ -1774,15 +1832,15 @@ def _pick_analyzer(runtime, cfg):
     """网关内**此刻真能发一次 chat 请求**的出站路径；`None` = 没有可用模型，调用方降级正则。
 
     四条都必须成立（全走既有判据，本层不自建一套"可用性"定义）：
-    ① 系统模型 `endpoint == "chat"` 且启用 —— images 模型回的不是文本，喂不进分析；
-    ② `(资源, 厂商模型)` 按 Q33-① 那条唯一判据**开着**（`cfg.mapping_enabled`）：
+    ① 网关模型 `endpoint == "chat"` 且启用 —— images 模型回的不是文本，喂不进分析；
+    ② `(资源, 供应商模型名)` 按 Q33-① 那条唯一判据**开着**（`cfg.mapping_enabled`）：
        关着的映射进不了池，用它做分析 = 走一条界面和用户都看不见的通道；
     ③ 资源启用且运行态已有适配器（否则根本发不出请求）；
     ④ 凭据按两类接入分（与 `POST /admin/api/resources/test` 逐字同一条）：账号侧资源
-       `api_key` 恒空、凭据由适配器自解，所以"没有 Key"只有对**厂商侧**资源才算缺东西
+       `api_key` 恒空、凭据由适配器自解，所以"没有 Key"只有对**Key 接入侧**资源才算缺东西
        （无条件要求 Key 正是上一轮被证伪的那条死路径）。
 
-    多条并列时的次序：**低档位优先**（名字含 flash/lite/…），再按 `(系统模型, 厂商模型)` 字典序
+    多条并列时的次序：**低档位优先**（名字含 flash/lite/…），再按 `(网关模型, 供应商模型名)` 字典序
     定死 —— 同一份配置反复初始化必须选中同一条腿，否则回执里的 `analyzed_by` 无从解释。
     """
     adapters = getattr(runtime, "adapters", None) or {}
@@ -1902,9 +1960,27 @@ async def _analyze_chunk(pick, rows, allowed: set[str], names_text: str,
 @router.post("/admin/api/accounts/auto-map")
 @_endpoint
 async def account_auto_map(request: Request):
-    """「初始化映射」= 服务端把产品目录整表匹配到网关模型并**一次落库**（首次配置用）。
+    """「AI智能匹配」= 服务端把产品目录里**待补的那些行**匹配到网关模型，**只出建议、不落库**。
 
-    载荷：`{"product"}`。
+    载荷：`{"product", "models"?: [目录条目 id…]}`。
+
+    🔴 **这条腿一个字节都不写**（2026-10-05 第三次裁定：「调用AI分析结果直接回填到弹窗内，
+    但不提交保存，仅在前端进行展示 …… 所有修改、设置 点击保存提交数据后才能入库存储」）：
+    回执 `written` 恒为 `false`，答案住在 `suggested[]` 里由前端填进下拉，
+    入库由 `POST /admin/api/accounts/mappings`（保存那一次提交）负责 —— 写面只有一份，
+    就是手动保存那条出口（`_apply_mapping_items`），本函数**不再调用它**。
+    这条裁定同时作废上一轮"AI 答案当场落库并默认进池"那半句：机器给的结果不许直接进配置，
+    人看完点保存才算（人自己做的逐行编辑同样进草稿，见前端）。
+
+    🔴 **分析范围 = 屏幕上还空着的那些行**（第二次指示的"只补未配置"在这里换了主人）：
+    草稿制下"已配置"不再是判得准的词 —— 一次 AI 回填之后配置里仍然什么都没有，
+    若仍按 `product_models` 过滤，用户按第二次就会把同一批行**再烧一次额度**。
+    所以：前端把**当前显示为「暂不设置」的行 id** 放进 `models` 带上来，
+    服务端再与"配置里从没落过位的行"（`_map_enabled(...) is None`）取**交集**才送分析：
+      · 交集 ⇒ 已逐行配置过的行永远不在射程内（这一条从上一轮原样保留，防覆盖的判据不松）；
+      · 已被上一轮 AI 填进下拉（还没保存）的行 ⇒ 屏幕上有值 ⇒ 不在 `models` 里 ⇒ 不重跑；
+      · `models` 缺省 / 为空 ⇒ 回落到"全部未落位的行"（不带该参数的调用方，含测试替身）。
+    两种情形下都算不出可分析的行 ⇒ **零出站**，200 回 `via:"none"` + `analyzed:0` + `kept`。
 
     两档引擎（2026-10-03 用户指令：调用网关内任意可用的 flash 档模型分析这些模型该匹配哪个网关
     模型；网关内没有可用模型时降级用正则匹配）：
@@ -1916,11 +1992,10 @@ async def account_auto_map(request: Request):
     模型只答了一部分时**不**整表回退：模型答案优先、其余行由正则补齐，两个引擎各 matched 几条
     分开报（`matched_model` / `matched_regex`），`analyzed` 覆盖了几行也照实说。
 
-    落库走 `_apply_mapping_items` —— 与弹窗「保存」**同一条写入出口**，本函数不碰配置细节。
-    目标名单 = 现有系统模型 ∪ 统一名枚举池条目（后者由写入时就地创建，与手动保存同口径）。
-    目录为空 / 一条也没匹配上 → 400（不做假成功："初始化成功而盘上 0 条"是最难查的那种谎）。
+    目标名单 = 现有网关模型 ∪ 统一名枚举池条目（后者由**保存**那一次就地创建，与本函数无关）。
+    目录为空 / 一条也没匹配上 → 400（不做假成功："匹配成功而一条结果都没有"是最难查的那种谎）。
 
-    🔴 这条腿**会真实发出站请求**（消耗所选资源/账号的额度）：只在用户亲手点「初始化映射」时
+    🔴 这条腿**会真实发出站请求**（消耗所选资源/账号的额度）：只在用户亲手点「AI智能匹配」时
     被调用 —— 无自动腿、无定时、不读任何远程下发（铁律 1）。
     """
     body = await _body(request)
@@ -1940,6 +2015,34 @@ async def account_auto_map(request: Request):
                              f"{cat_reason or str(source.get('detail') or '未说明原因')}")
 
     cfg_names = {m.name for m in cfg.models}
+    # 🔴 两道闸门，缺一不可（顺序 = 先"配置从没落过位"、再"屏幕上还空着"）：
+    #    ① `_map_enabled(...) is None` —— 已逐行配置过的行绝不重跑、绝不覆盖（上一轮 V27/MS8 那条病）；
+    #    ② `models` 参数 —— 草稿制下 AI 的答案不落库，所以"这一行还有没有待补"只有界面知道。
+    product_rids = {r.id for r in cfg.resources
+                    if (getattr(r, "product", "") or "").strip() == product}
+    unconfigured = [item for item in models
+                    if _map_enabled(cfg, product, product_rids, str(item.id)) is None]
+    # 🔴 `models` **缺省**与**空数组**是两种意思，绝不能合并判：
+    #   缺省 = 调用方没有屏幕概念（旧客户端/测试替身）⇒ 回落到"全部未落位的行"；
+    #   `[]` = 屏幕上一行都不空（都被回填过了、还没保存）⇒ 本轮**什么都不该分析**。
+    #   写成 `asked = {...} or set()` 再 `if not asked` 回落，就会让"空数组"退化成"全部重跑"
+    #   —— 那正是这条闸门要防的那件事（每次点击重烧一遍额度），而且 A-7 第二条腿会当场打红。
+    raw_models = body.get("models", None)
+    asked = None if raw_models is None else {str(x).strip() for x in (raw_models or [])
+                                             if str(x).strip()}
+    pending = [item for item in unconfigured
+               if asked is None or str(item.id) in asked]
+    # `kept` = 本轮**没送进分析**的行数（已落位的 + 屏幕上已经填了值的），回执如实带上。
+    kept = len(models) - len(pending)
+    if not pending:
+        # 没有待补的行 ⇒ **一次出站都不发**，如实报"没得匹配"而不是跑一遍再说不成功。
+        # 这条出口不带任何"写面回执"字段（added/moved/product_models/reload）：
+        # 本函数从不写盘，带那些字段就是把假态递给界面。
+        return {"product": product, "written": False, "suggested": [],
+                "via": "none", "analyzed_by": "", "entries": len(models), "analyzed": 0,
+                "matched_model": 0, "matched_regex": 0, "unmatched": 0, "kept": kept,
+                "reason": f"没有待匹配的行：{kept} 行要么已配置过、要么屏幕上已经填着目标"
+                          " ⇒ 本轮一次出站都没发（要重挑哪一行，先把那一行改回「暂不设置」）"}
     allowed = set(cfg_names) | set(pool.entries)
     names_text = "、".join(sorted(allowed))
     timeout = min(_ANALYZE_TIMEOUT_CAP, float(getattr(cfg.gateway, "attempt_timeout_seconds", 60) or 60))
@@ -1964,10 +2067,10 @@ async def account_auto_map(request: Request):
                               (cap or 10 ** 9) // _ANALYZE_TOKENS_PER_ROW))
         budget = _ANALYZE_ROWS_PER_CALL * _ANALYZE_MAX_CALLS
         try:
-            for start in range(0, len(models), per_call):
+            for start in range(0, len(pending), per_call):
                 if analyzed >= budget:
                     break
-                chunk = models[start:start + per_call]
+                chunk = pending[start:start + per_call]
                 got, _dropped = await _analyze_chunk(
                     pick, chunk, allowed, names_text, timeout,
                     min(per_call * _ANALYZE_TOKENS_PER_ROW, cap or per_call * _ANALYZE_TOKENS_PER_ROW))
@@ -1984,13 +2087,13 @@ async def account_auto_map(request: Request):
         if via == "model" and not decided:
             via = "regex"
             reason = "模型一条映射也没给出（回答里没有可采纳的条目），已整表降级为正则匹配"
-        elif via == "model" and analyzed < len(models):
-            reason = (f"模型分析了 {analyzed}/{len(models)} 行（单次 {per_call} 行、总计上限 {budget} 行），"
-                      f"其余 {len(models) - analyzed} 行由正则补齐")
+        elif via == "model" and analyzed < len(pending):
+            reason = (f"模型分析了 {analyzed}/{len(pending)} 行（单次 {per_call} 行、总计上限 {budget} 行），"
+                      f"其余 {len(pending) - analyzed} 行由正则补齐")
 
-    parsed: list[tuple[str, str, bool]] = []
+    suggested: list[dict] = []
     matched_model = matched_regex = 0
-    for item in models:
+    for item in pending:
         target = decided.get(item.id, "") if via == "model" else ""
         engine = "model" if target else ""
         if not target:
@@ -2003,24 +2106,20 @@ async def account_auto_map(request: Request):
             matched_model += 1
         else:
             matched_regex += 1
-        parsed.append((item.id, target, True))   # enabled 缺省 True：初始化即进池，之后由逐行开关调整
+        # 🔴 只出建议：`enabled` 不在这里定，界面按「新映射缺省进池」画开关，保存那一次才落。
+        suggested.append({"model": str(item.id), "target": target, "engine": engine})
 
-    if not parsed:
-        raise _ApiError(400, "没有任何目录条目能匹配上网关模型（"
+    if not suggested:
+        raise _ApiError(400, f"{len(pending)} 行待匹配的目录条目里没有任何一条能匹配上网关模型（"
                              + ("模型分析与正则都无命中" if analyzed_by else "正则无命中")
-                             + "）：请先在「网关模型管理」页创建对应模型，或打开弹窗手动选择")
+                             + "）：请先在「网关模型管理」页创建对应模型，或打开弹窗逐行手动选择")
 
-    payload = await _apply_mapping_items(request, product, meta, parsed)
-    payload["via"] = via
-    payload["analyzed_by"] = analyzed_by
-    payload["entries"] = len(models)
-    payload["analyzed"] = analyzed
-    payload["matched_model"] = matched_model
-    payload["matched_regex"] = matched_regex
-    payload["unmatched"] = len(models) - matched_model - matched_regex
-    if reason:
-        payload["reason"] = reason
-    return payload
+    return {"product": product, "written": False, "suggested": suggested,
+            "via": via, "analyzed_by": analyzed_by,
+            "entries": len(models), "analyzed": analyzed,
+            "matched_model": matched_model, "matched_regex": matched_regex,
+            "unmatched": len(pending) - matched_model - matched_regex, "kept": kept,
+            **({"reason": reason} if reason else {})}
 
 
 def _write_product_model_removal(path, product: str, model: str) -> dict:
@@ -2051,7 +2150,7 @@ def _write_product_model_removal(path, product: str, model: str) -> dict:
             keep = [ref for ref in m.resources
                     if not (ref.resource in rids and ref.model == model)]
             if m.resources and not keep:
-                emptied.append(m.name)      # 这个系统模型一条映射都不剩 ⇒ 会掉出 /v1/models
+                emptied.append(m.name)      # 这个网关模型一条映射都不剩 ⇒ 会掉出 /v1/models
             entries_removed += len(m.resources) - len(keep)
             m.resources = keep
         try:
@@ -2066,7 +2165,7 @@ def _write_product_model_removal(path, product: str, model: str) -> dict:
 @router.post("/admin/api/accounts/product-models/remove")
 @_endpoint
 async def account_product_model_remove(request: Request):
-    """删除一条 **(产品, 厂商模型)** 映射（产品位 + 它派生的全部账号条目）。
+    """删除一条 **(产品, 供应商模型名)** 映射（产品位 + 它派生的全部账号条目）。
 
     载荷：`{"product", "model"}`。
 
@@ -2074,7 +2173,7 @@ async def account_product_model_remove(request: Request):
     「开/关」它、不能删除它 —— 关着的位会永远留在配置里（`mapping_enabled` 认它，
     号被启用时还会按它把条目补回来），用户想"这个产品的这个模型我根本不想接"没有出口。
     本端点补的就是这个出口，判据与写入面**同源**（同一个 `product_mapping` 取数、
-    同一条 `(资源, 厂商模型)` 组合、同一次热重载）。
+    同一条 `(资源, 供应商模型名)` 组合、同一次热重载）。
 
     语义定版（三条都是被"删了但没删"那两种形状逼出来的，不是审美）：
     - **位与条目一起删**（见 `_write_product_model_removal` 的红线注）；
@@ -2086,7 +2185,7 @@ async def account_product_model_remove(request: Request):
       号全停了也要能把它从配置里清掉（否则停用态的产品就锁死了，与需求相反）。
 
     回执：`{product, model, bit_removed, system_model, entries_removed, product_resources,
-    emptied_models[], reload}`；`emptied_models` = 因此**一条映射都不剩**的系统模型名
+    emptied_models[], reload}`；`emptied_models` = 因此**一条映射都不剩**的网关模型名
     （它们会掉出 `/v1/models`，界面必须说得出这一层后果，别让用户以为调用还会成功）；
     热重载失败时附 `reload_errors`（写入已发生但运行态未换代 —— 不谎报成功）。
     """
@@ -2095,7 +2194,7 @@ async def account_product_model_remove(request: Request):
     meta = _product_meta(product)
     model = body.get("model")
     if not isinstance(model, str) or not model.strip():
-        raise _ApiError(400, "缺少 model：须是非空字符串（要移除的厂商侧模型 id）")
+        raise _ApiError(400, "缺少 model：须是非空字符串（要移除的供应商模型名）")
     model = model.strip()
 
     runtime = getattr(request.app.state, "runtime", None)
@@ -2121,7 +2220,7 @@ async def account_check_models(request: Request, product: str, name: str):
     取法（三条都必须是**同一份配置**，不得各读一处）：
     - 资源 = `_matched_resources(config, product, name)`（§22.5-2 的单一 join 谓词）；
     - 映射 = `config.models[].resources[]` 中 `resource ∈ 上述资源 id` 且**按 Q33-① 判据开着**
-      的条目（账号侧看**产品位**、厂商侧看条目位 ⇒ 关掉的映射**不参与检测**，
+      的条目（账号侧看**产品位**、Key 接入侧看条目位 ⇒ 关掉的映射**不参与检测**，
       与调度/对外声明读同一条判据，不各写一份）；
     - 输出 = `{vendor_model（发给上游的模型 id）, system_model（网关对外名）, resource_id}`。
 
@@ -2145,7 +2244,7 @@ async def account_check_models(request: Request, product: str, name: str):
         for ref in m.resources:
             if ref.resource not in rids:
                 continue
-            # 🔴 与调度/对外声明**同一条判据**（Q33-①）：账号侧看产品位、厂商侧看条目位。
+            # 🔴 与调度/对外声明**同一条判据**（Q33-①）：账号侧看产品位、Key 接入侧看条目位。
             # 检测是"真会发请求的那些模型"的清单，判据若与选路不一致，界面就会
             # 要么漏掉能测的、要么列出根本进不了池的。
             if not cfg.mapping_enabled(by_id[ref.resource], ref, m.name):

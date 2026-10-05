@@ -9,16 +9,17 @@
 # `MGW_QODER_NODE_BIN`  = 可选，node 可执行文件路径（默认取 PATH 里的 node）。
 # 为什么放环境变量而不是这里加字段：它是**本机运行环境**（装了哪个客户端），不是业务配置；
 # 写进 config.yaml 会让同一份配置在别的机器上悄悄指向不存在的路径。
-
 #
 # 使用：复制到 data/config.yaml 后修改；密钥仅存本地明文（铁律 1），data/ 不入 git。
 # 参数默认值即终审确认点 4 落定值，未写出的字段走内置默认。
 #
-# Q18-②：资源 = 厂商 + Key（扁平一层，无账号/实例层级）；
+# Q18-②：资源 = 供应商 + Key（扁平一层，无账号/实例层级）；
+#   术语（2026-10-04 定版）：厂商 = 模型生产公司；供应商 = 接入方（这里的 Key 接入与账号产品都是供应商）；
+#   网关模型 = 把各供应商的同一厂商模型标准化成一个名字并统一规格（旧称系统模型）；资源 = 供应商名下的模型接入。
 #         resources[].id 与 access_tokens[].id/value 由系统自动生成（管理界面保存时补齐），无需手填。
 
 gateway:
-  host: 0.0.0.0                    # 监听全部网卡（本机 + 局域网调用均支持）
+  host: 127.0.0.1                  # 默认只回环（安全默认）；要局域网访问必须显式改成 0.0.0.0
   port: 8300
   max_concurrent_requests: 0       # 网关整体并发上限；0 = 不限（超限 429 + Retry-After）
   attempt_timeout_seconds: 60     # 单次上游尝试超时（终审由 120 调小）
@@ -63,7 +64,7 @@ scheduling:                       # 调度参数全局唯一（Q18-③：一套�
   cooldown_seconds: 60            # api 模式默认冷却时长
   cooldown_seconds_plan: 18000    # plan 模式默认冷却（对齐商汤滚动 5h 窗口）
 
-# 🔴 产品维度的模型映射位（Q33-①）——账号侧「产品 × 厂商模型 → 系统模型」的**唯一真相**。
+# 🔴 产品维度的模型映射位（Q33-①）——账号侧「产品 × 供应商模型名 → 网关模型」的**唯一真相**。
 # 判据只有一份 `AppConfig.mapping_enabled()`，现役**八个调用点**同源（实测：`core/resources.py::servable_models`、`core/resources.py::ResourceManager.rebuild`、`main.py::Runtime/config_warnings/_live`、`api/admin_accounts.py::_map_landing`、`api/admin_accounts.py::account_check_models`（两处）、`core/model_spec.py::sources_for_entries`，以及**并行会话尚未合并**的 `api/admin.py::get_config` 只读派生位 ⇒ 本提交内是七处）：进资源池（`core/resources.py::rebuild`）/
 # 对外声明（同文件 `servable_models`，`/v1/models` 与 `mgw setup` 都读它）/ 系统页告警横幅（`main.py`）/
 # 可检测清单（`api/admin_accounts.py::check-models`）/ 弹窗回显与"位开是否真有人承接"（同文件 `_map_enabled`·`_map_landing`）/
@@ -74,8 +75,8 @@ scheduling:                       # 调度参数全局唯一（Q18-③：一套�
 # 每条映射自身的 `models[].resources[].enabled`（零迁移）。
 product_models:
   - product: buddy                # 产品 id（`accounts/registry.py` 在册；这里 = CodeBuddy）
-    model: deepseek-v4-flash      # 厂商侧模型 ID（该产品目录里的 id）
-    system_model: deepseek-v4-flash   # 网关系统模型 name —— 🔴 必须在下面 models[] 里在册，
+    model: deepseek-v4-flash      # 供应商模型名（该产品目录里的 id；不是网关模型名）
+    system_model: deepseek-v4-flash   # 网关模型 name —— 🔴 必须在下面 models[] 里在册，
                                   #    否则整份配置加载即失败（不静默丢位、不自动建模型）
     enabled: true                 # false ⇒ 该产品**全部账号**的这条映射一起退出资源池
 
@@ -85,10 +86,10 @@ product_models:
 # error_rules:
 #   - { http: 400, type: failed_precondition_error, class: RETRYABLE }
 
-resources:                        # 厂商资源（扁平：厂商 + Key；账号仅次要备注字段）
+resources:                        # 供应商资源（扁平：供应商 + Key；账号仅次要备注字段）
   - id: res-xxxxxxxx              # 系统自动生成，无需手填
     name: 商汤·主Key               # 备注（显示用，可空）
-    preset: sensenova-api         # 厂商预设（sensenova-api / sensenova-tokenplan / 空 = 自定义）
+    preset: sensenova-api         # 供应商预设（sensenova-api / sensenova-tokenplan / 空 = 自定义）
     access_mode: api              # api | plan
     protocol: openai              # openai | anthropic | gemini
     base_url: https://api.sensenova.cn/compatible-mode/v2
@@ -98,7 +99,7 @@ resources:                        # 厂商资源（扁平：厂商 + Key；账�
                                     # 运营类操作按产品匹配参与方（tech-design §14.2 阶段一）
                                     # 例：zcode —— 配合 `mgw zcode` 系列命令与自动签到领取
     enabled: true                 # 资源开关（false 退出全部调度）
-  # - id: res-yyyyyyyy            # 示例：同一厂商第二个 Key = 新增一条资源
+  # - id: res-yyyyyyyy            # 示例：同一供应商第二个 Key = 新增一条资源
   #   name: 商汤·备用Key
   #   preset: sensenova-tokenplan
   #   access_mode: plan
@@ -109,16 +110,16 @@ resources:                        # 厂商资源（扁平：厂商 + Key；账�
   #   product: zcode            # 订阅/积分制资源常伴随产品账号体系
   #   enabled: true
 
-models:                           # 系统模型定义（调度参数全局，无模型级覆盖，Q18-③）
+models:                           # 网关模型定义（旧称系统模型；调度参数全局，无模型级覆盖，Q18-③）
   - name: deepseek-v4-flash       # 统一名（枚举池条目或自定义）
     group: 编程
     endpoint: chat               # chat | images（默认 chat）
     enabled: true                # 模型启用开关（false 时 /v1/models 不返回且请求 404 model_disabled）
-    params: {}                   # 网关级模型参数（Q24；仅 chat 注入。工具传参 > 此处设置 > 厂商内置；
+    params: {}                   # 网关级模型参数（Q24；仅 chat 注入。工具传参 > 此处设置 > 该供应商通道默认；
                                  # 官方默认已在管理界面「资源池设置」一键带入，此处可留空）
     resources:                   # 有序 = 优先级（并发溢出生效集 + 失败切换续跑，Q13）
       - resource: res-xxxxxxxx   # 引用 resources[].id
-        model: deepseek-v4-flash # 厂商侧模型 ID
+        model: deepseek-v4-flash # 供应商模型名
         reasoning:               # 资源级推理默认（可选，Q15；请求级指定优先）
           enabled: true
           effort: high

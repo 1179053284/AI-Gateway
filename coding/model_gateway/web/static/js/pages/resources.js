@@ -94,7 +94,7 @@ function mapsOf(resList) {
   return out;
 }
 
-/* 自定义系统模型下拉：箭头恒距文字 10px（原生 select 箭头钉框右缘的根治）；选中即时显示 */
+/* 自定义网关模型下拉：箭头恒距文字 10px（原生 select 箭头钉框右缘的根治）；选中即时显示 */
 const sysOptions = () => (cfg.models || []).map((x) =>
   ({ v: x.name, label: x.name + (x.enabled === false ? "（已停用）" : "") }));
 
@@ -105,7 +105,7 @@ function buildSysDropdown(cell, value, onChange) {
   btn.className = "in";
   btn.style.cssText = "display:inline-flex;align-items:center;gap:10px;text-align:left;width:auto;height:36px";
   const txt = document.createElement("span");
-  txt.textContent = value || "选择系统模型…";
+  txt.textContent = value || "选择网关模型…";
   if (!value) txt.style.color = "var(--placeholder)";
   const pick = (v) => { txt.textContent = v; txt.style.color = ""; };
   const chev = document.createElement("span");
@@ -268,7 +268,7 @@ function drawDetail(root) {
       <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px">
         <div style="font-size:13px;font-weight:800;color:var(--text-soft)">模型列表</div>
         <div style="font-size:12px;font-weight:500;color:var(--text-faint)">
-          厂商模型 ID 映射到系统统一模型（单选）</div>
+          供应商模型名映射到网关模型（单选）</div>
       </div>
       <div id="rv-maps" style="display:grid;grid-template-columns:340px max-content 1fr;align-items:center"></div>
       <button class="btn btn-soft" id="rv-addmap" style="margin-top:12px">${PLUS}添加模型</button>
@@ -528,8 +528,8 @@ function drawMaps(root, resList) {
 
   // 表头三格必须是 grid 直接子元素（包 div 会整体占首列挤错位）
   let html = `
-    <span style="padding:0 0 6px;font-size:11.5px;font-weight:600;color:var(--text-faint)">供应商模型ID</span>
-    <span style="padding:0 0 6px;font-size:11.5px;font-weight:600;color:var(--text-faint)">系统映射模型ID</span>
+    <span style="padding:0 0 6px;font-size:11.5px;font-weight:600;color:var(--text-faint)">供应商模型名</span>
+    <span style="padding:0 0 6px;font-size:11.5px;font-weight:600;color:var(--text-faint)">网关模型</span>
     <span style="justify-self:end;width:60px;text-align:left;padding-bottom:6px;
       font-size:11.5px;font-weight:600;color:var(--text-faint)">操作</span>`;
   rows.forEach((row, i) => {
@@ -538,9 +538,9 @@ function drawMaps(root, resList) {
       html += `
       <div style="${bt}display:flex;align-items:center;position:relative;min-width:0;height:46px">
         <input class="in mono rv-vm" data-vm="${i}" value="${esc(row.m.vm)}"
-          placeholder="供应商模型 ID" style="width:100%;padding:0 30px 0 0;border:none;background:transparent;
+          placeholder="供应商模型名" style="width:100%;padding:0 30px 0 0;border:none;background:transparent;
           box-shadow:none;border-radius:0">
-        <button class="icon-btn sm rv-vmcopy" data-vmcopy="${i}" title="复制模型 ID"
+        <button class="icon-btn sm rv-vmcopy" data-vmcopy="${i}" title="复制供应商模型名"
           style="position:absolute;right:6px">${COPY}</button>
       </div>
       <div data-syscell="${i}" style="${bt}display:flex;align-items:center;position:relative;
@@ -555,9 +555,9 @@ function drawMaps(root, resList) {
       <div data-dmi="${i - maps.length}" style="${bt}display:flex;align-items:center;position:relative;
         min-width:0;height:46px">
         <input class="in mono rv-dvm" value="${esc(row.d.vm)}"
-          placeholder="供应商模型 ID" style="width:100%;padding:0 30px 0 0;border:none;background:transparent;
+          placeholder="供应商模型名" style="width:100%;padding:0 30px 0 0;border:none;background:transparent;
           box-shadow:none;border-radius:0">
-        <button class="icon-btn sm rv-dvmcopy" data-dvmcopy="${i - maps.length}" title="复制模型 ID"
+        <button class="icon-btn sm rv-dvmcopy" data-dvmcopy="${i - maps.length}" title="复制供应商模型名"
           style="position:absolute;right:6px">${COPY}</button>
       </div>
       <div data-sysdraft="${i - maps.length}" style="${bt}display:flex;align-items:center;position:relative;
@@ -581,7 +581,7 @@ function drawMaps(root, resList) {
     root.querySelectorAll(".rv-dvm")[mapDrafts.length - 1]?.focus();
   };
   if (!rows.length) {
-    box.innerHTML = `<p class="form-hint" style="grid-column:1/-1;padding:2px 0">暂无映射——点「添加模型」将厂商模型映射到系统统一模型</p>`;
+    box.innerHTML = `<p class="form-hint" style="grid-column:1/-1;padding:2px 0">暂无映射——点「添加模型」将供应商模型名映射到网关模型</p>`;
     return;
   }
   box.innerHTML = html;
@@ -605,8 +605,8 @@ function drawMaps(root, resList) {
     const i = +btn.dataset.vmcopy;
     btn.onclick = () => {
       const v = maps[i].vm.trim();
-      if (v) copyText(v, "模型 ID 已复制");
-      else toast("该行模型 ID 为空", "err");
+      if (v) copyText(v, "供应商模型名已复制");
+      else toast("该行供应商模型名为空", "err");
     };
   }
   for (const input of box.querySelectorAll(".rv-vm")) {
@@ -721,8 +721,8 @@ function drawMaps(root, resList) {
     btn.onclick = () => {
       const v = (mapDrafts[i]?.vm || "").trim();
       // data-dvmcopy 即草稿索引
-      if (v) copyText(v, "模型 ID 已复制");
-      else toast("该行模型 ID 为空", "err");
+      if (v) copyText(v, "供应商模型名已复制");
+      else toast("该行供应商模型名为空", "err");
     };
   }
   for (const input of box.querySelectorAll(".rv-dvm")) {
@@ -736,7 +736,7 @@ function drawMaps(root, resList) {
     const i = +btn.dataset.testdraft;
     btn.onclick = async () => {
       const rowm = mapDrafts[i];
-      if (!rowm.vm.trim()) return toast("请先填写供应商模型 ID 再检测", "err");
+      if (!rowm.vm.trim()) return toast("请先填写供应商模型名再检测", "err");
       if (!resList[0]?.base_url) return toast("请先完成该供应商的 Base URL 配置", "err");
       await applyTest(btn, rowm);
     };
@@ -753,7 +753,7 @@ async function promoteMapDraft(root, resList, i) {
   if (!d.vm || !d.sys) return;   // 未填齐不提交
   for (const r of resList) {
     const tm = cfg.models.find((x) => x.name === d.sys);
-    if (!tm) { mapDrafts[i] = d; return toast("系统模型不存在", "err"); }
+    if (!tm) { mapDrafts[i] = d; return toast("网关模型不存在", "err"); }
     if (!tm.resources.some((e) => e.resource === r.id && e.model === d.vm))
       tm.resources.push({ resource: r.id, model: d.vm, reasoning: null });
   }
@@ -810,7 +810,7 @@ function drawDraftEditor(root) {
       <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px">
         <div style="font-size:13px;font-weight:800;color:var(--text-soft)">模型列表</div>
         <div style="font-size:12px;font-weight:500;color:var(--text-faint)">
-          厂商模型 ID 映射到系统统一模型（单选）</div>
+          供应商模型名映射到网关模型（单选）</div>
       </div>
       <div id="rv-maps" style="display:grid;grid-template-columns:340px max-content 1fr;align-items:center"></div>
       <button class="btn btn-soft" id="rv-addmap" style="margin-top:12px">${PLUS}添加模型</button>
@@ -895,17 +895,17 @@ function drawDraftEditor(root) {
     const mapsBox = box.querySelector("#rv-maps");
     const BT = (i) => (i > 0 ? "border-top:1px solid var(--border);" : "");
     let html = `
-      <span style="padding:0 0 6px;font-size:11.5px;font-weight:600;color:var(--text-faint)">供应商模型ID</span>
-      <span style="padding:0 0 6px;font-size:11.5px;font-weight:600;color:var(--text-faint)">系统映射模型ID</span>
+      <span style="padding:0 0 6px;font-size:11.5px;font-weight:600;color:var(--text-faint)">供应商模型名</span>
+      <span style="padding:0 0 6px;font-size:11.5px;font-weight:600;color:var(--text-faint)">网关模型</span>
       <span style="justify-self:end;width:60px;text-align:left;padding-bottom:6px;
         font-size:11.5px;font-weight:600;color:var(--text-faint)">操作</span>`;
     d.maps.forEach((m, i) => {
       html += `
       <div style="${BT(i)}display:flex;align-items:center;position:relative;min-width:0;height:46px">
         <input class="in mono rv-mvm" data-mvm="${i}" value="${esc(m.vm)}"
-          placeholder="供应商模型 ID" style="width:100%;padding:0 30px 0 0;border:none;background:transparent;
+          placeholder="供应商模型名" style="width:100%;padding:0 30px 0 0;border:none;background:transparent;
           box-shadow:none;border-radius:0">
-        <button class="icon-btn sm rv-mvmcopy" data-mvmcopy="${i}" title="复制模型 ID"
+        <button class="icon-btn sm rv-mvmcopy" data-mvmcopy="${i}" title="复制供应商模型名"
           style="position:absolute;right:6px">${COPY}</button>
       </div>
       <div data-msys="${i}" style="${BT(i)}display:flex;align-items:center;position:relative;
@@ -917,7 +917,7 @@ function drawDraftEditor(root) {
       </div>`;
     });
     if (!d.maps.length) {
-      mapsBox.innerHTML = `<p class="form-hint" style="grid-column:1/-1;padding:2px 0">暂无映射——点「添加模型」将厂商模型映射到系统统一模型</p>`;
+      mapsBox.innerHTML = `<p class="form-hint" style="grid-column:1/-1;padding:2px 0">暂无映射——点「添加模型」将供应商模型名映射到网关模型</p>`;
       return;
     }
     mapsBox.innerHTML = html;
@@ -925,8 +925,8 @@ function drawDraftEditor(root) {
       const i = +btn.dataset.mvmcopy;
       btn.onclick = () => {
         const v = (d.maps[i]?.vm || "").trim();
-        if (v) copyText(v, "模型 ID 已复制");
-        else toast("该行模型 ID 为空", "err");
+        if (v) copyText(v, "供应商模型名已复制");
+        else toast("该行供应商模型名为空", "err");
       };
     });
     mapsBox.querySelectorAll("[data-mvm]").forEach((input) => {
@@ -1010,7 +1010,7 @@ function drawDraftEditor(root) {
     const maps = d.maps.filter((m) => m.vm.trim() || m.sys);
     for (const m of maps) {
       if (!m.vm.trim() || !m.sys)
-        return toast("映射行需同时填写供应商模型 ID 并选择系统模型", "err");
+        return toast("映射行需同时填写供应商模型名并选择网关模型", "err");
     }
     const seenMap = new Set();
     for (const m of maps) {

@@ -7,7 +7,7 @@ import { tabBar } from "../components.js";
 
 const DIM_LABELS = {
   by_model: "按模型", by_resource: "按资源", by_token: "按密钥",
-  by_provider: "按厂商", by_account: "按账号",
+  by_provider: "按供应商", by_account: "按账号",
 };
 const PERIODS = [{ id: 1, label: "今日" }, { id: 7, label: "近 7 天" }, { id: 30, label: "近 30 天" }];
 

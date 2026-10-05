@@ -1,6 +1,6 @@
 """`mgw setup` 实现（tech-design v2.0 §12.4 路径 A / PRD Q25-⑨）。
 
-把网关的**启用系统模型 + 能力位**写成工具可读的 `models.json`。
+把网关的**启用网关模型 + 能力位**写成工具可读的 `models.json`。
 
 ⚠️ 交互纪律（§12.4.1 写入纪律 0）：**写前打印解析结果并等待确认** ——
    因为该路径**曾被环境变量劫持**（`WORKBUDDY_CONFIG_DIR` 由另一个产品注入，
@@ -31,7 +31,7 @@ from model_gateway.core import paths
 
 def build_cli_models(config, enum_pool, dialects, base_url: str, api_key: str,
                      servable: set[str] | None = None) -> list[dict]:
-    """把网关系统模型组装成 CLI 侧 `models.json` 的 `models[]` 条目。
+    """把网关模型组装成 CLI 侧 `models.json` 的 `models[]` 条目。
 
     字段名以**工具契约**为准（camelCase）—— 实测 `08` §4.1。
     `caps` 含 `thinkingLevelMap`（**7 键齐全**，§12.2a）。
@@ -178,21 +178,21 @@ def run_setup(args: argparse.Namespace) -> int:
         # 🔴 分成因各说一句（数量 + 名字 + 去处），否则"统一指到添加映射"对
         # 三种成因里的两种是错的（面板 S-9）
         causes = _hidden_causes(config, hidden)
-        print(f"已跳过 {len(hidden)} 个不可服务的系统模型：")
+        print(f"已跳过 {len(hidden)} 个不可服务的网关模型：")
         for kind, names in causes.items():
             if not names:
                 continue
             shown = "、".join(names[:5]) + ("…" if len(names) > 5 else "")
             print(f"    · {len(names)} 个{name_note(kind)}（{shown}）—— {_CAUSE_HINTS[kind]}")
     if not models:
-        print("✗ 没有可下发的系统模型（无启用模型，或启用模型均无可用资源）", file=sys.stderr)
+        print("✗ 没有可下发的网关模型（无启用模型，或启用模型均无可用资源）", file=sys.stderr)
         return 2
 
     degrade_note = ""
     if servable is None:
         # 🔴 降级写盘也要在**最后一行**留提醒（面板 S-17：用户只看得到"✓ 成功"）
         degrade_note = "；⚠ 未取到运行态，清单可能含已不可服务的模型（原因见上方判定依据行）"
-    print(f"将写入：models.json（{len(models)} 条系统模型{degrade_note}）")
+    print(f"将写入：models.json（{len(models)} 条网关模型{degrade_note}）")
     if args.dry_run:
         res = write_models_json(tool, models, dry_run=True)
         print(f"  {res.message}")

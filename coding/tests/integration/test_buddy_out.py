@@ -6,7 +6,7 @@
 · 假上游收到的**路径**（`/v2/chat/completions`，取证值）、**身份头**
   （Bearer=账号令牌、X-Domain=实际基址主机、X-Product=**归属名**（`buddy-adapter.ts:1577`）、
   X-Product-Code、X-IDE-Name/Type/Version、X-Agent-Purpose、UA）与**请求体**
-  （model=映射里的厂商模型名）逐项断言；
+  （model=映射里的供应商模型名）逐项断言；
 · 配置里的 `api_key` **绝不出现**在出站头里（铁律 1：凭据只在账号目录）；
 · 缺凭据 → fail closed + **零次上游请求** + 可读错误；
 · 重新登录后**不重启**网关，下一次请求即用新令牌（不缓存凭据）。
@@ -173,7 +173,7 @@ async def test_buddy_nonstream_end_to_end(buddy_upstream, make_gateway, client):
     assert req["headers"]["x-agent-purpose"] == "conversation"   # :1573
     assert req["headers"]["x-product-code"] == "codebuddy"
     assert req["headers"]["user-agent"] == "CodeBuddyIDE/1.106.1"
-    assert req["body"]["model"] == "hy3"                  # 映射里的厂商模型名
+    assert req["body"]["model"] == "hy3"                  # 映射里的供应商模型名
     assert req["body"]["stream"] is True                  # 通道只接受流式：网关内部改流式再聚合
     # 🔴 反向判据：buddy 实测**收得下**首条非 system 的请求 ⇒ 不许给它凭空注入
     assert req["body"]["messages"] == [{"role": "user", "content": "hi"}]

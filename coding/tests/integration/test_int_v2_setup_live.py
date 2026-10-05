@@ -31,7 +31,7 @@ _REAL_URLOPEN = urllib.request.urlopen
 
 LIVE_TOKEN = "mg-live-token"
 
-#: 占位厂商端口：本文件不发推理请求，只用 `/v1/models` 的配置视角（port 9 = 丢弃位）
+#: 占位供应商端口：本文件不发推理请求，只用 `/v1/models` 的配置视角（port 9 = 丢弃位）
 _VENDOR = 9
 
 
@@ -116,7 +116,7 @@ async def test_setup_reads_live_models_through_auth(make_gateway, tmp_path):
     # → 指路必须是"看最近错误"，不能是"去添加映射"
     assert "运行态不可用" in out and "最近错误" in out, out
     assert "添加资源映射" not in out, out
-    assert "1 条系统模型" in out, out
+    assert "1 条网关模型" in out, out
 
 
 async def test_setup_on_wrong_token_says_401_not_not_running(make_gateway, tmp_path):

@@ -47,7 +47,7 @@ BILLING_BUSINESS_CODE = "110"
 #: 会让 `401 + 一句含 "quota exceeded" 的 body`（认证腿也可能回显这种句子）从 AUTH 翻成 QUOTA。
 #: 码表读的是结构化字段，不会误伤。同理**不宣称**「402 只可能是额度态」——那是从单个号
 #: 外推不出的全称命题；全局 `402 → QUOTA` 只是按字面把 Payment Required 归到额度类，
-#: 并且 `error_rules` 的 (http,type) 精确覆写排在它之前，将来要按厂商改回来是**有门的**。
+#: 并且 `error_rules` 的 (http,type) 精确覆写排在它之前，将来要按供应商改回来是**有门的**。
 _BILLING_CODES = (BILLING_BUSINESS_CODE, "116")
 #: 额度文案兜底判据（**窄关键词**：泛词会误伤正文；`model-queue.ts:128-130`）。
 #: 只在**没有可识别业务码**时兜底；词表保持原样（理由见上面那条"别加新词"）。

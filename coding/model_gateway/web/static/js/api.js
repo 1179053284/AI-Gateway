@@ -66,7 +66,7 @@ export function debounce(fn, ms = 300) {
 
 /* ---------- 两类接入资源的分流判据（2026-10-02 用户裁决：两类并行资源，界面不得互串） ----------
  * 判据不是命名约定，而是 `Resource` 的 schema 互斥契约（tech-design §22.5-2）：
- *   `product` 为空 ⇒ 用户自己接入的**模型供应商资源**（API Key / 厂商 plan，必须有 api_key）；
+ *   `product` 为空 ⇒ 用户自己接入的**模型供应商资源**（API Key / 供应商 plan，必须有 api_key）；
  *   `product` 非空 ⇒ 由该产品**账号体系供给的派生资源**（`account_ref` 必填、`api_key` 必须为空，
  *                    凭据在本地账号目录，`accounts/materialize.py::ensure_resource` 落的行）。
  * 聚合发生在网关调度层（两类同池、按序溢出的故障切换照旧），所以**只有视图按此分流**，

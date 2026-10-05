@@ -52,7 +52,7 @@ def accounts_root(tmp_path, monkeypatch):
 
 
 def _config() -> AppConfig:
-    """两条资源（一条 ZCode 账号、一条别的产品）+ 各挂一个 chat 系统模型。
+    """两条资源（一条 ZCode 账号、一条别的产品）+ 各挂一个 chat 网关模型。
 
     🔴 两条映射**各自成池**（`m-z` 只有 res-z）：选路类判据要能断"这条被绕开了"，
     混在一个模型里就会被另一条资源顶掉，断言变成恒真。

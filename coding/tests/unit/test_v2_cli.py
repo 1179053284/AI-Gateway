@@ -123,7 +123,7 @@ def test_setup_without_models_exits_2(tmp_path, capsys):
     cfg = _write_config(tmp_path, with_model=False)
     rc = main(["setup", "workbuddy", "--config", str(cfg), "--yes"])
     assert rc == 2
-    assert "系统模型" in capsys.readouterr().err
+    assert "网关模型" in capsys.readouterr().err
 
 
 def test_setup_writes_valid_models_json(tmp_path, monkeypatch, capsys):
@@ -164,7 +164,7 @@ def test_probe_unknown_model_exits_2(tmp_path, capsys):
     cfg = _write_config(tmp_path)
     rc = main(["probe", "--model", "nope", "--yes", "--config", str(cfg)])
     assert rc == 2
-    assert "未定义的系统模型" in capsys.readouterr().err
+    assert "未定义的网关模型" in capsys.readouterr().err
 
 
 # ---------- Q28-②：文件下发路径必须与 /v1/models **同一判据**（验收 IX M-1）----------
@@ -231,7 +231,7 @@ def test_setup_degrade_warning_travels_on_the_write_line(tmp_path, capsys):
     """🔴 降级提醒必须钉在「将写入」那一行上（面板 S-19 escape）。
 
     用户读的是最后那行清单条数；提醒若漂到别的位置（或被后续输出挤出屏幕），
-    "2 条系统模型"看起来就像实时结论 —— 判据因此不看"某处提到过"，只看那一行。
+    "2 条网关模型"看起来就像实时结论 —— 判据因此不看"某处提到过"，只看那一行。
     """
     cfg = _setup_cfg(tmp_path)
     rc = main(["setup", "workbuddy", "--config", str(cfg), "--dry-run", "--yes"])
@@ -241,7 +241,7 @@ def test_setup_degrade_warning_travels_on_the_write_line(tmp_path, capsys):
     assert len(lines) == 1, out
     assert "⚠ 未取到运行态" in lines[0], lines[0]
     # 同一条里必须同时看得见"条数"和"这条清单可能是旧的"
-    assert "条系统模型" in lines[0], lines[0]
+    assert "条网关模型" in lines[0], lines[0]
 
 
 # ---------- S-9：`mgw setup` 的隐藏说明必须**按成因**分别指路 ----------

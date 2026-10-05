@@ -87,7 +87,7 @@ class TraeOut(ProductOutAdapter):
             self._client = client
         else:
             from model_gateway.adapters.openai_out import _is_local_target
-            # 公网厂商走环境代理（既有口径）；本机/私网假上游直连
+            # 公网供应商走环境代理（既有口径）；本机/私网假上游直连
             self._client = httpx.AsyncClient(
                 timeout=httpx.Timeout(timeout), trust_env=not _is_local_target(self.base_url))
 
@@ -252,7 +252,7 @@ class TraeOut(ProductOutAdapter):
             "id": f"chatcmpl-trae-{int(time.time() * 1000)}",
             "object": "chat.completion",
             "created": int(time.time()),
-            "model": vendor_model,         # 调度器统一替换为系统模型名（scheduler §5.1）
+            "model": vendor_model,         # 调度器统一替换为网关模型名（scheduler §5.1）
             "choices": [{"index": 0, "message": message, "finish_reason": finish}],
             "usage": usage if usage is not None else {},
         }

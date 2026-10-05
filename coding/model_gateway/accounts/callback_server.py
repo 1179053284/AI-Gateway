@@ -269,7 +269,7 @@ class CallbackListener:
         split = urlsplit(target)
         path = split.path or "/"
         if method == "OPTIONS":
-            # 厂商页面可能先发 CORS 预检；预检**不消耗**会话（204 + CORS 头）
+            # 供应商页面可能先发 CORS 预检；预检**不消耗**会话（204 + CORS 头）
             await _send(writer, 204, None, origin=origin)
             return
         if not _path_matches(path, self._path):
@@ -454,7 +454,7 @@ async def _send(writer: asyncio.StreamWriter, status: int, body: str | None, *,
                 origin: str = "") -> None:
     """写出一个**最小 HTTP/1.1 响应**（`Connection: close` + CORS 头）并 flush。
 
-    🔴 CORS：厂商页面可能对本地回跳发预检/跨源请求，故必须回 CORS 头。
+    🔴 CORS：供应商页面可能对本地回跳发预检/跨源请求，故必须回 CORS 头。
        `Access-Control-Allow-Credentials` **刻意不发** —— 回环接收端不接受第三方
        带凭据的请求，任何源都只能读到这一个页面（`trae-oauth.ts` / `login.ts` 的
        `CORS_HEADERS` 同款取舍）。`origin` 存在就**反射**它（`*` 与凭据型请求不兼容），
@@ -504,7 +504,7 @@ p{{margin:0;color:var(--muted)}}
 def _page(title: str, message: str) -> str:
     """给浏览器的**真实页面**（成功/失败都有正文，绝不把用户丢在错误页上抄地址）。
 
-    🔴 一律 `html.escape`：`message` 里可能出现厂商回跳带回来的路径/主机等
+    🔴 一律 `html.escape`：`message` 里可能出现供应商回跳带回来的路径/主机等
        **攻击者可控**片段（校验文案就带这些），不转义等于在本机端口上开一个反射点。
     """
     return _PAGE_TEMPLATE.format(title=html.escape(title, quote=True),

@@ -5,7 +5,7 @@
 · 非流式 / 流式各一条：网关返回内容正常、`model` 被统一名替换；
 · 假上游收到的**路径**（`/api/proxy/v1/chat/completions`，取证 `lobsterai.ts:45`）、
   **身份头**（Bearer=账号令牌、UA、两个 `X-LobsterAI-Client-*`）与**请求体**
-  （`model` = 映射里的厂商模型名、**`stream` 恒为 true**，`client.go:168-195`）逐项断言；
+  （`model` = 映射里的供应商模型名、**`stream` 恒为 true**，`client.go:168-195`）逐项断言；
 · 非流式响应由本适配器**聚合 SSE** 得到（上游只支持流式）—— 含 `reasoning_content` 与 `usage`；
 · 配置里的 `api_key` **绝不出现**在出站头里（铁律 1：凭据只在账号目录）；
 · 401 → 可分类为 `AUTH`（上层 `disable` 语义可识别，端到端见 401 用例）；429/5xx 归可重试。
@@ -154,7 +154,7 @@ async def test_lobsterai_nonstream_end_to_end(make_gateway, client):
     assert req.headers["x-lobsterai-client-version"] == const.FALLBACK_CLIENT_VERSION
     assert req.headers["accept"] == "text/event-stream, application/json"
     payload = json.loads(req.content)
-    assert payload["model"] == VENDOR_MODEL                  # 映射里的厂商模型名
+    assert payload["model"] == VENDOR_MODEL                  # 映射里的供应商模型名
     assert payload["stream"] is True                         # 🔴 强制改写（client.go:168-195）
 
     await gw.drain_events()

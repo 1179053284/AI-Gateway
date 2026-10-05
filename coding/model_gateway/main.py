@@ -341,11 +341,11 @@ class Runtime:
         self.key_values: dict[str, str] = {}
         self.resource_reasoning: dict[tuple[str, str, str], ReasoningSpec | None] = {}
         self.model_params: dict[str, dict] = {}  # 网关级模型参数（Q24）：模型名 → 注入参数
-        #: 🔴 统一规格（Q33-④）：系统模型名 → `core/model_spec.ModelSpec`。
+        #: 🔴 统一规格（Q33-④）：网关模型名 → `core/model_spec.ModelSpec`。
         #: 在 `_apply` 里一次算好（账号侧只读本地目录缓存，**请求期零网络零读盘**），
         #: `/v1/models`、`mgw setup` 与出站默认注入三处读同一份，不各算各的。
         self.model_specs: dict[str, Any] = {}
-        #: 资源级规格：`(资源 id, 厂商模型) -> ModelSpec`（出站默认注入的唯一依据）
+        #: 资源级规格：`(资源 id, 供应商模型名) -> ModelSpec`（出站默认注入的唯一依据）
         self.resource_specs: dict[tuple[str, str], Any] = {}
         self.events = EventLogger(self.usage_dir, retention_days=config.gateway.retention_days)
         self.cancel_registry = CancelRegistry()
@@ -390,10 +390,10 @@ class Runtime:
         # —— 阶段 1：纯构造（可抛；抛出 = 调用方保持旧运行态，见 reload_from_file）——
         classifier = ErrorClassifier(config.error_rules)
         enum_pool = load_enum_pool(self.enums_path)
-        # 资源级推理默认（Q15）：**(系统模型, 资源, 厂商模型) → 默认值**
-        # 🔴 键必须带系统模型维度（评审 R9-B-1'：与本轮刚修掉的 `resource_specs` 是同一类缺陷，
+        # 资源级推理默认（Q15）：**(网关模型, 资源, 供应商模型名) → 默认值**
+        # 🔴 键必须带网关模型维度（评审 R9-B-1'：与本轮刚修掉的 `resource_specs` 是同一类缺陷，
         #    而且就在下面那条红线注释的**上面二十行**）：`reasoning` 住在 `models[].resources[]` 这条
-        #    条目上，同一个 `(资源, 厂商模型)` 被别名挂到第二个系统模型时，两边完全可以填不同的默认；
+        #    条目上，同一个 `(资源, 供应商模型名)` 被别名挂到第二个网关模型时，两边完全可以填不同的默认；
         #    旧键 `(rid, vendor_model)` 是"后写覆盖" ⇒ 顺序决定哪一边的默认活下来，另一边
         #    **整份消失或凭空串到另一个网关名上**，且定向判据零红（实测见台账 §10）。
         reasoning_map: dict[tuple[str, str, str], ReasoningSpec | None] = {}
@@ -402,9 +402,9 @@ class Runtime:
                 rd = r.reasoning
                 reasoning_map[(m.name, r.resource, r.model)] = (
                     ReasoningSpec(enabled=rd.enabled, effort=rd.effort) if rd else None)
-        # 网关级模型参数（Q24）：系统模型名 → 出站注入参数（请求级同名字段优先，仅 chat）
+        # 网关级模型参数（Q24）：网关模型名 → 出站注入参数（请求级同名字段优先，仅 chat）
         model_params = {m.name: dict(m.params) for m in config.models if m.params}
-        # 🔴 Q33-④：统一规格（系统模型名 → 合并后的 ModelSpec）。
+        # 🔴 Q33-④：统一规格（网关模型名 → 合并后的 ModelSpec）。
         # 一次热重载算一份，**不在请求期读盘/联网**（§22.5-6 同口径）：
         # 账号侧规格来自 `accounts/catalog_cache.py` 的本地落盘目录缓存。
         _spec_cache: dict = {}          # 同一次热重载里按产品复用的目录缓存读（零网络）
@@ -416,8 +416,8 @@ class Runtime:
                        for m in config.models}
         # 🔴 资源级规格（Q33 评审 R1-⑤）：出站默认必须按**实际选中的那条资源**注入，
         # 拿模型级"池内最大"去请求一个上限更小的号 = 我主动制造 400。
-        # 🔴 键是 `(rid, vendor_model)` ⇒ 值**不许**带系统模型维度（评审 R8-B-1 判死）：
-        #    同一组合被别名挂到第二个系统模型上（既有设计，UT-84 留了反证腿）而那一头关着时，
+        # 🔴 键是 `(rid, vendor_model)` ⇒ 值**不许**带网关模型维度（评审 R8-B-1 判死）：
+        #    同一组合被别名挂到第二个网关模型上（既有设计，UT-84 留了反证腿）而那一头关着时，
         #    带映射判据的算法会让后一条**覆盖**前一条，承载判据与缺省注入双双静默失效（fail-open），
         #    且红不红取决于配置书写顺序。"进不进池"归 `mapping_enabled`，这里只算"这条资源自己多大"。
         _res_by_id = {r.id: r for r in config.resources}
@@ -426,8 +426,8 @@ class Runtime:
             for e in m.resources:
                 key = (e.resource, e.model)
                 if key in resource_specs:
-                    continue          # 🔴 幂等：值只由 (资源, 厂商模型) 决定，别名不再互相覆盖
-                # 直接取：`(资源, 厂商模型)` 必在 `resources[]` 在册是**跨节校验的既有契约**
+                    continue          # 🔴 幂等：值只由 (资源, 供应商模型名) 决定，别名不再互相覆盖
+                # 直接取：`(资源, 供应商模型名)` 必在 `resources[]` 在册是**跨节校验的既有契约**
                 #    （缺资源即 `ConfigError`，UT-84 第三腿钉着），这里不再写"不可能发生"的分支
                 resource_specs[key] = model_spec.resource_spec(
                     _res_by_id[e.resource], e.model, enum_pool,
@@ -747,10 +747,10 @@ class Runtime:
         if empty_models:
             out.append({
                 "kind": "model_without_resource",
-                "message": (f"{len(empty_models)} 个系统模型没有任何生效的资源映射，"
+                "message": (f"{len(empty_models)} 个网关模型没有任何生效的资源映射，"
                             f"已从 /v1/models 与 mgw setup 隐藏（调用将返回 503）"
                             f" —— 到{RESOURCE_PAGE}选中要承接的资源，在「模型列表」里"
-                            f"添加映射指向该系统模型"
+                            f"添加映射指向该网关模型"
                             f"（{'、'.join(empty_models[:5])}"
                             f"{'…' if len(empty_models) > 5 else ''}）"),
             })
@@ -761,7 +761,7 @@ class Runtime:
         if orphan:
             out.append({
                 "kind": "resource_without_model",
-                "message": (f"{len(orphan)} 个资源未被任何系统模型引用"
+                "message": (f"{len(orphan)} 个资源未被任何网关模型引用"
                             f"（{'、'.join(orphan[:5])}{'…' if len(orphan) > 5 else ''}）"),
             })
         # ③ BUG-1：模型配了映射但无任何可用资源 → 已从 /v1/models 与 mgw setup 隐藏。
@@ -807,12 +807,27 @@ class Runtime:
         if shadowed:
             out.append({
                 "kind": "param_shadowed",
-                # 🔴 用户要能"看完就知道怎么办"（验收 IX-M-2）：点名是哪个系统模型、
+                # 🔴 用户要能"看完就知道怎么办"（验收 IX-M-2）：点名是哪个网关模型、
                 #    两侧各是什么值、去哪个页面改，并给出完整生效序。
                 "message": (f"{len(shadowed)} 个模型的参数卡推理字段不生效："
                             f"{'；'.join(shadowed)}。"
                             f"实际生效序 = 请求级 > 资源级默认 > 参数卡（PRD FR-3.16）"
                             f" —— 要让参数卡生效，请到{ROUTE_POOL_PAGE}清掉对应资源的推理默认"),
+            })
+        # ④b 2026-10-04 参数档案：用户设的参数与**厂商官方档案**对不上（官方标注废弃 /
+        #    设了会被忽略 / 传该值官方会报错 / 超出官方范围）⇒ 出横幅。
+        #    🔴 只标不拦：写面一拦就把「上游真回 400 ⇒ 界面红」那条路径变成永远走不到
+        #    （v2 门 M15 同一条契约），而且 Q24 定论本就是「未知键放行 = 开放可扩展」。
+        #    与 ④ 同一个立意：**覆盖/不生效可以，静默不行**。
+        mismatched = self._params_vs_catalog()
+        if mismatched:
+            out.append({
+                "kind": "param_vs_catalog",
+                "message": (f"{len(mismatched)} 个网关模型设了厂商官方不认的参数："
+                            f"{'；'.join(mismatched[:5])}"
+                            f"{'…' if len(mismatched) > 5 else ''}"
+                            " —— 网关照原样发出（写面不拦），要改到"
+                            f"{ROUTE_POOL_PAGE}该模型的参数配置行（每行下方写着官方原话与出处）"),
             })
         # ⑤ F-5 / F-4（M6-6 Fix-γ）：**出站前提未注入**（qoder 签名 / zcode 验证码）
         #    → 这些映射选了必然 503，已从 /v1/models 与 mgw setup 隐藏。与 ③ 同一立意：
@@ -848,7 +863,7 @@ class Runtime:
                        f"{'；'.join(items[:3])}{'…' if len(items) > 3 else ''}"
                        f" —— 到{RESOURCE_PAGE}补全出站地址，或检查产品名与账号配置")
             if assembly_hidden:
-                message += (f"；其映射的 {len(assembly_hidden)} 个系统模型已从 /v1/models "
+                message += (f"；其映射的 {len(assembly_hidden)} 个网关模型已从 /v1/models "
                             f"与 mgw setup 隐藏"
                             f"（{'、'.join(assembly_hidden[:5])}"
                             f"{'…' if len(assembly_hidden) > 5 else ''}）")
@@ -902,6 +917,22 @@ class Runtime:
             if r.id == rid:
                 return display_label(r)
         return rid
+
+    def _params_vs_catalog(self) -> list[str]:
+        """参数卡设值与**内置目录官方档案**的偏差清单（2026-10-04，只标不拦）。
+
+        查表只认目录规范名（`EnumPool.entries`）：走 `match()` 的别名/模糊档会把
+        **另一家厂商**的档案套到这条模型上 = 凭猜说话。没档案的键/模型一律不评。
+        """
+        pool = getattr(self, "enum_pool", None)
+        if pool is None:
+            return []
+        out: list[str] = []
+        for m in self.config.models:
+            if m.endpoint != "chat" or not m.params:
+                continue
+            out += [f"「{m.name}」{text}" for text in pool.param_advice(m.name, m.params)]
+        return out
 
     def _shadowed_params(self) -> list[str]:
         """列出「参数卡配了推理字段、但该模型下又有资源级推理默认」的模型（BUG-2 可见性）。"""

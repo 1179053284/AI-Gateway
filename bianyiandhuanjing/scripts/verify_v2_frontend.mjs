@@ -924,14 +924,14 @@ __fire(inp, "change");
 await __until(() => dirty === true, 40);
 const s1 = snap();
 const badgeNode = root.querySelector(".badge");
-const firstKid = root.querySelector(".page-actions").children[0];
+const firstKid = root.querySelector(".page-actions, .card-foot").children[0];
 inp.value = "8";
 __fire(inp, "change");
 await __flush();
 const s2 = snap();
 return { s0, sClean, s1, s2, cleaned, cleanedEmpty, cooldownAfterClear,
   yInCfg: cfg.scheduling.fail_threshold, badgeIsFirst: firstKid === badgeNode,
-  reqs: reqLines(), headOrder: root.querySelector(".page-actions").children.map((c) => c.textContent) };
+  reqs: reqLines(), headOrder: root.querySelector(".page-actions, .card-foot").children.map((c) => c.textContent) };
 `,
   s_save: `
 const root = __mk("div");
@@ -1067,11 +1067,11 @@ async function runChecks(root, overviewPath) {
   check("A1", "渲染出 .alert-warn 横幅", html.includes('class="alert alert-warn"'));
   // 🔴 A2~A9 判的是"后端文案**原样到达 DOM**"；文案本身对不对归 pytest（后端拼的那部分）
   check("A2", "文案透传：含 503", html.includes("503"));
-  check("A3", "文案透传：含「未被任何系统模型引用」", html.includes("未被任何系统模型引用"));
+  check("A3", "文案透传：含「未被任何网关模型引用」", html.includes("未被任何网关模型引用"));
   check("A4", "含「已从 /v1/models …隐藏」（Q28-②）", hiddenHits >= 1);
   check("A5", "两类隐藏说明各一句（零映射 + 不可服务）", hiddenHits >= 2, `命中 ${hiddenHits}`);
   check("A6", "含推理优先级说明「请求级」（Q28-③）", html.includes("请求级"));
-  check("A7", "覆盖告警点名系统模型", /「[\w.-]+」参数卡/.test(html));
+  check("A7", "覆盖告警点名网关模型", /「[\w.-]+」参数卡/.test(html));
   check("A8", "覆盖告警给出两侧具体值", html.includes("=max") && html.includes("默认 low"));
   check("A9", "覆盖告警指到可操作页面", html.includes("「网关模型管理」页"));
   check("A10", "每条告警各渲染一条横幅",
@@ -1412,6 +1412,31 @@ async function runChecks(root, overviewPath) {
   check("H1", ".ops-dot 样式存在", cssSrc.includes(".ops-dot {"));
   check("H2", "用双主题令牌（--err-bg），不写死颜色",
     /\.ops-dot \{[\s\S]{0,400}background: var\(--err-bg\)/.test(cssSrc));
+  /* ---------- H3/H4 · 参数行（2026-10-03 系统设置结构重做）----------
+   * 用户实拍「信息太分散并且一个输入框那么宽，设计很不合理很丑」。`.form-row` 的满宽表单行
+   * 是**弹窗表单**规格（label 在上 + input 100% / 44px），12 个整数参数用它 = 一个 4 位数住进
+   * 推算 579~819px 的框里。定版 = 名称在左 + 数值在右 **128px 定宽 + 右缘对齐**（一条可扫读数值列），
+   * 框体复用全站 `.in` 的 36px 高度。这条钉的是 CSS 产物（静态属性按产物文本判，浏览器只判计算值）。 */
+  check("H3", "参数行的数值框定宽 128px 且右缘对齐（轨道第二列同为 128px ⇒ 对齐由结构保证，不靠列宽算式）",
+    /\.param-row \{[^}]*grid-template-columns: minmax\(0, 1fr\) 128px/.test(cssSrc)
+    && /\.param-row \.in \{ width: 128px; min-width: 128px; text-align: right; \}/.test(cssSrc));
+  check("H4", "满宽表单行的两列工具类 .form-grid2 已全站移除（系统设置改参数行后它零消费方 ⇒ 删类，防下一轮再搬回来）",
+    !cssSrc.includes(".form-grid2"));
+  /* ---------- T1 · 令牌在册性（2026-10-03 结果浮层轮自查出的那一类病） ----------
+   * 我照抄旧 `.bulk-receipt` 的 `background: var(--surface-2, var(--surface))` 时丢了回退，
+   * 而 **`--surface-2` 从来不存在** —— 旧规则靠回退值把这件事藏了整整一轮（属性失效但看起来"只是没底色"）。
+   * 这类错靠眼睛抓不住，所以机械钉：`base.css` 里每一个 `var(--x)` 用的令牌必须有定义。
+   * 白名单只有一个：`--rail-w` 由 `components.js::initSplitResize` 在运行时写进元素 style，
+   * CSS 里本来就不定义它（不是漏网，是构造如此）。 */
+  const cssNoComment = cssSrc.replace(/\/\*[\s\S]*?\*\//g, "");
+  const definedTokens = new Set([...cssNoComment.matchAll(/(-{2}[a-z0-9-]+)\s*:/g)].map((m) => m[1]));
+  const usedTokens = [...new Set([...cssNoComment.matchAll(/var\(\s*(--{1}[a-z0-9-]+)/g)].map((m) => m[1]))];
+  const undefinedTokens = usedTokens.filter((t) => !definedTokens.has(t) && t !== "--rail-w");
+  check("T1", "样式表用的每一个令牌都已定义（`var(--x)` 打空 = 属性整条静默失效，回退值会把这个病藏一整轮）",
+    undefinedTokens.length === 0 && usedTokens.length > 20,
+    `已定义 ${definedTokens.size} 个 / 使用 ${usedTokens.length} 个`
+    + `｜未在册=${undefinedTokens.length ? undefinedTokens.join(" ") : "无"}`
+    + `｜白名单=--rail-w（运行时由 initSplitResize 写入）`);
 
   /* ---------- J · 指路的页名必须真存在（面板 S-19 escape：页名 ↔ 导航标签交叉核对）----------
    * 「到『资源池设置』页更换映射」这类指路文案散在 4 处（前端徽章、Python 告警、
@@ -1859,7 +1884,7 @@ async function runChecks(root, overviewPath) {
   check("K3", "八张指标卡全部**可见**（此前指标卡零覆盖，display:none 也算藏）", () => {
     const shown = visibleText(pageHtml);
     return ["运行状态", "运行时长", "今日调用", "今日 token", "资源健康",
-      "厂商数量", "资源总数", "可用模型总数"].every((t) => shown.includes(t));
+      "供应商数量", "资源总数", "可用模型总数"].every((t) => shown.includes(t));
   });
   check("K8", "趋势图真画进**可见**容器（删调用/把容器压成 height:0 都要红，第九轮 B-6 + 第十轮 B10-5）",
     () => {
@@ -2666,14 +2691,18 @@ const rowView = (root, i) => {
     ["scheduling", "cooldown_seconds", 0], ["scheduling", "cooldown_seconds_plan", 0],
     ["gateway", "retention_days", 1], ["gateway", "heartbeat_seconds", 1],
   ];
-  check("M10", "系统设置页能在 realm 里真跑：首屏发出的就是生产端点 GET /admin/api/config（三卡 + 启停钮都在）", () => {
+  check("M10", "系统设置页能在 realm 里真跑：首屏发出的就是生产端点 GET /admin/api/config（两卡 + 启停钮都在）", () => {
     if (sR.threw) return false;
     const o = sR.out || {};
     MNOTE.m10 = `请求=${JSON.stringify(o.reqs)}；卡 ${JSON.stringify(o.heads)}；输入 ${(o.ins || []).length} 个；`
       + `保存钮 disabled=${o.saveDisabled} 文案「${o.saveText}」；徽章=${!!o.badge}；`
       + `重启=${!!o.restart} 停止=${!!o.stopBtn}；err=${o.err || "无"}`;
+    /* 2026-10-03 判据随设计推进 3 → 2（用户实拍「信息太分散并且一个输入框那么宽，设计很不合理很丑」）：
+       「01 任务执行 / 02 系统日志 / 维护」三卡里，02 卡只有两个数字、其余全是空白 ⇒ 日志两格并入
+       「运行参数」卡的第四组（`.param-group`），卡数只剩 运行参数 + 维护。这条判据钉的是
+       **「一张卡 + 一个 card-head 的个数」**（卡数不会被悄悄合并成无卡长表），不是"必须三张"。 */
     return !o.err && JSON.stringify(o.reqs) === JSON.stringify(["GET /admin/api/config"])
-      && (o.heads || []).length === 3 && !!o.restart && !!o.stopBtn
+      && (o.heads || []).length === 2 && !!o.restart && !!o.stopBtn
       && o.saveText === "保存配置" && o.hasExport === false;
   }, () => (sR.threw ? "realm 编译/执行抛错 " + sR.threw : MNOTE.m10));
 
@@ -2717,7 +2746,7 @@ const rowView = (root, i) => {
         + ` —— 两者必须同时翻（徽章在而按钮灰 = 用户点不动；按钮可点而徽章不在 = 用户不知道有未保存修改）`);
     }
     if (s1.badges !== 1) bad.push(`改动后徽章 ${s1.badges} 枚`);
-    if (o.badgeIsFirst !== true) bad.push("徽章没插到页头最前面");
+    if (o.badgeIsFirst !== true) bad.push("徽章没插到这条动作行最前面");
     if (s1.badgeText !== "有未保存修改") bad.push(`徽章文案=${JSON.stringify(s1.badgeText)}`);
     if (!(s2.badge === true && s2.disabled === false && s2.badges === 1)) {
       bad.push(`第二次改动后徽章=${s2.badges} 按钮 disabled=${s2.disabled}`);
@@ -2811,7 +2840,7 @@ const rowView = (root, i) => {
       if (c.follow && c.follow.state !== "settled") bad.push(`停止·取消：调用方 ${c.follow.state}（挂死）`);
       if ((c.sent || []).length !== 0) bad.push(`停止·取消：发出了 ${JSON.stringify(c.sent)}`);
       if (c.stopped !== false) bad.push("停止·取消：页面却进入了停止态");
-      if (c.keptCards !== 3) bad.push(`停止·取消：三张卡变成 ${c.keptCards} 张`);
+      if (c.keptCards !== 2) bad.push(`停止·取消：两卡变成 ${c.keptCards} 张（2026-10-03 三卡合两卡，见 M10 注）`);
       if (c.open !== 0) bad.push(`停止·取消：弹窗剩 ${c.open} 层`);
       if (!/停止后网关下线/.test(String(c.bodyText))) bad.push(`停止·取消：确认文案=${JSON.stringify(c.bodyText)}`);
     }
@@ -2863,6 +2892,30 @@ const rowView = (root, i) => {
       + `${bad.join(" | ") || "两页产物干净"}`;
     return bad.length === 0;
   }, () => MNOTE.m17);
+
+  check("M18", "系统设置产物 = 12 条参数行，逐行「一个名称 + 一个数值框 + 名称的 for 指到那颗框」（2026-10-03 三卡满宽表单行改两卡参数行）", () => {
+    if (sR.threw) return false;
+    const o = sR.out || {};
+    const html = String(o.html || "");
+    const rows = (html.match(/class="param-row"/g) || []).length;
+    const boxes = (html.match(/<input\b[^>]*class="in"/g) || []).length;
+    const labelFor = [...html.matchAll(/<label\b[^>]*class="pk"[^>]*\bfor="([^"]*)"/g)].map((m) => m[1]);
+    const ids = [...html.matchAll(/<input\b[^>]*\bid="([^"]*)"/g)].map((m) => m[1]);
+    const legacy = (html.match(/class="form-row"/g) || []).length;
+    const bad = [];
+    if (rows !== 12) bad.push(`参数行 ${rows} 条（应与 12 个绑定一一对应）`);
+    if (boxes !== rows) bad.push(`数值框 ${boxes} 颗 ≠ 参数行 ${rows} 条`);
+    if (labelFor.length !== rows) bad.push(`名称 ${labelFor.length} 个 ≠ 参数行 ${rows} 条`);
+    /* 关联完整性：点名称能聚焦的那条腿。缺 for / for 指向不存在的 id / 两行共用同一个 id 都算断 */
+    const idSet = new Set(ids);
+    if (ids.length !== idSet.size) bad.push(`id 有重复（${ids.length} 个 / 去重 ${idSet.size} 个）⇒ 点名称聚焦到别行`);
+    const dangling = labelFor.filter((f) => !idSet.has(f));
+    if (dangling.length) bad.push(`${dangling.length} 个名称的 for 指不到框：${JSON.stringify(dangling.slice(0, 3))}`);
+    if (legacy !== 0) bad.push(`还残留 ${legacy} 条满宽 .form-row（本轮就是把它们换成参数行）`);
+    MNOTE.m18 = `参数行 ${rows} · 数值框 ${boxes} · 名称 ${labelFor.length} · for 断链 ${dangling.length} `
+      + `· id 重复 ${ids.length - idSet.size} · 残留 form-row ${legacy}；${bad.join(" | ") || "逐行一对一且关联在"}`;
+    return bad.length === 0;
+  }, () => MNOTE.m18);
 
 
   // 🔴 Z 段 = **门自己的**语义自测：可见性判据必须按属性语义走，
@@ -3118,7 +3171,7 @@ const MUTATIONS = [
     kills: ["A15"] },
   { why: "新增 Key 丢掉 product", file: "res", from: 'product: first.product || "",', to: "",
     kills: ["D2"] },
-  { why: "新增 Key 丢掉厂商归属", file: "res", from: 'vendor: first.vendor || "",', to: "",
+  { why: "新增 Key 丢掉供应商归属", file: "res", from: 'vendor: first.vendor || "",', to: "",
     kills: ["D3"] },
   { why: "🔴 面板 E-1：表格不再调用徽章函数（整表硬编码绿标）", file: "dash",
     from: "<td>${statusBadge(r)}</td>", to: '<td><span class="badge b-ok">active</span></td>',
@@ -3186,6 +3239,9 @@ const MUTATIONS = [
   { why: "未装 mgw 时只给 mgw 命令", file: "main",
     from: "未安装则 python -m model_gateway.cli zcode claim", to: "重跑", kills: ["G3"] },
   { why: "红点样式类改名", file: "css", from: ".ops-dot {", to: ".opsdot {", kills: ["H1", "H2"] },
+  { why: "🔴 令牌打空回潮（把 `.t-close:hover` 的底色改回**从来不存在**的 `--surface-2`）",
+    file: "css", from: ".t-close:hover { background: var(--surface-muted); color: var(--text); }",
+    to: ".t-close:hover { background: var(--surface-2); color: var(--text); }", kills: ["T1"] },
   { why: "红点颜色写死（丢双主题）", file: "css",
     from: "background: var(--err-bg);\n  color: var(--text);",
     to: "background: #c00;\n  color: #fff;", kills: ["H2"] },
@@ -3229,7 +3285,7 @@ const MUTATIONS = [
     from: 'class="alert alert-warn"', to: 'class="alert alert-warn" aria-hidden="true"',
     kills: ["K1"] },
   { why: "🔴 第八轮 B-9：指标卡少渲染一张（此前指标卡零覆盖）", file: "dash",
-    from: 'metricCard("厂商数量", c.vendors ?? "—", "mi-blue", ICON.factory)', to: "",
+    from: 'metricCard("供应商数量", c.vendors ?? "—", "mi-blue", ICON.factory)', to: "",
     kills: ["K3"] },
   { why: "🔴 第八轮 B-12：页面链接指去不存在的路由", file: "dash",
     from: '<a href="#/logs" style="color:var(--cool);font-weight:700">查看日志</a>',
@@ -3237,21 +3293,24 @@ const MUTATIONS = [
     kills: ["K4"] },
   { why: "🔴 第八轮 B-3：坏页名写在告警装配地 `main.py`（原先不在扫描面里）", file: "mainPy",
     // 2026-10-02 重锚：装配地的文案被别的轮次改写过
-    // （「N 个系统模型未配置任何资源，」→「N 个系统模型没有任何生效的资源映射，」，`main.py:694`），
+    // 2026-10-02 重锚：「N 个系统模型未配置任何资源，」→「N 个系统模型没有任何生效的资源映射，」；
+    // 2026-10-04 术语统一再锚：那句话现写「个网关模型没有任何生效的资源映射，」（旧称系统模型作废，同一句）。
     // 旧字面命中 0 次 ⇒ 这条变异空转。判据原意不变：在**告警装配地**插一个坏页名，J2 必须响。
-    from: "个系统模型没有任何生效的资源映射，",
-    to: "个系统模型没有任何生效的资源映射（去「模型映射」页处理），",
+    from: "个网关模型没有任何生效的资源映射，",
+    to: "个网关模型没有任何生效的资源映射（去「模型映射」页处理），",
     kills: ["J2"] },
   { why: "🔴 第八轮 B-4：可见文案落在**模板字符串里以 `//` 开头的一行**（旧剥离器当注释删）",
     file: "models",
-    // 2026-10-02 重锚：那句指路文案加了"供应商侧 / 账号侧"分流（`models.js:407`），
+    // 2026-10-02 重锚：那句指路文案加了"Key 接入 / 账号接入"分流（`models.js:407`）；
+    // 2026-10-04 术语统一再锚：类义"供应商侧"改名"Key 接入侧"，那句现写「Key 接入请到…账号接入请到…」，
+    // 旧字面命中 0 次 ⇒ 这条变异空转。判据原意不变：模板串里以 `//` 开头那行的坏页名必须仍被扫到。
     // 旧字面（只到「添加映射」）命中 0 次。判据原意不变：把坏页名放进模板串里以 `//`
     // 开头的那一行，剥注释若按"行首 `//` 即注释"判，用户看得见的指路就从扫描面消失。
     // 2026-10-03 复核：锚点没过期（`models.js:413` 就是那句、命中 1 次），红的是**剥离器
     // 自己的插值栈**——旧 `stripComments` 的 `}` 只 `depth--` 不弹栈，扫到 413 行时已经
     // 反相（mode=template ⇒ 开串反引号被当闭串，随后 `//` 落进假 code 态被当注释删），
     // 坏形态与 B-4 原意同族。已按帧栈修好（本文件 `stripComments`），本条恢复能打红。
-    from: "无资源（调用将无可用资源 503）——供应商侧到「接入模型资源」页添加映射，账号侧到「接入账号资源」页做「模型映射」",
+    from: "无资源（调用将无可用资源 503）——Key 接入请到「接入模型资源」页添加映射，账号接入请到「接入账号资源」页做「模型映射」",
     to: "无资源（调用将无可用资源 503）——\n      // 到「运维面板」页编辑资源添加映射",
     kills: ["J2"] },
   { why: "🔴 第八轮 B-7：不带括号的页名（旧正则只认「」/『』）", file: "cliSetup",
@@ -3274,8 +3333,8 @@ const MUTATIONS = [
   { why: "🔴 页面里不再挂资源健康表（函数还在、调用点没了）", file: "dash",
     from: "${resourceHealthTable(data.resources)}", to: "", kills: ["K2"] },
   { why: "🔴 指标卡把缺失字段 String() 出来（界面上印出 undefined）", file: "dash",
-    from: 'metricCard("厂商数量", c.vendors ?? "—", "mi-blue", ICON.factory)',
-    to: 'metricCard("厂商数量", String(c.vendor_total), "mi-blue", ICON.factory)',
+    from: 'metricCard("供应商数量", c.vendors ?? "—", "mi-blue", ICON.factory)',
+    to: 'metricCard("供应商数量", String(c.vendor_total), "mi-blue", ICON.factory)',
     kills: ["K5"] },
   { why: "🔴 第八轮 B-8：「最近错误」列不再显示后端传来的原因（改印状态码）", file: "dash",
     from: '${esc(r.last_error || "—")}</td>', to: '${r.status}</td>',
@@ -3608,7 +3667,7 @@ const MUTATIONS = [
     from: '<button class="btn btn-primary" id="st-save" ${dirty ? "" : "disabled"}>保存配置</button>',
     to: '<button class="btn btn-primary" id="st-save">保存配置</button>', kills: ["M12", "M14"] },
   { why: "M12：改动后不插徽章（按钮可点、用户却不知道有未保存修改 —— 同源的另一半）", file: "settings",
-    from: '      pa.prepend(b);', to: '      /* 变异：徽章忘了插 */;', kills: ["M12"] },
+    from: '      foot.prepend(b);', to: '      /* 变异：徽章忘了插 */;', kills: ["M12"] },
   { why: "M13：正整数过滤死掉（负号/小数点/科学计数法都能键进去）", file: "settings",
     from: 'const clean = input.value.replace(/[^\\d]/g, "");', to: 'const clean = input.value;', kills: ["M13"] },
   { why: "M13：清空被当成修改（配置写成 null → 后端 400 或落盘坏值）", file: "settings",
@@ -3640,8 +3699,19 @@ const MUTATIONS = [
     from: '${tokens.filter((t) => t.enabled !== false).length}/${tokens.length} 启用',
     to: '${tokens.filter((t) => t.enabled !== false).length}/${tokens.lenght} 启用',
     kills: ["M1", "M17"] },
-  { why: "M17：系统设置把日志字段名打错（保留天数那格显示 undefined）", file: "settings",
-    from: 'value="${g.retention_days}"', to: 'value="${g.retention_dayz}"', kills: ["M11", "M17"] },
+  { why: "M17：系统设置把日志字段名打错（min 位坏插值 ⇒ 产物里印出 undefined，M11/M17 同红）", file: "settings",
+    from: 'num("事件流水保留（天）", "gateway", "retention_days", g.retention_days, 1)',
+    to: 'num("事件流水保留（天）", "gateway", "retention_days", g.retention_days, g.retention_dayz)',
+    kills: ["M11", "M17"] },
+  /* ---------- 2026-10-03 系统设置结构重做（三卡满宽表单行 → 两卡参数行）新增三条 ---------- */
+  { why: "H3：参数行数值框回到满宽（一个 4 位数住进整张卡的宽度 = 用户实拍那条缺陷）", file: "css",
+    from: '.param-row .in { width: 128px; min-width: 128px; text-align: right; }',
+    to: '.param-row .in { width: 100%; text-align: left; }', kills: ["H3"] },
+  { why: "H4：把满宽表单行的两列工具类 .form-grid2 搬回样式表", file: "css",
+    from: '.param-row .pk {', to: '.form-grid2 { display: grid; grid-template-columns: 1fr 1fr; }\n.param-row .pk {',
+    kills: ["H4"] },
+  { why: "M18：参数行名称的 for 丢了（点名称不再聚焦，关联那条腿专用）", file: "settings",
+    from: 'class="pk" for="p-${section}-${name}"', to: 'class="pk"', kills: ["M18"] },
   { why: "🔴 门自己：M 段不再把页面源码编进 realm —— 页面判据失去对象（用的是共享层复制品）",
     self: true, file: "gate",
     from: '          + `${toModuleBody(read(COMPONENTS_KEY))}\\n${mEnv(extra)}\\n`\n'

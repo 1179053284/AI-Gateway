@@ -9,7 +9,7 @@
 | 鉴权 | `Authorization: Bearer <session>` **且** `token: <session>`（**两个都发**） | `loomy.ts:217-232`（`loomyChatHeaders`）；实测交叉验证：带错的那个 → HTTP 200 + `{"code":"100002","desc":"缺少 token"}` | `auth_headers` 同时给两个头 |
 | `Accept` | `text/event-stream` | `loomy.ts:227` | 同挂钩子 |
 | 响应 | 标准 OpenAI 兼容 + 标准 SSE（`data:` 帧 + 空 `data:` 终止帧，无信封） | `loomy.ts:22-27`、`loomy-adapter.ts:1-27` | 复用 `OpenAIOutAdapter` 的 SSE 解析与思考字段归一化 |
-| 请求体 | 标准 OpenAI 体（`model` / `messages` / `stream` + 采样 / `reasoning_effort`） | `loomy-adapter.ts:454-480` | 不写 `prepare_body`（基类默认只落厂商模型名） |
+| 请求体 | 标准 OpenAI 体（`model` / `messages` / `stream` + 采样 / `reasoning_effort`） | `loomy-adapter.ts:454-480` | 不写 `prepare_body`（基类默认只落供应商模型名） |
 
 **两处口径的显式登记（防误读）**：
 

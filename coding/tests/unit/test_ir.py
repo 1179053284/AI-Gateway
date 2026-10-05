@@ -16,7 +16,7 @@ def _merge(request: ReasoningSpec | None, default: ReasoningSpec | None):
 
 
 class TestThreeLevelMerge:
-    """UT-23：请求级 > 资源级默认 > 不注入（厂商默认）。"""
+    """UT-23：请求级 > 资源级默认 > 不注入（该供应商通道默认）。"""
 
     def test_s1_request_effort_overrides_default(self):
         """① 请求 effort=high + 资源默认 effort=low → 出站 high。"""
@@ -31,7 +31,7 @@ class TestThreeLevelMerge:
         assert body["reasoning_effort"] == "low"
 
     def test_s3_no_default_no_injection(self):
-        """③ 请求未指定 + 资源无默认 → 出站不含推理字段（厂商默认）。"""
+        """③ 请求未指定 + 资源无默认 → 出站不含推理字段（该供应商通道默认）。"""
         merged, body = _merge(None, None)
         assert merged is None
         assert "thinking" not in body and "reasoning_effort" not in body
@@ -128,7 +128,7 @@ class TestLiftReasoning:
 
 
 class TestApplyModelParams:
-    """Q24：网关级模型参数字段级注入（工具传参 > 网关设置 > 厂商内置）。"""
+    """Q24：网关级模型参数字段级注入（工具传参 > 网关设置 > 供应商通道默认）。"""
 
     def test_s1_request_value_wins(self):
         """① 请求已传 temperature → 保留（工具传参最高优先）。"""
@@ -143,7 +143,7 @@ class TestApplyModelParams:
         assert body["temperature"] == 0.3 and body["max_tokens"] == 99
 
     def test_s3_no_params_untouched(self):
-        """③ 网关未配置 params（None/空）→ 出站体原样（厂商内置默认）。"""
+        """③ 网关未配置 params（None/空）→ 出站体原样（该供应商通道默认）。"""
         body = {"temperature": 0.7, "messages": []}
         apply_model_params(body, None)
         apply_model_params(body, {})

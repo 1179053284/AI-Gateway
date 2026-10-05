@@ -99,13 +99,33 @@ SEED = [
     {"product": "workbuddy", "name": "ix-only-off", "enabled": False, "runtime": "absent"},
     {"product": "lobsterai", "name": "ix-quota-avail", "enabled": True,
      "device": {"uuid": "ix-uuid-0001"},
+     # 🔴 2026-10-03 这格从「1 个包」改成「2 个有效包 + 1 个已失效包」：D4b 钉的是**多组逐组给量**
+     #    （chips 行），旧种子聚合后只有 1 组 ⇒ chips 行**从来不渲染** ⇒ 那条判据一直在空转
+     #    （同一课上一轮刚记过：判据的对象必须是需求那个集合）。已失效包另钉「另有 N 包已失效」。
      "runtime": {"quota": {"state": "available", "source": "ix-fake",
-                           "detail": "有效包 1 个，本周期剩余 300 积分",
+                           "detail": "有效包 2 个，本周期剩余 1000 积分",
                            "checked_at": CHECKED_AT,
                            "plan": "LobsterAI 活动包",
                            "items": [{"name": "LobsterAI 活动包", "unit": "积分",
                                       "remaining": 300, "total": None, "used": None,
-                                      "active": True, "expires_at": ""}]}}},
+                                      "active": True, "expires_at": ""},
+                                     {"name": "新用户赠送", "unit": "积分",
+                                      "remaining": 700, "total": 1000, "used": 300,
+                                      "active": True, "expires_at": EXPIRES_ISO},
+                                     {"name": "首轮赠送（已过期）", "unit": "积分",
+                                      "remaining": 0, "total": 50, "used": 50,
+                                      "active": False, "expires_at": "2026-09-01T08:00:00"}]}}},
+    # 🔴 2026-10-03 D4c 的**对象**：同产品第二行带条、且数字列宽度与上一行差出一截。
+    #    旧布局 `minmax(0,1fr) 56px auto` 下，数字 `auto` 一长短就把第一列的 `1fr` 挤掉 ⇒
+    #    两行的进度条左边缘错开（用户实拍「进度条怎么还有错落啊」）。没有这一行，D4c 无从测起。
+    {"product": "lobsterai", "name": "ix-quota-token", "enabled": True,
+     "device": {"uuid": "ix-uuid-0002"},
+     "runtime": {"quota": {"state": "available", "source": "ix-fake",
+                           "detail": "有效包 1 个，本周期剩余 1 亿 token",
+                           "checked_at": CHECKED_AT, "plan": "GLM 资源包",
+                           "items": [{"name": "GLM 资源包", "unit": "token",
+                                      "remaining": 100000000, "total": 100000000, "used": 0,
+                                      "active": True, "expires_at": EXPIRES_ISO}]}}},
     {"product": "qoder", "name": "ix-quota-exhausted", "enabled": True,
      "device": {"machine_id": "ix-mid-qoder"},
      "runtime": {"quota": {"state": "exhausted", "source": "ix-fake",
@@ -737,24 +757,77 @@ const READ = () => {
       badgeH: (() => { const m = b.querySelector(".badge"); return m ? Math.round(m.getBoundingClientRect().height * 10) / 10 : null; })(),
     };
   });
+  /* 🔴 列位**按表头文字定位**，不写死下标（2026-10-03 用户指示「状态列和额度列交换下位置」）。
+     此前 13 处 `td[2]` 全是硬编码：改一次列序就要扫一遍全部门，漏一处就产出"红得没有道理"的读数
+     （额度列变成开关列 ⇒ 词表判据恒不命中、几何判据读不到 `.qbar`）。表头本身由静态门 V6 逐字钉住。 */
+  const thTexts = q("#ac-table thead th").map((x) => txt(x));
+  const QI = thTexts.indexOf("额度"), SI = thTexts.indexOf("状态");
   const rows = q("#ac-table tbody tr[data-acc]").map((tr) => {
     const td = q("td", tr);
     const sw = tr.querySelector("[role=switch]");
-    const qcell = td[2] || null;
+    const qcell = td[QI] || null;
     const cell = qcell ? qcell.firstElementChild : null;
     return {
       name: tr.dataset.acc, cls: tr.className,
-      account: txt(td[0]), state: txt(td[1]),
+      account: txt(td[0]), state: txt(td[SI]),
       sub: (() => { const ds = q("div", td[0]); return ds.length > 1 ? txt(ds[1]) : ""; })(),
-      quota: txt(td[2]), quotaColor: cell ? cs(cell).color : "",
-      quotaSub: td[2] ? txt(td[2].querySelector(".qchk")) : null,
+      quota: txt(td[QI]), quotaColor: cell ? cs(cell).color : "",
+      // 🔴 2026-10-03 额度格重做（用户实拍「乱对齐 + 放不下 + 还弄个展开折叠」，点名照
+      //    zcode-switch / ZCode-Panel / Jet Hub 做）⇒ 读取面整体搬家：
+      //    `.qchk`→`.qmeta`（到期 + 相对新鲜度 + 失效计数）、`.qpacks-detail`→`.qchips`（同名聚合逐组给量）、
+      //    折叠入口不存在 ⇒ 反向钉 `foldCount === 0`；占比条新增 `barW`（= Σ剩余/Σ总量）。
+      quotaMeta: td[QI] ? txt(td[QI].querySelector(".qmeta")) : null,
       quotaTip: (cell && cell.getAttribute && cell.getAttribute("title")) || "",
-      // 🔴 2026-10-02 用户指令：逐包明细不再只住 tooltip（不可选不可复制 + 被截断到 12 行），
-      //    改为**本格内就地展开块** `.qpacks-detail` ⇒ 判据的读取点随之搬家（理由写进 D4b/V13）。
-      quotaPacks: (() => { const d = td[2] && td[2].querySelector(".qpacks-detail");
+      quotaChips: (() => { const d = td[QI] && td[QI].querySelector(".qchips");
         return d ? txt(d) : ""; })(),
-      packsBtn: (() => { const b = td[2] && td[2].querySelector("[data-qpacks]");
-        return b ? txt(b) : ""; })(),
+      /* 🔴 「合计：900 积分」= 数值贴标签（2026-10-03 用户裁定）。三把尺全部**量文本边缘**：
+         `labelGapPx` = 标签文本右缘 → 数值文本左缘（量盒子会被 flex 项拉宽骗过 ⇒ 读数恒等于 gap，
+         「量盒子不等于量文本」这一课已经踩过两次）；
+         `numClip` = 数值被裁掉多少（必须 0：被挤的只能是标签那一半）；
+         `labelClip` = 标签被省略号收掉多少（允许 >0，但 `title` 必须给全名）；
+         `labelEndsColon` / `qvalShell` = 语法两半（「：」收尾 + 右浮壳不得回魂）。 */
+      labelGapPx: (() => { const row = td[QI] && td[QI].querySelector(".qrow");
+        const nm = row && row.querySelector(".qname");
+        const num = row && row.querySelector(".qnum");
+        if (!nm || !num) return null;
+        const r1 = document.createRange(); r1.selectNodeContents(nm);
+        const r2 = document.createRange(); r2.selectNodeContents(num);
+        return Math.round((r2.getBoundingClientRect().left
+          - r1.getBoundingClientRect().right) * 10) / 10; })(),
+      numClip: (() => { const n = td[QI] && td[QI].querySelector(".qnum");
+        return n ? Math.round((n.scrollWidth - n.clientWidth) * 10) / 10 : null; })(),
+      labelClip: (() => { const n = td[QI] && td[QI].querySelector(".qname");
+        return n ? Math.round((n.scrollWidth - n.clientWidth) * 10) / 10 : null; })(),
+      labelEndsColon: (() => { const n = td[QI] && td[QI].querySelector(".qname");
+        return n ? /[：:]$/.test(txt(n)) : null; })(),
+      qvalShell: td[QI] ? td[QI].querySelectorAll(".qval").length : 0,
+      foldCount: td[QI] ? td[QI].querySelectorAll("[data-qpacks], .qpacks-detail").length : 0,
+      badgeCount: td[QI] ? td[QI].querySelectorAll(".badge").length : 0,
+      barW: (() => { const i = td[QI] && td[QI].querySelector(".qbar > i");
+        return i ? (i.style.width || "") : ""; })(),
+      // 🔴 D4c 的两把尺：条的**左边缘 x**（同产品各行必须同一个值）与**轨道底色**
+      //（用掉的那一段是灰的，不是"看不见总长"）。左边缘按当前视口实测，不按 CSS 字符串猜。
+      barLeft: (() => { const b = td[QI] && td[QI].querySelector(".qbar");
+        return b ? Math.round(b.getBoundingClientRect().left * 10) / 10 : null; })(),
+      barTrack: (() => { const b = td[QI] && td[QI].querySelector(".qbar");
+        return b ? cs(b).backgroundColor : ""; })(),
+      // 🔴 D4d：溢出与裁字必须**入账**（2026-10-03 「定宽三列」那版把条钉住了、把数字挤到裁字，
+      //    门里当时没有任何一条判据看得见这件事——只有我手写的 :8300 探针抓到了）。
+      cellOver: (() => { const c = td[QI] && td[QI].querySelector(".qcell");
+        return c ? c.scrollWidth - c.clientWidth : 0; })(),
+      numOver: (() => { const n = td[QI] && td[QI].querySelector(".qnum");
+        return n ? n.scrollWidth - n.clientWidth : 0; })(),
+      // 🔴 D4e（2026-10-03 用户实拍「怎么有的字体加粗有的不加粗」）：字重是**层级语言**，
+      //    一格只许一处 700 = 主读数；标签 / 档位词 / meta 一律 600。这里把当行取到的计算字重交出去。
+      weights: (() => {
+        const c = td[QI] && td[QI].querySelector(".qcell");
+        if (!c) return null;
+        const pick = (sel) => { const e = c.querySelector(sel); return e ? cs(e).fontWeight : ""; };
+        return { num: pick(".qnum"), name: pick(".qname"), meta: pick(".qmeta"),
+                 tier: pick(".qtier"), none: pick(".qnone"),
+                 boldCount: Array.from(c.querySelectorAll("*"))
+                   .filter((e) => ["700", "800", "bold"].includes(cs(e).fontWeight)).length };
+      })(),
       ops: q("[data-op]", tr).map((b) => b.dataset.op),
       swAria: sw ? { role: sw.getAttribute("role"), checked: sw.getAttribute("aria-checked"),
         label: sw.getAttribute("aria-label"), on: sw.classList.contains("on"),
@@ -840,35 +913,83 @@ const READ = () => {
     modalMaskCount: document.querySelectorAll(".modal-mask").length,
     modalW: (() => { const m = document.querySelector(".modal");
       return m ? Math.round(m.getBoundingClientRect().width) : null; })(),
+    /* 脚钮两态（2026-10-03 用户「初始化之后，则这个按钮不再显示，变为保存按钮」）：
+       读**画出来的文案**与主动钮颗数 —— 静态门 V22 钉的是源码形状，这里钉的是屏幕上那一颗。 */
+    modalPrimary: q(".modal-foot .btn-primary").map((b) => txt(b)),
+    /* 🔴 「已初始化就收起」画出来是什么：`hidden` 的钮仍在 DOM 里 ⇒ 只看 `modalPrimary` 会把
+       "收起了"读成"还挂着"。可见性单独取一次（2026-10-05 脚钮语义从两态变一态后必须分相）。 */
+    modalPrimaryVisible: q(".modal-foot .btn-primary")
+      .filter((b) => !b.hidden && b.offsetParent !== null).map((b) => txt(b)),
+    mapFootBtns: q(".modal-foot .btn").length,
+    /* 🔴 草稿制（2026-10-05 第四次裁定）三颗钮各有各的主人：AI 那颗**常驻一态**，
+       保存那颗的文案与使能读的是**脏态数**（源码形状由静态门 V22 钉，这里钉画出来的那一份）。 */
+    aiBtn: (() => { const b = document.querySelector('.modal-foot [data-map="ai"]');
+      return b ? { text: txt(b), disabled: !!b.disabled, hidden: !!b.hidden } : null; })(),
+    saveBtn: (() => { const b = document.querySelector('.modal-foot [data-map="save"]');
+      return b ? { text: txt(b), disabled: !!b.disabled } : null; })(),
+    footTexts: q(".modal-foot .btn").map((b) => txt(b)),
+    /* 消耗声明必须在**表上方**（483 行的表里脚注滚不到 = 等于没声明）。 */
+    mapNoteAbove: (() => { const card = document.querySelector(".modal .list-card");
+      const note = Array.from(document.querySelectorAll(".modal .alert-warn"))
+        .find((x) => txt(x).indexOf("真实出站一次") >= 0);
+      if (!note) return null;
+      const n = note.getBoundingClientRect(), c = card ? card.getBoundingClientRect() : null;
+      return { beforeTable: c ? (n.bottom <= c.top + 0.5) : false,
+               text: txt(note).slice(0, 220) }; })(),
     mapRows: (() => { const card = document.querySelector(".modal .list-card");
       return card ? Array.from(card.querySelectorAll(".list-row")).slice(1).map((r2) => {
         const name = r2.querySelector("b");
         const sub = r2.querySelector("span span");
         const sel = r2.querySelector("select[data-idx]");
+        const sw = r2.querySelector("[data-mapsw] .switch");
+        const foot = r2.querySelector("[data-mapfoot]");
         return { name: name ? txt(name) : "", sub: sub ? txt(sub) : "",
-                 hasSel: !!sel, selV: sel ? sel.value : null };
+                 hasSel: !!sel, selV: sel ? sel.value : null,
+                 /* 2026-10-04「状态列删除」：旧 `badge`（第 4 格文本）这个读数对象已不存在。
+                    换成两个**新载体**：下拉下面那一行（未落库说明 ⇄ 删除钮）与格数。
+                    `foot: "∅"` = 那一行整条不在 = 结构坏了，与"空文本"必须分得开。 */
+                 foot: foot ? txt(foot) : "∅", hasFoot: !!foot,
+                 delBtn: !!r2.querySelector("[data-mapdel]"),
+                 /* 「建议挂到 X · 采纳并入库」（2026-10-05：建议不再进下拉，只在这里给一键采纳） */
+                 adopt: !!r2.querySelector("[data-adopt]"),
+                 adoptName: (r2.querySelector("[data-adopt]") || {}).dataset?.adopt || "", 
+                 cells: r2.children.length,
+                 opts: sel ? Array.from(sel.options).map((o) => o.value) : [],
+                 hasSw: !!sw, swOn: sw ? sw.classList.contains("on") : null,
+                 ariaSw: sw ? sw.getAttribute("aria-checked") : null,
+                 swDisabled: sw ? !!sw.disabled : null, swTitle: sw ? (sw.title || "") : "",
+                 swMissingCell: !!(r2.children[3] && !r2.children[3].querySelector(".switch")) };
       }) : []; })(),
+    /* 表头逐字（状态列删除的判据对象：第 4 列「状态」不许回来，也不许留下没人住的空列）。 */
+    mapHeads: (() => { const card = document.querySelector(".modal .list-card");
+      const h = card ? card.querySelector(".list-row") : null;
+      return h ? Array.from(h.children).map((c) => txt(c)) : []; })(),
     alertErr: q("#ac-panel .alert-err").length,
     alertErrText: txt(document.querySelector("#ac-panel .alert-err")),
     retry: q("#ac-retry").length,
-    // 🔴 批量回执**就地槽**（2026-10-02 方案 §5-5：单层弹窗红线的构造化落点；文本存模块级、
-    //    paintPanel 末尾回填）。V16 的三段判据要的是"槽在不在、说了什么、点得到点不到"。
-    bulkReceipt: (() => {
-      const b = document.querySelector("#ac-panel .bulk-receipt");
-      if (!b) return null;
-      const r = b.getBoundingClientRect();
-      const cx = Math.round(r.x + r.width / 2), cy = Math.round(r.y + r.height / 2);
-      const hit = document.elementFromPoint(cx, cy);
+    // 🔴 批量结果的**结果浮层**（2026-10-03 用户裁定：「各类处理结果，不允许用这种形式固化显示。
+    //    执行完毕，弹窗提示具体执行结果，3s 后自动消失，也可以手动关闭」⇒ 旧的"就地槽 + 回填"整族作废）。
+    //    读数要三件事：浮层说了什么（计数原文 + 逐号行 + 计数行悬停的解释）、它是不是**浮层**
+    //    （住在 #toast-wrap、不在任何弹窗里）、以及**面板里还有没有固化块**（必须 0）。
+    toastCard: (() => {
+      const t = document.querySelector("#toast-wrap .toast.card");
+      if (!t) return null;
+      const r = t.getBoundingClientRect();
+      const sum = t.querySelector(".t-sum");
       return {
-        hidden: !!b.hidden, text: txt(b),
+        text: txt(t), sum: sum ? txt(sum) : "", sumTitle: sum ? (sum.getAttribute("title") || "") : "",
+        rows: t.querySelectorAll(".t-row").length,
+        tags: q(".t-tag", t).map(txt),
+        hasClose: !!t.querySelector(".t-close"),
+        closeAria: (t.querySelector(".t-close") || {}).ariaLabel
+          || t.querySelector(".t-close")?.getAttribute("aria-label") || "",
+        inModal: !!(t.closest && t.closest(".modal")),
+        inWrap: !!t.closest("#toast-wrap"),
         w: Math.round(r.width * 10) / 10, h: Math.round(r.height * 10) / 10,
-        center: [cx, cy], inModal: !!(b.closest && b.closest(".modal")),
-        hitTag: hit ? hit.tagName : "∅",
-        hitCls: hit ? String(hit.className || "") : "",
-        hitInReceipt: !!(hit && (hit === b || b.contains(hit))),
-        masks: document.querySelectorAll(".modal-mask").length,
       };
     })(),
+    toastCount: document.querySelectorAll("#toast-wrap .toast.card").length,
+    receiptBlocks: document.querySelectorAll(".bulk-receipt, #ac-receipt").length,
     pageStyles: q("#content style").length,
     modalCount: (document.getElementById("modal-root") || { children: [] }).children.length,
     modalProbe: (() => { const m = document.querySelector("#modal-root .modal-mask"); return m ? (m.dataset.ixm || null) : null; })(),
@@ -893,6 +1014,8 @@ const READ = () => {
       surface: tok("--surface"), border: tok("--border"), muted: tok("--text-muted"),
       warnRgb: probe("color", "--warn"), dotOnRgb: probe("backgroundColor", "--dot-on"),
       dotOffRgb: probe("backgroundColor", "--dot-off"), surfaceRgb: probe("backgroundColor", "--surface"),
+      trackRgb: probe("backgroundColor", "--progress-track"),
+      okRgb: probe("backgroundColor", "--ok"),
       mutedRgb: probe("color", "--text-muted") },
     theme: root.getAttribute("data-theme"),
     innerW: innerWidth,
@@ -969,22 +1092,21 @@ if (MODE === "rail") {
     while (Date.now() < dl) { if (await has(k)) return true; await page.waitForTimeout(150); }
     return false;
   };
-  // 就地槽的"新鲜度"探针：点击前给当旧槽打 `ixw3` 标记，面板重绘（回执到达后）会重建该节点 ⇒
-  // 「标记消失 + 非 hidden + 含"刷新"」= 这批回执**真的送达并重绘过**，不是上一批的残影。
+  // 浮层的"新鲜度"探针：点击前给**当时已在屏上的**浮层打 `ixseen` 标记 ⇒
+  // 「出现一条没有标记的新浮层且含"刷新"」= 这批结果真的送达，不是上一批那 3 秒还没走完的残影。
   const markSlot = () => page.evaluate(() => {
-    const s = document.querySelector("#ac-panel .bulk-receipt");
-    if (s) { s.hidden = true; s.dataset.ixw3 = "1"; }
-    return !!s;
+    document.querySelectorAll("#toast-wrap .toast.card").forEach((t) => { t.dataset.ixseen = "1"; });
+    return true;
   });
   const waitReceipt = async (ms) => {
     const dl = Date.now() + ms;
     while (Date.now() < dl) {
       const ready = await page.evaluate(() => {
-        const s = document.querySelector("#ac-panel .bulk-receipt");
-        return !!s && !s.hidden && !s.dataset.ixw3 && (s.textContent || "").indexOf("刷新") >= 0;
+        const t = document.querySelector("#toast-wrap .toast.card:not([data-ixseen])");
+        return !!t && (t.textContent || "").indexOf("刷新") >= 0;
       });
       if (ready) return true;
-      await page.waitForTimeout(150);
+      await page.waitForTimeout(120);
     }
     return false;
   };
@@ -1010,7 +1132,7 @@ if (MODE === "rail") {
        "额度格=「" + (rowOf(rr, acct).quota || "") + "」 toasts=" + j(rr.toasts));
     extra.leg = { variant, windows, bodies: await page.evaluate((keys) => {
       const o = {}; keys.forEach((k) => { o[k] = window.__ix.byPath[k] || null; }); return o;
-    }, [onePath]), rows: (rr.rows || []).map((x) => ({ name: x.name, quota: x.quota, sub: x.quotaSub })) };
+    }, [onePath]), rows: (rr.rows || []).map((x) => ({ name: x.name, quota: x.quota, sub: x.quotaMeta })) };
     await shot(PAYLOAD.shotName || "quota-leg-circuit");
   } else if (variant === "probe-window") {
     /* 🔴 反向撤证：同一窗口内先点「探活」（同一个 `/billing/balance`），再点「刷新额度」。
@@ -1049,68 +1171,78 @@ if (MODE === "rail") {
        "响应到位=" + a2 + " POST 计数=" + nOf(await reqs(), allPath));
     await shot("quota-leg-after-all");
 
-    /* 🔴 V16 必须从**零遮罩**起步：W2 的回执在无遮罩时会开一层弹窗（既有出口，E12 同判据），
-       不关掉它，后面"遮罩恒 1"就变成"遮罩恒 2"——量的不是嵌套，是上一段没收尾。 */
+    /* 🔴 2026-10-03 用户裁定（实拍 Raccoon 面板上那块常驻的「刷新 0 · 失败 0 · 未发起 2」）：
+       「各类处理结果，不允许用这种形式固化显示。执行完毕，弹窗提示具体执行结果，3s 后自动消失，
+        也可以手动关闭。」⇒ 批量结果**既不是弹窗、也不是面板里的一块**，而是结果浮层。
+       旧 QL0c 钉的"无遮罩时开一层回执弹窗"随之作废（反转而不是删条目）：现在遮罩数必须恒为 0。 */
     const masksW2 = await page.evaluate(() => document.querySelectorAll(".modal-mask").length);
-    ck("QL0c", "产品级回执在无遮罩时开**单层**弹窗（遮罩数 === 1；这是 V16 的起点，不是终点）",
-       masksW2 === 1, "W2 之后遮罩数=" + masksW2);
-    await click(".modal-foot .btn");            // 关掉这一层回执弹窗
-    await page.waitForTimeout(400);
+    const rW2 = await read();
+    ck("QL0c", "产品级回执**不开弹窗**（遮罩数 === 0）且结果浮层恰一张、住在 #toast-wrap 里"
+       + "（旧判据「无遮罩时开单层弹窗」随本轮裁定反转）",
+       masksW2 === 0 && rW2.toastCount === 1 && !!rW2.toastCard
+       && rW2.toastCard.inWrap === true && rW2.toastCard.inModal === false,
+       "遮罩数=" + masksW2 + " 浮层数=" + rW2.toastCount
+       + " 卡=「" + ((rW2.toastCard || {}).text || "").slice(0, 90) + "」");
+    // 让它**自然到期**（不手动 remove）：这一等同时是"3s 自动消失"的第一次实证
+    await page.waitForTimeout(3400);
+    const rGone = await read();
+    ck("QL0c2", "结果浮层到期自动消失，且面板里**没有任何固化块**（`.bulk-receipt`/`#ac-receipt` = 0）",
+       rGone.toastCount === 0 && rGone.receiptBlocks === 0,
+       "到期后浮层数=" + rGone.toastCount + " 固化块=" + rGone.receiptBlocks);
 
-    /* V16（迟到回执三段判据，静态门没有遮罩机制 ⇒ 只在真机门跑得成）：
-       ① 批量动作在飞期间打开「模型映射」弹窗 → 回执到达后 `.modal-mask` 计数**恒为 1**；
-       ② `.bulk-receipt` 含三段计数原文；
-       ③ **关掉弹窗后** `elementFromPoint(回执矩形中心)` 命中 `.bulk-receipt` 之内
-          （既没被遮罩挡、也没被整块重绘吃掉）。 */
+    /* V16（迟到回执判据，静态门没有遮罩机制 ⇒ 只在真机门跑得成；2026-10-03 随裁定改写）：
+       ① 批量在飞期间开着映射弹窗 → 新浮层到达，`.modal-mask` **恒为 1**
+          （浮层不碰遮罩 ⇒ 单层红线由**构造**保证，不再需要"判遮罩 + 退回就地槽"那条分支）；
+       ② 浮层含三段计数**原文** + 逐号行，术语解释挂计数行悬停（不坐正文）；
+       ③ × 手动关闭 = 立即消失；
+       ④ 取消映射弹窗后归零，全程面板零固化块。 */
     await click("#ac-map");
     await page.waitForSelector(".modal .list-card", { timeout: 25000 });
-    const slotMarked = await markSlot();
+    await markSlot();
     const t4 = await page.evaluate(() => Date.now());
     await click("#ac-quota");
     const arrived = await waitReceipt(60000);
     const masks = await page.evaluate(() => document.querySelectorAll(".modal-mask").length);
-    ck("V16a", "🔴 单层弹窗红线：批量额度在飞期间开着映射弹窗，回执到达后 .modal-mask 恒为 1"
-       + "（就地槽是唯一出口，**不开第二层**）",
-       slotMarked && arrived && masks === 1,
-       "槽打标=" + slotMarked + " 回执送达=" + arrived + " 遮罩数=" + masks);
     const r3a = await read();
     const rcpt3 = await page.evaluate((k) => window.__ix.byPath[k] || null, allPath);
-    const rec = r3a.bulkReceipt || {};
-    ck("V16b", "就地回执含三段计数**原文**（刷新 N · 失败 K · 未发起 J），且此刻就在映射弹窗之外",
-       /刷新 \d+ 个 · 失败 \d+ 个 · 未发起 \d+ 个/.test(rec.text || "") && rec.inModal === false,
-       "回执=「" + (rec.text || "").slice(0, 160) + "」 inModal=" + rec.inModal);
+    ck("V16a", "🔴 单层弹窗红线：批量额度在飞期间开着映射弹窗，**新**结果浮层到达后 .modal-mask 恒为 1"
+       + "（浮层不是 modal ⇒ 不需要判遮罩分支也不叠第二层）",
+       arrived && masks === 1 && r3a.toastCount === 1 && !!r3a.toastCard
+       && r3a.toastCard.inModal === false,
+       "送达=" + arrived + " 遮罩数=" + masks + " 浮层数=" + r3a.toastCount
+       + " 卡住弹窗里=" + ((r3a.toastCard || {}).inModal));
+    const card = r3a.toastCard || {};
+    ck("V16b", "结果浮层说清这一批：三段计数**原文**（刷新 N · 失败 K · 未发起 J）+ 逐号行 + "
+       + "术语解释挂计数行悬停（3 秒读不完的定义不做成正文必读）",
+       /刷新 \d+ 个 · 失败 \d+ 个 · 未发起 \d+ 个/.test(card.sum || "")
+       && (card.rows || 0) >= 1 && (card.tags || []).length === card.rows
+       && (card.sumTitle || "").indexOf("未发起") >= 0
+       && card.hasClose === true && /关闭/.test(card.closeAria || ""),
+       "计数行=「" + (card.sum || "").slice(0, 90) + "」 逐号行=" + card.rows
+       + " 结果词=" + j(card.tags) + " 悬停解释长度=" + (card.sumTitle || "").length
+       + " 关闭钮=" + card.hasClose + "/" + card.closeAria);
+    await page.click("#toast-wrap .toast.card .t-close");
+    await page.waitForTimeout(350);
+    const r3c = await read();
+    ck("V16c", "× 手动关闭立即消失（不等 3 秒）",
+       r3c.toastCount === 0, "点关闭后浮层数=" + r3c.toastCount);
     await click(".modal-foot .btn");                 // 取消映射弹窗（不落库）
     await page.waitForTimeout(500);
-    const hitAfter = await page.evaluate(() => {
-      const s = document.querySelector("#ac-panel .bulk-receipt");
-      if (!s) return { ok: false, why: "槽不存在" };
-      const r = s.getBoundingClientRect();
-      if (r.height < 4) return { ok: false, why: "槽不可见 h=" + Math.round(r.height) };
-      s.scrollIntoView({ block: "center" });
-      const r2 = s.getBoundingClientRect();
-      const cx = Math.round(r2.x + r2.width / 2), cy = Math.round(r2.y + r2.height / 2);
-      const el = document.elementFromPoint(cx, cy);
-      return { ok: !!el && (el === s || s.contains(el)),
-               center: [cx, cy], tag: el ? el.tagName : "∅",
-               cls: el ? String(el.className || "") : "", inReceipt: !!el && s.contains(el) };
-    });
     const r3b = await read();
-    ck("V16c", "🔴 关掉弹窗后 elementFromPoint(回执中心) 命中 .bulk-receipt 之内"
-       + "（没被遮罩挡、也没被整块重绘吃掉；文本仍在模块级由 paintPanel 回填）",
-       hitAfter.ok === true && /刷新 \d+ 个/.test((r3b.bulkReceipt || {}).text || ""),
-       "中心=" + j(hitAfter.center) + " 命中=" + hitAfter.tag + "." + hitAfter.cls
-       + " 槽文本=「" + ((r3b.bulkReceipt || {}).text || "").slice(0, 120) + "」");
-    ck("V16d", "映射弹窗取消归零（V16 全程零残留，弹窗数回到 0）",
-       (r3b.modalCount === 0) && (r3b.bulkReceipt || {}).hidden === false,
-       "modal-root=" + r3b.modalCount + " 槽 hidden=" + (r3b.bulkReceipt || {}).hidden);
+    ck("V16d", "映射弹窗取消归零，且 V16 全程**面板零固化块**（结果不落进页面任何常驻位置）",
+       r3b.modalCount === 0 && r3b.receiptBlocks === 0 && r3b.toastCount === 0,
+       "modal-root=" + r3b.modalCount + " 固化块=" + r3b.receiptBlocks + " 浮层数=" + r3b.toastCount);
     const w3 = { name: "v16-quota-all", t0: t4, t1: await page.evaluate(() => Date.now()) };
     windows.push(w3);
     extra.leg = { variant, windows, receiptW2: rcpt2, receiptW3: rcpt3, bodies: await page.evaluate((keys) => {
       const o = {}; keys.forEach((k) => { o[k] = window.__ix.byPath[k] || null; }); return o;
     }, [onePath, allPath]),
-      rows: (r1.rows || []).map((x) => ({ name: x.name, quota: x.quota, sub: x.quotaSub })),
-      rowsAfter: (r2.rows || []).map((x) => ({ name: x.name, quota: x.quota, sub: x.quotaSub })),
-      receiptText: (r2.bulkReceipt || {}).text || "" };
+      rows: (r1.rows || []).map((x) => ({ name: x.name, quota: x.quota, sub: x.quotaMeta })),
+      rowsAfter: (r2.rows || []).map((x) => ({ name: x.name, quota: x.quota, sub: x.quotaMeta,
+      chips: x.quotaChips, barW: x.barW, fold: x.foldCount,
+      labelGap: x.labelGapPx, numClip: x.numClip, labelClip: x.labelClip,
+      qvalShell: x.qvalShell })),
+      receiptText: (r2.toastCard || {}).text || "" };
     await shot(PAYLOAD.shotName || "quota-leg-receipt-inline");
   }
 } else {
@@ -1177,6 +1309,20 @@ await section("rail", async () => {
      r.filterSwitch === 0 && E.zeroAccountProducts.length < 5,
      "#ac-only=" + r.filterSwitch + " 空产品数=" + E.zeroAccountProducts.length
      + "（阈值 5，railScope 同源）");
+  /* 🔴 顶距读数必须在 `page.evaluate` 里取：**分段体本身跑在 Node 侧，没有 `document`**。
+     2026-10-02 全量第一轮我把它写成裸 `document.getElementById(...)`，整个 `rail` 分段当场
+     `ReferenceError: document is not defined` 中断 ⇒ 连带 20 条红（门内 SEC-rail 自测正是为此而设，
+     它把这一条报成红是对的）。同一段的 `r.subnav` 是 `read()` 已经量好的框，只用它。 */
+  const railGap = await page.evaluate(() => {
+    const a = document.querySelector("#content aside.subnav");
+    const b = document.getElementById("ac-claim-all");
+    if (!a || !b) return null;
+    return Math.round((b.getBoundingClientRect().top - a.getBoundingClientRect().top) * 10) / 10;
+  });
+  ck("B18b", "rail 顶区内衬：第一个元素（「一键签到」）上缘距 rail 上缘 = 12px（删标题后不许贴线；"
+     + "2026-10-02 用户「一键签到按钮怎么顶到上面横线上去了」）",
+     railGap !== null && railGap >= 10 && railGap <= 14,
+     "实测顶距=" + railGap + "px（期望 12；null = 探针没取到 rail 或那颗钮）");
   ck("B14", "子侧栏顶部零分组总标题（2026-10-02 用户指示删「产品列表」，与「模型厂商」同口径；"
      + "页标题已自明，无障碍名保留在 #ac-rail 的 aria-label）",
      r.navTitles.length === 0, "rail 内 .nav-group-title=" + j(r.navTitles));
@@ -1192,8 +1338,10 @@ await section("panel", async () => {
   ck("C2", "全页接入入口恰好 1 处，且就在卡头（rail 底 .side-add 已移除）",
      r.headAdd === 1 && r.addBtnsAnywhere === 1 && r.sideAdd === 0,
      "#ac-add=" + r.headAdd + "；文本含「接入账号」的 button=" + r.addBtnsAnywhere + " .side-add=" + r.sideAdd);
-  ck("C4", "表头逐字 = 账号 / 状态 / 额度 / 操作（4 列，无展开指示列）",
-     j(r.ths.map((t) => t.text)) === j(["账号", "状态", "额度", "操作"]),
+  /* 🔴 2026-10-03 用户「状态列和额度列交换下位置」⇒ 列集随设计前进为 账号/额度/状态/操作
+     （与静态门 V6 同一份口径；仍是逐字钉四列，不是放宽判据）。 */
+  ck("C4", "表头逐字 = 账号 / 额度 / 状态 / 操作（4 列，无展开指示列）",
+     j(r.ths.map((t) => t.text)) === j(["账号", "额度", "状态", "操作"]),
      "实测=" + j(r.ths.map((t) => (t.cls ? "." + t.cls : "·") + (t.text || "∅"))));
   ck("C3b", "buddy 面板两行按数据渲染（ix-off / ix-on）",
      j(r.rows.map((x) => x.name)) === j(["ix-off", "ix-on"]), "行=" + r.rows.map((x) => x.name).join(","));
@@ -1255,8 +1403,8 @@ await section("quota", async () => {
   ck("D6a", "额度格文本 ⊂ 五档词表（**无 items 的行**，全表扫描零越界）",
      plain.every((x) => QUOTA_LIST.some((w) => x.quota === w || (x.quota || "").indexOf(w) === 0)),
      "本表=" + j(plain.map((x) => x.quota)) + " 词表=" + QUOTA_LIST.join("/"));
-  ck("D6b", "结构化行（有 items）只钉「查于」在位，**不要求前缀相等**（词表让位给套餐名 + 数值）",
-     structured.every((x) => (x.quota || "").indexOf("查于") >= 0),
+  ck("D6b", "结构化行（有 items）只钉 meta 行的新鲜度段「…查」在位，**不要求前缀相等**（词表让位给名称 + 数值）",
+     structured.every((x) => /\S查/.test(x.quota || "")),
      "结构化行=" + j(structured.map((x) => x.name + "=「" + x.quota + "」")) + "（本表 " + structured.length + " 行）");
   ck("D7", "未知不当零：额度格无 0 / — / undefined / NaN",
      r.rows.every((x) => ["0", "—", "undefined", "NaN"].indexOf(x.quota) < 0),
@@ -1283,8 +1431,9 @@ await section("map-modal", async () => {
   const rm = await read();
   ck("C6", "映射弹窗内零账号级动作：[data-mop] 计数 = 0（续期/刷新额度都只在行内，弹窗不承载账号操作）",
      rm.modalMopRows.length === 0, "弹窗内账号级动作=" + j(rm.modalMopRows));
-  ck("C6b", "映射弹窗为宽版 800px（§7.11 wide）且全程单层弹窗（mask 计数 == 1）",
-     rm.modalW === 800 && rm.modalMaskCount === 1,
+  ck("C6b", "映射弹窗为宽版 880px（§7.11 wide + 2026-10-03「调整好弹窗总宽度」⇒ `.map-modal` 880）"
+     + "且全程单层弹窗（mask 计数 == 1）",
+     rm.modalW === 880 && rm.modalMaskCount === 1,
      "modal 宽=" + rm.modalW + "px 遮罩数=" + rm.modalMaskCount);
   await shot("1440-light-map-modal");
   await click(".modal-foot .btn");          // 取消
@@ -1567,24 +1716,83 @@ await section("quota-per-product", async () => {
   await click(".anchor-item[data-pid='lobsterai']");
   await page.waitForTimeout(300);
   const rl = await read();
-  ck("D1", "结构化套餐余粮：额度格 = 套餐徽章 + 数字 + 量纲 + 查于（runtime.json 真文件真值）",
-     (rowOf(rl, "ix-quota-avail").quota || "").indexOf("LobsterAI 活动包") >= 0
-     && /[0-9]/.test(rowOf(rl, "ix-quota-avail").quota || "")
+  ck("D1", "结构化套餐余粮：额度格 = 名称/合计 + 数字 + 量纲 + meta 新鲜度段（runtime.json 真文件真值）",
+     /[0-9]/.test(rowOf(rl, "ix-quota-avail").quota || "")
      && (rowOf(rl, "ix-quota-avail").quota || "").indexOf("积分") >= 0
-     && (rowOf(rl, "ix-quota-avail").quota || "").indexOf("查于") >= 0
+     && /\S查/.test(rowOf(rl, "ix-quota-avail").quota || "")
+     && (rowOf(rl, "ix-quota-avail").quota || "").indexOf("LobsterAI 活动包") >= 0
      && E.poolStates["lobsterai/ix-quota-avail"] === "unknown",
      "额度=「" + rowOf(rl, "ix-quota-avail").quota + "」；池摘要=" + E.poolStates["lobsterai/ix-quota-avail"]);
-  ck("D4", "「查于 …」附属 = checked_at 前 16 字符（原样投影，不重算时区）",
-     rowOf(rl, "ix-quota-avail").quotaSub === "查于 " + E.checkedAtText,
-     "实测=「" + rowOf(rl, "ix-quota-avail").quotaSub + "」 期望=「查于 " + E.checkedAtText + "」（源 " + E.checkedAt + "）");
-  ck("D4b", "逐包明细住**本格内就地展开块**（2026-10-02 用户指令推进：旧判据「只许写在本格 title 上」作废——"
-     + "tooltip 不可选不可复制且被截断到 12 行）：展开块含包名与余量，入口写真实条数，常驻面不刷屏",
-     (rowOf(rl, "ix-quota-avail").quotaPacks || "").indexOf("LobsterAI 活动包") >= 0
-     && (rowOf(rl, "ix-quota-avail").quotaPacks || "").indexOf("300") >= 0
-     && /展开 \d+ 个包/.test(rowOf(rl, "ix-quota-avail").packsBtn || "")
-     && (rowOf(rl, "ix-quota-avail").quota || "").indexOf("下面这些行") < 0,
-     "展开块=「" + (rowOf(rl, "ix-quota-avail").quotaPacks || "").slice(0, 80)
-     + "」 入口=「" + (rowOf(rl, "ix-quota-avail").packsBtn || "") + "」");
+  /* 🔴 D4 随 2026-10-03 改版前进：绝对数据时刻**退出常驻面**（三家参考的新鲜度都是相对量），
+     所以"原样投影 checked_at 前 16 字符"这条判据的读取点从可见文本搬到**悬停**；
+     同时反向钉常驻面不再出现「查于」——退回旧写法即红。 */
+  ck("D4", "数据绝对时刻只在悬停（原样投影 checked_at 前 16 字符，不重算时区），常驻面不得再出现「查于」",
+     (rowOf(rl, "ix-quota-avail").quotaTip || "").indexOf("数据时刻：" + E.checkedAtText) >= 0
+     && (rowOf(rl, "ix-quota-avail").quota || "").indexOf("查于") < 0,
+     "悬停=「" + (rowOf(rl, "ix-quota-avail").quotaTip || "").slice(0, 70) + "」 期望含「数据时刻：" + E.checkedAtText
+     + "」；常驻面=「" + rowOf(rl, "ix-quota-avail").quota + "」");
+  ck("D4b", "多组额度**逐组给量**住在明细行（2026-10-03 裁定链：先否掉折叠 ⇒ 逐组给量必须常驻，"
+     + "再定「合计：900 积分」⇒ 明细留在自己一行、不并进主行）：组名 + 余量在常驻面、"
+     + "零折叠入口、零套餐徽章、失效包只计数不占行",
+     (rowOf(rl, "ix-quota-avail").quotaChips || "").indexOf("LobsterAI 活动包") >= 0
+     && (rowOf(rl, "ix-quota-avail").quotaChips || "").indexOf("300") >= 0
+     && (rowOf(rl, "ix-quota-avail").quotaChips || "").indexOf("新用户赠送") >= 0
+     // 主行标签在多组时必须是「合计」，且数 = Σ各组剩余（300 + 700）
+     && (rowOf(rl, "ix-quota-avail").quota || "").indexOf("合计") >= 0
+     && (rowOf(rl, "ix-quota-avail").quotaMeta || "").indexOf("另有 1 包已失效") >= 0
+     && rowOf(rl, "ix-quota-avail").foldCount === 0
+     && rowOf(rl, "ix-quota-avail").badgeCount === 0
+     && (rowOf(rl, "ix-quota-avail").quota || "").indexOf("展开") < 0,
+     "明细行=「" + (rowOf(rl, "ix-quota-avail").quotaChips || "").slice(0, 80)
+     + "」 meta=「" + (rowOf(rl, "ix-quota-avail").quotaMeta || "") + "」 折叠入口=" + rowOf(rl, "ix-quota-avail").foldCount
+     + " 徽章=" + rowOf(rl, "ix-quota-avail").badgeCount);
+  /* 🔴 D4f（2026-10-03 用户裁定「合计：900 积分」）：判据对象是**画出来的文本边缘**，不是 CSS 字符串。
+     三条腿成对：① 标签文本右缘 → 数值文本左缘 ≤ 8px（"贴"）；② 数值零裁字（被挤的只能是标签）；
+     ③ 标签以「：」收尾 + 零右浮 `.qval` 壳。缺任何一条都可能是"看着贴了其实没贴"。 */
+  const sumRows = (rl.rows || []).filter((x) => (x.quota || "").indexOf("合计") >= 0);
+  ck("D4f", "「合计：900 积分」= 数值贴标签：标签文本右缘→数值文本左缘 ≤8px、数值零裁字、"
+     + "标签以「：」收尾、零右浮 .qval 壳",
+     sumRows.length > 0
+     && sumRows.every((x) => x.labelGapPx !== null && x.labelGapPx <= 8 && x.labelGapPx > -1)
+     && sumRows.every((x) => x.numClip === 0)
+     && sumRows.every((x) => x.labelEndsColon === true)
+     && sumRows.every((x) => x.qvalShell === 0),
+     "多组行 " + sumRows.length + " 条｜labelGap=" + j(sumRows.map((x) => x.labelGapPx))
+     + " numClip=" + j(sumRows.map((x) => x.numClip))
+     + " 冒号=" + j(sumRows.map((x) => x.labelEndsColon))
+     + " qval壳=" + j(sumRows.map((x) => x.qvalShell)));
+  /* 🔴 D4c（2026-10-03 用户实拍「进度条怎么还有错落啊，左对齐固定在一个位置，用完的部分用灰色显示」）：
+     判据对象是**画出来的几何**，不是 CSS 字符串。终版形态 = 占比条**自占一行、画满格宽**
+     （`.qbarline > .qbar`）⇒ 左边缘恒 = 额度格内容区的左边缘，对齐由**结构**保证，不依赖列宽算式。
+     （中间那版「定宽三列 112/64/1fr」也被实测定量过：条钉住了，数字被挤到裁字 ⇒ 由 D4d 钉住这一半。） */
+  const barRows = (rl.rows || []).filter((x) => x.barLeft !== null && x.barLeft !== undefined);
+  ck("D4c", "进度条**各行左边缘同一个 x**（条自占一行画满格宽 ⇒ 结构上对齐）+ 用掉的段是灰色轨道",
+     barRows.length >= 2
+     && Math.max.apply(null, barRows.map((x) => x.barLeft))
+        - Math.min.apply(null, barRows.map((x) => x.barLeft)) <= 0.5
+     && barRows.every((x) => x.barTrack === rl.tokens.trackRgb)
+     && barRows.every((x) => x.barTrack !== rl.tokens.okRgb),
+     "带条行=" + j(barRows.map((x) => x.name + "@" + x.barLeft + " " + x.barTrack))
+     + " 轨道令牌=" + rl.tokens.trackRgb + " 填充=" + rl.tokens.okRgb);
+  /* 🔴 D4e：额度格**字重档**（2026-10-03 用户实拍「怎么有的字体加粗有的不加粗。看下什么问题」）。
+     红因两类：① 主读数（剩余/总量）与档位词/标签同权重或互相抢权重；② 同一档在五档之间字重不一致
+     （旧版「已耗尽」700 而「无套餐/未知」400，且 `.qcell.qwarnw` 把**整格**加粗）。
+     定版 = 一格只有一处 700（数值），名称/meta/档位词一律 600 ⇒ 带数值行 boldCount 恰为 1。 */
+  const wRows = (rl.rows || []).filter((x) => x.weights && x.weights.num);
+  ck("D4e", "额度格字重档：主读数 700 且**每格只有一处 700**，名称 / meta 600（警示只走颜色不走字重）",
+     wRows.length >= 1
+     && wRows.every((x) => x.weights.num === "700")
+     && wRows.every((x) => !x.weights.name || x.weights.name === "600")
+     && wRows.every((x) => !x.weights.meta || x.weights.meta === "600")
+     && wRows.every((x) => x.weights.boldCount === 1),
+     "取重行=" + j(wRows.map((x) => x.name + " num=" + x.weights.num + " name=" + x.weights.name
+       + " meta=" + x.weights.meta + " 700数=" + x.weights.boldCount)));
+  /* 🔴 D4d：额度格**零溢出、数值不裁字**（逐产品逐行，全站扫描段里再合一次）。
+     这一条存在的意义 = 上一版布局缺陷（`.qnum` 需 129px 只分到 90px）当时**只有手写探针看得见**。 */
+  ck("D4d", "额度格**零溢出**（`.qcell` scrollWidth ≤ clientWidth）且数值**不裁字**（`.qnum` 同理）",
+     (rl.rows || []).every((x) => (x.cellOver || 0) <= 0 && (x.numOver || 0) <= 0),
+     "溢出行=" + j((rl.rows || []).filter((x) => (x.cellOver || 0) > 0 || (x.numOver || 0) > 0)
+       .map((x) => x.name + " cell+" + x.cellOver + " num+" + x.numOver)));
   await click(".anchor-item[data-pid='qodercn']");
   await page.waitForTimeout(300);
   const rc = await read();
@@ -1614,7 +1822,8 @@ await section("quota-sweep", async () => {
     const rs = await read();
     for (const row of rs.rows) {
       swept.push({ pid, name: row.name, quota: row.quota, tip: row.quotaTip || "",
-                   ops: row.ops, sub: row.quotaSub || "",
+                   ops: row.ops, sub: row.quotaMeta || "", meta: row.quotaMeta || "",
+                   cellOver: row.cellOver || 0, numOver: row.numOver || 0,
                    hasItems: !!(E.quotaItems || {})[pid + "/" + row.name],
                    balance: !!(E.caps[pid] || {}).balance });
     }
@@ -1627,19 +1836,28 @@ await section("quota-sweep", async () => {
          && (np.quota || "").indexOf("已耗尽") < 0 && (np.quotaTip || "").indexOf("entitlement") >= 0,
          "额度格=「" + (np.quota || "") + "」 state=" + j(E.quotaStates["zcode/ix-no-plan"])
          + " reason=" + j(E.quotaReasons["zcode/ix-no-plan"]) + "｜tooltip=「" + (np.quotaTip || "") + "」");
-      ck("V13", "「未给出 ≠ 已耗尽」：items 有桶但 remaining=null ⇒ 整号未知，"
-         + "可见面不出「已耗尽」，且**就地展开块**如实写「上游未给可用数」"
-         + "（2026-10-02：核对点从 tooltip 搬到展开块，同一件事不换判据只换读取位置）",
+      ck("V13", "「未给出 ≠ 已耗尽」：items 有桶但 remaining=null ⇒ 可见面出「用量未知」，"
+         + "不出「已耗尽」、不印 `0 / 总量`，且悬停如实写「这一格没有可用数」"
+         + "（2026-10-03 读取点随额度格重做搬家：护栏从展开块回到档位词本身；"
+         + " 悬停文案两可 = 上游原话 `未给出` 或页面兜底 `上游未给可用数`，两者都算如实）",
          (nr.quota || "").indexOf("已耗尽") < 0 && E.quotaRemaining["zcode/ix-null-remaining"] === null
-         && (nr.quotaPacks || "").indexOf("上游未给可用数") >= 0,
-         "额度格=「" + (nr.quota || "") + "」 展开块=「" + (nr.quotaPacks || "").slice(0, 90) + "」"
-         + "｜runtime.remaining=" + j(E.quotaRemaining["zcode/ix-null-remaining"]));
-      ck("V15", "active 且 `expires_at` 为 ISO 形状 ⇒ **必出**「重置于 MM-DD HH:mm」"
-         + "（钩子归一化的界面侧后果；额度腿的真机版由 QL6 再钉一次）",
-         (qn.quota || "").indexOf("重置于") >= 0
-         && /重置于 \d{2}-\d{2} \d{2}:\d{2}/.test(qn.quota || "")
-         && (qn.quota || "").indexOf(E.expiresShort) >= 0,
-         "额度格=「" + (qn.quota || "") + "」 期望含「重置于 " + E.expiresShort + "」"
+         && (nr.quota || "").indexOf("用量未知") >= 0
+         && !/(^|[^0-9])0\s*(亿|万|积分|Token|\/)/.test(nr.quota || "")
+         && /(未给出|上游未给可用数)/.test(nr.quotaTip || "")
+         && nr.barW === "",
+         "额度格=「" + (nr.quota || "") + "」 悬停=「" + (nr.quotaTip || "").slice(0, 70)
+         + "」 条宽=「" + nr.barW + "」｜runtime.remaining=" + j(E.quotaRemaining["zcode/ix-null-remaining"]));
+      /* 🔴 V15 判据对象随重做前进：meta 行**是**一行独立元素，`txt(td[QI])` 把主行与 meta
+         拼成一串（`…1亿至 10-04 09:31`），`(^|\s)至` 在拼接串上是**结构性不可能**——
+         那不再是"到期时刻在不在"的判据，而是"拼接顺序"的伪判据。改读 `.qmeta` 本体。 */
+      ck("V15", "active 且 `expires_at` 为 ISO 形状 ⇒ meta 行**必出**「至 MM-DD HH:mm」"
+         + "（2026-10-03 措辞随额度格重做前进：「重置于」并入 meta 行，取数定义一字未改；"
+         + "钩子归一化的界面侧后果，额度腿的真机版由 QL6 再钉一次）",
+         /^至 \d{2}-\d{2} \d{2}:\d{2}(?:\s|$)/.test(qn.quotaMeta || "")
+         && (qn.quota || "").indexOf(E.expiresShort) >= 0
+         && (qn.quota || "").indexOf("重置于") < 0,
+         "meta 行=「" + (qn.quotaMeta || "") + "」 整格=「" + (qn.quota || "")
+         + "」 期望含「至 " + E.expiresShort + "」"
          + "｜runtime.expires_at=" + j(E.quotaExpires["zcode/ix-quota-net"]));
     }
   }
@@ -1653,15 +1871,32 @@ await section("quota-sweep", async () => {
      "无 items 行=" + swept.filter((x) => !x.hasItems).length + "；越界="
      + j(swept.filter((x) => !x.hasItems && !QUOTA_LIST.some((w) => x.quota === w
         || (x.quota || "").indexOf(w) === 0)).map((x) => x.pid + "/" + x.name + "=「" + x.quota + "」")));
-  ck("D6b", "结构化行（有 items）全站只钉「查于」，**不要求前缀相等**（旧 D6 与结构化互斥的那一处）",
-     swept.filter((x) => x.hasItems).every((row) => (row.quota || "").indexOf("查于") >= 0),
+  ck("D6b", "结构化行（有 items）全站只钉新鲜度段「…查」，**不要求前缀相等**（旧 D6 与结构化互斥的那一处）",
+     swept.filter((x) => x.hasItems).every((row) => /\S查/.test(row.quota || "")),
      "结构化行=" + swept.filter((x) => x.hasItems).length
      + "；缺查于=" + j(swept.filter((x) => x.hasItems && (x.quota || "").indexOf("查于") < 0)
        .map((x) => x.pid + "/" + x.name)));
-  ck("V17", "额度格用户可见面**零裸 epoch**（扫描整格文本，≥9 位连续数字即红）",
-     swept.every((x) => !/\d{9,}/.test((x.quota || "") + " " + (x.sub || ""))),
-     "命中=" + j(swept.filter((x) => /\d{9,}/.test((x.quota || "") + " " + (x.sub || "")))
-       .map((x) => x.pid + "/" + x.name + "=「" + x.quota + "」")));
+  ck("D4d2", "全站逐行：额度格**零溢出**、数值**不裁字**（D4d 的扫描面版本——上一版「定宽三列」的裁字缺陷当时只有手写探针看得见）",
+     swept.length > 0 && swept.every((x) => x.cellOver <= 0 && x.numOver <= 0),
+     "扫描行=" + swept.length + "；越界=" + j(swept.filter((x) => x.cellOver > 0 || x.numOver > 0)
+       .map((x) => x.pid + "/" + x.name + " cell+" + x.cellOver + " num+" + x.numOver)));
+  /* 2026-10-03 随额度格重做补第二支：逐包 `失效于` 那行没了 ⇒ 摘掉 ISO 护栏的泄漏形态
+     从"10 位裸 epoch"变成"被 slice 切出来的残串"（`至 56800`），只扫 ≥9 位就抓不到。
+     合形与否归 V15，本条只管"时刻的位置上不许出现裸数字"。
+     🔴 2026-10-03 续（D4/V13/V14 把证据条搬到**格根**之后，本条的扫描面要分两把尺）：
+     · **常驻面**（整格 + meta 行）仍按"任何 ≥9 位连续数字即红"——那一面上出现长数字没有合法解释；
+     · **悬停**里现在带着**上游原话**（`plan=…；可用余量 100000000（token 量纲）`），
+       那是被如实投影的业务数值而不是时刻 ⇒ 整串扫会**假红**（本轮真机门唯一那条红就是这个）。
+       悬停只扫"时刻的位置"：`至/查于/数据时刻/失效于/重置于` 后面紧跟的长数字，
+       以及被 slice 切出来的 4-8 位残串。摘掉 ISO 护栏时 epoch 会同时上到常驻面 ⇒ 本条照红，
+       可红路径没有因为收窄悬停扫描而消失。 */
+  const epochHit = (x) => /\d{9,}/.test((x.quota || "") + " " + (x.meta || ""))
+    || /(?:至|查|数据时刻|失效于|重置于)[^0-9\n]{0,3}\d{9,}/.test(x.tip || "")
+    || /(?:至|查|失效于)\s*\d{4,8}(?![\d:])/.test((x.quota || "") + " " + (x.meta || ""));
+  ck("V17", "额度格用户可见面**零裸 epoch / 零时刻残串**（常驻面任何 ≥9 位数字即红；"
+     + "悬停带上游原话 ⇒ 只扫「时刻的位置」上的长数字与 4-8 位残串）",
+     swept.every((x) => !epochHit(x)),
+     "命中=" + j(swept.filter(epochHit).map((x) => x.pid + "/" + x.name + "=「" + x.quota + "」")));
   await click(".anchor-item[data-pid='buddy']");
   await page.waitForTimeout(300);
 });
@@ -1824,7 +2059,19 @@ await section("map-fusion", async () => {
     return { n: (r.models || []).length,
              withFacts: (r.models || []).filter((m) => m.context_window != null || m.max_output != null
                || m.reasoning === true || m.image_input === true || m.tool_call === true).length,
-             source: (r.source || {}).detail || "" };
+             source: (r.source || {}).detail || "",
+             /* 该产品的「是否首次配置」= 后端三态位里有没有任何一行不是 null
+                （2026-10-05 第三次指示后这颗钮**常驻**，不再随这个数翻态；
+                   MS3 于是改钉"常驻 + 文案固定 + 消耗声明常驻"，这个数只用来核对回显是否自洽） */
+             known: (r.models || []).filter((m) => m.map_enabled !== null
+               && m.map_enabled !== undefined).length,
+             /* 🔴 逐行的**后端真相**（2026-10-04 状态列删除后，界面读数的对账对象只能是它）：
+                `map_enabled` 三态位 + `mapped_to` 已落库的网关模型名。 */
+             rows: (r.models || []).map((m) => ({ id: m.id, enabled: m.map_enabled === null
+               || m.map_enabled === undefined ? null : m.map_enabled === true,
+               mappedTo: (m.mapped_to || []).filter(Boolean),
+               suggest: (m.suggest || {}).name || "",
+               conf: (m.suggest || {}).confidence || 0 })) };
   });
   ck("E10", "目录字段融合进行内：映射行数 == /catalog 条数，且带辅助信息的行数 == API 非空字段条数",
      rf.mapRows.length === api.n
@@ -1838,12 +2085,323 @@ await section("map-fusion", async () => {
   ck("E10c", "二级弹窗入口已删：全弹窗无 [data-mop='models']，文本无「模型目录」钮",
      rf.modalMopRows.indexOf(":models") < 0 && (rf.wizardText || "").indexOf("模型目录") < 0,
      "弹窗动作=" + j(rf.modalMopRows));
-  ck("E10d", "映射行为宽版版式：modal 800px + 行内目标下拉在位（前两行抽查）",
-     rf.modalW === 800 && rf.mapRows.length > 0 && rf.mapRows.slice(0, 2).every((x) => x.hasSel),
+  ck("E10d", "映射行为宽版版式：modal 880px + 行内目标下拉在位（前两行抽查）",
+     rf.modalW === 880 && rf.mapRows.length > 0 && rf.mapRows.slice(0, 2).every((x) => x.hasSel),
      "modal 宽=" + rf.modalW + "px；前两行下拉=" + j(rf.mapRows.slice(0, 2).map((x) => x.hasSel)));
+  /* 🔴 脚部三颗钮（2026-10-05 第四次裁定：「右侧显示黑色 保存按钮，所有修改、设置 点击保存
+     提交数据后才能入库存储」）：取消 · AI智能匹配（常驻）· 保存（primary，读脏态使能）。
+     MS3 钉"AI 那颗常驻一态 + 消耗声明常驻在表上方且写明只回填不写盘"；
+     MS4 钉 footer 形状：恰 3 颗、primary 只有「保存」、**无改动时它是禁用的**、零「初始化映射」回潮。
+     本段**不点** AI 那颗钮（它真发一次出站、消耗所选资源/账号的额度）；
+     它的行为判据 = pytest A 系列（INT-111/112）+ 静态门 V23，界面上钉的是它"在册且文案恒定"。 */
+  ck("MS3", "AI 钮常驻一态：文案恒「AI智能匹配」（与后端有没有位无关、不随脏态改字）"
+     + " 消耗声明常驻在表上方并写明「不写入配置」与「暂不设置」",
+     !!rf.aiBtn && rf.aiBtn.text === "AI智能匹配" && rf.aiBtn.hidden === false
+     && rf.mapFootBtns === 3
+     && !!rf.mapNoteAbove && rf.mapNoteAbove.beforeTable
+     && rf.mapNoteAbove.text.indexOf("不写入配置") >= 0
+     && rf.mapNoteAbove.text.indexOf("暂不设置") >= 0,
+     "AI 钮=" + j(rf.aiBtn) + "／脚钮数=" + rf.mapFootBtns
+     + "／后端非 null 行数=" + api.known + "（钮已与此无关）"
+     + "／消耗声明=" + (rf.mapNoteAbove ? (rf.mapNoteAbove.beforeTable ? "在表上方" : "在表下方(红)") : "缺失")
+     + "「" + (rf.mapNoteAbove ? rf.mapNoteAbove.text.slice(0, 40) : "") + "」");
+  ck("MS4", "footer 恰 3 颗（取消 / AI智能匹配 / 保存）：primary 只有「保存」一颗、"
+     + "无改动时它是**禁用**的、零「初始化映射」文案回潮",
+     rf.mapFootBtns === 3 && rf.modalPrimary.join() === "保存"
+     && !!rf.saveBtn && rf.saveBtn.text === "保存" && rf.saveBtn.disabled === true
+     && rf.footTexts.join("/") === "取消/AI智能匹配/保存"
+     && rf.footTexts.filter((t) => t.indexOf("初始化") >= 0).length === 0,
+     "脚钮数=" + rf.mapFootBtns + " 全部文案=" + j(rf.footTexts)
+     + " primary=" + j(rf.modalPrimary) + " 保存态=" + j(rf.saveBtn));
+  /* 🔴 进池开关覆盖面（2026-10-02 用户「让增加的开关哪里去了呢，需求丢了么？」）：需求原文
+     = 「针对每个产品内的模型，需要支持一个开关」⇒ **每一行都得有**，不是"已有映射的行才有"。
+     旧实现把开关挂在 `mapped_to` 非空上 ⇒ 未初始化过的产品整列只有 `—`（:8300 实盘 zcode 2 行 /
+     buddy 17 行 = 0 颗开关），功能等于没做。本段双向钉：MS1 行行有开关（零缺失格），
+     MS2 没有落点的行是「禁用 + 悬停说明」而不是消失，有落点的行必须可拨。 */
+  ck("MS1", "每一行都有进池开关：[data-mapsw] .switch 数 == 行数，且零「只有文字占位」的缺失格",
+     rf.mapRows.length > 0 && rf.mapRows.every((x) => x.hasSw)
+     && rf.mapRows.filter((x) => x.swMissingCell).length === 0,
+     "行=" + rf.mapRows.length + " 开关=" + rf.mapRows.filter((x) => x.hasSw).length
+     + " 缺失格=" + rf.mapRows.filter((x) => x.swMissingCell).length);
+  const pre = rf.mapRows.filter((x) => x.selV), unp = rf.mapRows.filter((x) => !x.selV);
+  ck("MS2", "可拨性 = 该行有没有落点：下拉已选目标的行必须可拨（disabled=false），"
+     + "未选目标的行必须禁用且悬停给出原因（禁用态可见 ≠ 消失）",
+     pre.every((x) => x.hasSw && x.swDisabled === false)
+     && unp.every((x) => x.hasSw && x.swDisabled === true && x.swTitle.indexOf("网关模型映射") >= 0),
+     "预选目标行 " + pre.length + "（可拨 " + pre.filter((x) => x.swDisabled === false).length
+     + "）／未选目标行 " + unp.length + "（禁用+有说明 "
+     + unp.filter((x) => x.swDisabled === true && x.swTitle.indexOf("网关模型映射") >= 0).length + "）");
+  /* MS2f（2026-10-03 用户「资源池里已经关联并开启进池的怎么没显示？」追出来的**读取面假态**；
+     2026-10-04 随「状态列删除」换对账对象，**判据不删**）：
+     旧写法读的是那一列的徽章文案 —— 列没了，判据只能升级成**跟后端那个位对账**：
+     `map_enabled === null`（从没写入配置）的行，开关必须为关。这比徽章更强，因为徽章是前端
+     自己印的字，而这里的依据是配置里那个位（`admin_accounts.py::_map_enabled` 末行
+     `return False if seen else None`）。样本缺失时如实红（同 MS2b0 的口径，不许用空判据交差）。 */
+  const noBit = api.rows.map((r3, i) => ({ r: r3, ui: rf.mapRows[i] }))
+    .filter((x) => x.r && x.r.enabled === null);
+  const lyingOn = noBit.filter((x) => x.ui && x.ui.swOn !== false);
+  if (noBit.length === 0) {
+    ck("MS2f", "读取面不撒谎：后端无位（`map_enabled=null`）的行开关必须为关",
+       false, "本段样本里没有任何「后端无位」的行 ⇒ 该不变量无从验证，如实登记（不许用空判据交差）");
+  } else {
+    ck("MS2f", "读取面不撒谎：后端无位（`map_enabled=null`）的行开关必须为关，全弹窗零矛盾行",
+       lyingOn.length === 0 && noBit.every((x) => !!x.ui),
+       "无位行 " + noBit.length + "，其中开关显示为开/未知的 = " + lyingOn.length
+         + (lyingOn.length ? "（" + j(lyingOn.slice(0, 3).map((x) => x.ui.name)) + "）" : "")
+         + "；开关悬停含「未落库」的行 = " + rf.mapRows.filter((x) => x.swTitle.indexOf("未落库") >= 0).length);
+  }
+
+  /* ---------- MS5/MS6/MS7 · 「状态」列删除后的三条对账（2026-10-04 指示 + 2026-10-05 推进） ----------
+     用户原话：「有关联映射配置不就是映射了吗，没关联就是没映射啊。弄个状态这不多次一举么。给我去掉这列」
+     删列成立的前提 = 剩下那几格**各自读得对**，否则只是把信息删掉了。三条各钉一个前提：
+     MS5 列形状：表头逐字四列（「状态」不许回来）+ 每行恰四格（不许留没人住的空列）；
+     MS6 「映射了什么」= 下拉当前值，🔴 且**只**= 下拉当前值：已落库的行显示那个目标；后端无位的行
+         下拉必须为空 —— 旧契约允许它显示正则建议（配一句「未落库」），那正是本轮第 1 条
+         「资源池里怎么没显示」的病源（:8300 实盘 26 行挂着从没写进配置的名字）。建议改由
+         行内「采纳并入库」钮给，所以**有够格建议的无位行必须画得出那颗钮**（没对象就不许蒙绿）；
+     MS7 弹窗零删除入口（用户 2026-10-04 明令）+ 已落库的行那一行必须**空着**
+         （下拉的值 + 开关的位置已经说完了，再说一遍就是两套真相）。 */
+  ck("MS5", "状态列已删：表头逐字 = 模型/规则/网关模型映射/进池（4 列、零「状态」）且每行恰 4 格",
+     rf.mapHeads.length === 4 && rf.mapHeads.join("/") === "模型/规则/网关模型映射/进池"
+     && rf.mapRows.length > 0 && rf.mapRows.every((x) => x.cells === 4),
+     "表头=" + j(rf.mapHeads) + "；行格数集合=" + j([...new Set(rf.mapRows.map((x) => x.cells))])
+     + "（行数 " + rf.mapRows.length + "）");
+  const selBad = [], hintBad = [], noFoot = [], adoptBad = [];
+  api.rows.forEach((r3, i) => {
+    const u = rf.mapRows[i];
+    if (!u) return;
+    const want = (r3.mappedTo || []).find((n) => (u.opts || []).indexOf(n) >= 0);
+    if (want && u.selV !== want) selBad.push(u.name + ":显示" + j(u.selV) + "≠已落库" + j(want));
+    /* 🔴 反转腿：后端无位 ⇒ 下拉必须空（把建议显示成"已关联"= 本轮判死的假态） */
+    if (r3.enabled === null && u.selV) {
+      selBad.push(u.name + ":后端无位而下拉显示「" + u.selV + "」（建议不许占当前值）");
+    }
+    if (!u.hasFoot) noFoot.push(u.name);
+    /* 无位 + 有够格建议（≥0.7 且这个名字在下拉清单里）⇒ 必须画得出采纳钮，且采纳的就是那条建议 */
+    const sugg = r3.conf >= 0.7 && (u.opts || []).indexOf(r3.suggest) >= 0 ? r3.suggest : "";
+    if (r3.enabled === null && sugg) {
+      if (!u.adopt || u.adoptName !== sugg) adoptBad.push(u.name + ":建议「" + sugg + "」没给出可采纳入口");
+      if (u.foot.indexOf("建议挂到") < 0) hintBad.push(u.name + ":那一行没写「建议挂到」（只住钮不住文字）");
+    }
+    if (r3.enabled !== null && u.foot) hintBad.push(u.name + ":已落库的行那一行不该有文字，实得「" + u.foot.slice(0, 28) + "」");
+  });
+  const expectAdopt = api.rows.filter((r3, i) => r3.enabled === null
+    && r3.conf >= 0.7 && ((rf.mapRows[i] || {}).opts || []).indexOf(r3.suggest) >= 0).length;
+  const drawnAdopt = rf.mapRows.filter((x) => x.adopt).length;
+  ck("MS6", "🔴 下拉就是「映射了什么」的唯一读数且**只报配置事实**：已落库的行显示那个目标、后端无位的行"
+     + "下拉为空；有够格建议的无位行必须画得出「采纳并入库」，且采纳入口**不多画**（对账对象 = 后端 `mapped_to`/`map_enabled`/`suggest`）",
+     selBad.length === 0 && hintBad.length === 0 && adoptBad.length === 0 && noFoot.length === 0
+     && drawnAdopt === expectAdopt,
+     selBad.length || hintBad.length || adoptBad.length || noFoot.length
+       ? [...noFoot.map((x) => "缺那一行:" + x), ...selBad, ...adoptBad, ...hintBad].slice(0, 4).join(" ／ ")
+       : "对账 " + api.rows.length + " 行：显示值 == 已落库目标、无位行为空、采纳入口 " + drawnAdopt + " 颗 == 有够格建议的无位行 " + expectAdopt);
+  /* MS7（2026-10-04 第二次裁定 + 2026-10-05 去「保存」）：「去掉 删除映射按钮，如果之前关联了，
+     调整编辑为跳过即解除之前关联关系。如果之前没配置 则空着」⇒ 弹窗里**不许再有删除入口**，
+     而"已落库"这件事由下拉的值本身说。两条腿：① 全弹窗零 `[data-mapdel]` / 零两步确认残留；
+     ② 已落库且没被改动的行必须**空着** —— 「保存后解除关联」「未落库」这类"还有一步"的暗示随
+        「保存」一起作废（MS6 已按后端位逐行对账过文本，这里钉的是删除入口与格数不退化）。 */
+  const delGhosts = rf.mapRows.filter((x) => x.delBtn).map((x) => x.name);
+  const modalText = await page.evaluate(() => {
+    const m = document.querySelector(".modal");
+    return m ? (m.innerText || m.textContent || "") : "";
+  });
+  const saveWord = (modalText.match(/保\s*存/g) || []).length;
+  ck("MS7", "弹窗零删除入口（用户明令去掉）+ 🔴「保存」这件事在画面上有主人"
+     + "（那颗 primary 在册 + 脚注写明「点「保存」才写入配置」）+ 每行恰 4 格"
+     + " —— 上一轮禁「保存」字样是因为那一步不存在了，本轮它回来了且是唯一写入口，判据随之反转、条目不删",
+     rf.mapRows.length > 0 && delGhosts.length === 0
+     && !!rf.saveBtn && rf.saveBtn.text.indexOf("保存") === 0
+     && modalText.indexOf("点「保存」才写入配置") >= 0
+     && rf.mapRows.every((x) => x.cells === 4),
+     `删除入口残留=${delGhosts.length ? j(delGhosts.slice(0, 3)) : "0"}；「保存」字样=${saveWord} 处；`
+     + `保存钮=${j(rf.saveBtn)}；脚注写明=${modalText.indexOf("点「保存」才写入配置") >= 0}；格数集合=`
+     + j([...new Set(rf.mapRows.map((x) => x.cells))]) + "（行数 " + rf.mapRows.length + "）");
+
+  /* ---------- MS2b0 / MS2b / MS2c / MS2e / MS2d / MS8a / MS8 / MS8b · 草稿制 ----------
+     2026-10-05 第四次裁定把这几条从"当场落库"改回"草稿 + 保存"，判据方向随之反转、**条目不删**：
+       MS2b0 样本前提（目录里存在"后端无位"的行，否则本段无从验，如实红）；
+       MS2b  选目标 ⇒ 🔴 **零请求**（草稿制的形状就是"改一格不动盘"）+ 该行开关点亮可拨
+             + 那一行写明「点「保存」才入库」+ 脚部那颗钮改口「保存（1 处未保存）」并解禁
+             + 后端位**仍为 null**（对账对象是后端，不是界面自己的说法）；
+       MS2c  同一个目标再选一次 ⇒ 仍零请求，且脏态计数**不重复累加**（还是 1 处）；
+       MS2e  拨进池开关 ⇒ 零请求、开关位置跟着动、后端位仍 null；
+       MS2d  点「保存」⇒ 恰一次 `accounts/mappings`、零 remove、后端位=true、成功即关窗；
+       MS8a  改挂第一步也只改草稿（零请求、位仍=true）；
+       MS8   保存一次就改挂到位：位改指 B 且资源池条目**跟着搬**（B 里有、A 里不再有）；
+       MS8b  段末净零：改回「暂不设置」并保存 ⇒ 恰一次 remove、位=null、A/B 两池都不再挂着这一行。 */
+  const bitOf = async (idx) => (await page.evaluate(async () => {
+    const r = await fetch("/admin/api/accounts/loomy/catalog").then((x) => x.json());
+    return (r.models || []).map((m) => (m.map_enabled === null || m.map_enabled === undefined
+      ? null : m.map_enabled === true));
+  }))[idx];
+  const ui = rf.mapRows.findIndex((x, i2) => !x.selV && x.hasSw && x.swDisabled === true
+    && api.rows[i2] && api.rows[i2].enabled === null);
+  const setSel = async (idx, v) => {
+    await page.evaluate(({ ix, val }) => {
+      const sel = document.querySelector(`.modal select[data-idx='${ix}']`);
+      sel.value = val; sel.dispatchEvent(new Event("change", { bubbles: true }));
+    }, { ix: idx, val: v });
+    await page.waitForTimeout(500);
+  };
+  const clickFoot = async (which) => {
+    await page.evaluate((w) => {
+      const b = document.querySelector(`.modal-foot [data-map="${w}"]`);
+      if (b && !b.disabled) b.click();
+    }, which);
+    await page.waitForTimeout(1400);
+  };
+  const writeReqs = (list) => list.filter((x) => /accounts\/(mappings|product-models\/remove)/.test(x));
+  const reopenMap = async () => {
+    await click("#ac-map");
+    await page.waitForSelector(".modal .list-card", { timeout: 25000 });
+    await page.waitForTimeout(400);
+  };
+  /* 目标优先取配置里已在册的网关模型；本门实例 `models: []` ⇒ 取不到就退到枚举池里那个名字，
+     保存那一次会顺手建一个系统模型，临时目录跑完即弃，不去动别段依赖的 `models: []` 前提。 */
+  const pickTarget = async (idx) => await page.evaluate(async (ix) => {
+    const sel = document.querySelector(`.modal select[data-idx='${ix}']`);
+    if (!sel) return "";
+    const r = await fetch("/admin/api/config").then((x) => x.json());
+    const has = new Set(Array.from(sel.options).map((o) => o.value));
+    const existing = (r.models || []).map((m) => m.name).find((n) => has.has(n));
+    return existing || Array.from(has).find((n) => n) || "";
+  }, idx);
+  const poolOf = async (name) => (await page.evaluate(async (nm) => {
+    const r = await fetch("/admin/api/config").then((x) => x.json());
+    const m = (r.models || []).find((x) => x.name === nm);
+    return m ? (m.resources || []).map((e) => e.resource) : [];
+  }, name));
+  if (ui < 0) {
+    /* 编号 MS2b0：与下面几条互斥（if/else 只走一支），但报告按 id 收口，
+       同号会让"缺样本"这一支把真判据吃掉 ⇒ 另起一号，让缺样本**可见地红**。 */
+    ck("MS2b0", "样本前提：目录里存在「后端无位」的行（否则草稿制判据没有对象，如实登记）",
+       false, "本次 loomy 目录每一行都已落位 ⇒ 未覆盖（同 MS8 的口径，不许用空判据交差）");
+  } else {
+    const target = await pickTarget(ui);
+    let n0 = (await reqs()).length;
+    await setSel(ui, target);
+    const reqs1 = writeReqs((await reqs()).slice(n0));
+    const after = await read();
+    const r1 = (after.mapRows || [])[ui] || {};
+    ck("MS2b", "🔴 选目标 = 只改草稿：**零写请求**；该行开关点亮可拨、那一行写明「点「保存」才入库」，"
+       + "脚部那颗钮改口「保存（1 处未保存）」并解禁，后端位**仍为 null**",
+       !!target && reqs1.length === 0
+       && r1.selV === target && r1.swDisabled === false
+       && r1.foot.indexOf("点「保存」才入库") >= 0
+       && !!after.saveBtn && after.saveBtn.text === "保存（1 处未保存）"
+       && after.saveBtn.disabled === false
+       && (await bitOf(ui)) === null,
+       `行${ui} 目标=「${target}」：写请求=${j(reqs1.slice(0, 3))}`
+       + `｜选中=${j(r1.selV)} 开关禁用=${r1.swDisabled}｜那一行=「${(r1.foot || "").slice(0, 26)}」`
+       + `｜保存钮=${j(after.saveBtn)}｜后端位=${JSON.stringify(await bitOf(ui))}`);
+    n0 = (await reqs()).length;
+    await setSel(ui, target);
+    const again = await read();
+    ck("MS2c", "同一个目标再选一次 ⇒ 仍零请求，且脏态计数**不重复累加**（还是 1 处）",
+       writeReqs((await reqs()).slice(n0)).length === 0
+       && !!again.saveBtn && again.saveBtn.text === "保存（1 处未保存）",
+       "本轮写请求=" + j(writeReqs((await reqs()).slice(n0)).slice(0, 3))
+       + " 保存钮=" + j(again.saveBtn));
+    n0 = (await reqs()).length;
+    await click(`.modal [data-mapsw="${ui}"] .switch`);
+    const sw1 = await read();
+    ck("MS2e", "拨进池开关 = 也只改草稿：零请求 + 开关位置跟着动 + 后端位仍 null",
+       writeReqs((await reqs()).slice(n0)).length === 0
+       && (sw1.mapRows[ui] || {}).swOn === false && (await bitOf(ui)) === null,
+       `写请求=${j(writeReqs((await reqs()).slice(n0)).slice(0, 3))}｜开关 on=${(sw1.mapRows[ui] || {}).swOn}`
+       + `｜位=${JSON.stringify(await bitOf(ui))}`);
+    await click(`.modal [data-mapsw="${ui}"] .switch`);        // 拨回"进池"（新映射缺省即进池）
+    n0 = (await reqs()).length;
+    await clickFoot("save");
+    const reqsS = (await reqs()).slice(n0);
+    const st1 = await read();
+    ck("MS2d", "🔴 点「保存」= 唯一写入口：恰一次 `accounts/mappings`、零 remove、后端位=true、成功即关窗",
+       reqsS.filter((x) => x.indexOf("accounts/mappings") >= 0).length === 1
+       && reqsS.filter((x) => x.indexOf("product-models/remove") >= 0).length === 0
+       && (await bitOf(ui)) === true && st1.modalMaskCount === 0,
+       `mappings=${reqsS.filter((x) => x.indexOf("accounts/mappings") >= 0).length}`
+       + ` remove=${reqsS.filter((x) => x.indexOf("product-models/remove") >= 0).length}`
+       + `｜位=${JSON.stringify(await bitOf(ui))}｜遮罩=${st1.modalMaskCount}`);
+    /* ---------- MS8 · 改挂 = 一次动作（草稿制下"一次"= 选一次 + 保存一次） ---------- */
+    await reopenMap();
+    const rf2 = await read();
+    const row2 = (rf2.mapRows || [])[ui] || {};
+    const targetA = row2.selV || "";
+    const targetB = (row2.opts || []).find((v) => v && v !== targetA) || "";
+    if (!targetB || !targetA) {
+      ck("MS8", "样本前提：这一行已落库且下拉里存在第二个可选目标（改挂判据需要两个名字才有对象）",
+         false, `A=「${targetA}」 候选=${j((row2.opts || []).slice(0, 4))} ⇒ 未覆盖，如实登记`);
+    } else {
+      n0 = (await reqs()).length;
+      await setSel(ui, targetB);
+      const mid = await read();
+      ck("MS8a", "改挂第一步同样只改草稿：零请求、位仍=true、脏态计数 1",
+         writeReqs((await reqs()).slice(n0)).length === 0 && (await bitOf(ui)) === true
+         && !!mid.saveBtn && mid.saveBtn.text === "保存（1 处未保存）",
+         `写请求=${j(writeReqs((await reqs()).slice(n0)).slice(0, 3))}｜位=${JSON.stringify(await bitOf(ui))}`
+         + `｜保存钮=${j(mid.saveBtn)}`);
+      n0 = (await reqs()).length;
+      await clickFoot("save");
+      const reqsB = (await reqs()).slice(n0);
+      const rB = await poolOf(targetB), rA = await poolOf(targetA);
+      ck("MS8", "保存一次就改挂到位：位改指 B 且资源池条目**跟着搬**（B 里有、A 里不再有），"
+         + "无需「先改回暂不设置保存一次」",
+         reqsB.filter((x) => x.indexOf("accounts/mappings") >= 0).length === 1
+         && (await bitOf(ui)) === true && rB.length >= 1 && !rA.some((x) => rB.indexOf(x) >= 0),
+         `A=「${targetA}」池内资源=${j(rA)}｜B=「${targetB}」池内资源=${j(rB)}｜位=${JSON.stringify(await bitOf(ui))}`
+         + `｜mappings=${reqsB.filter((x) => x.indexOf("accounts/mappings") >= 0).length}`);
+      await reopenMap();
+      n0 = (await reqs()).length;
+      await setSel(ui, "");
+      await clickFoot("save");
+      const reqsC = (await reqs()).slice(n0);
+      const rB2 = await poolOf(targetB), rA2 = await poolOf(targetA);
+      ck("MS8b", "段末净零：改回「暂不设置」并保存 ⇒ 恰一次 remove、位=null、A/B 两池都不再挂着这一行的资源",
+         reqsC.filter((x) => x.indexOf("product-models/remove") >= 0).length === 1
+         && reqsC.filter((x) => x.indexOf("accounts/mappings") >= 0).length === 0
+         && (await bitOf(ui)) === null && rB2.length === 0 && rA2.length === 0,
+         `remove=${reqsC.filter((x) => x.indexOf("product-models/remove") >= 0).length}`
+         + ` mappings=${reqsC.filter((x) => x.indexOf("accounts/mappings") >= 0).length}`
+         + `｜B 残留=${j(rB2)}｜A 残留=${j(rA2)}｜位=${JSON.stringify(await bitOf(ui))}`);
+    }
+  }
   await shot("1440-light-map-modal-fusion");
-  await click(".modal-foot .btn");
-  await page.waitForTimeout(300);
+  /* 🔴 段末关窗：选择器放宽 + **弹窗没有脚钮时如实记一条红**，绝不让它抛错带走整段。
+     旧写法是一句裸 `click(".modal-foot .btn")`：脚钮一旦不在就抛 ⇒ 分段中断 ⇒ **弹窗滞留**，
+     下游 `wizard-device` 的六条（F3/F4/F4c/F5/F6/F11）全部打在"遮罩还开着"上（实测 2026-10-03：
+     本段十条判据逐条绿、只有这条收尾红，报告却是 7 红）。同一课 model-check 段早已修过（MC6）。 */
+  const footState = await page.evaluate(() => ({
+    masks: document.querySelectorAll(".modal-mask").length,
+    footBtns: document.querySelectorAll(".modal-foot .btn").length,
+    closeBtn: document.querySelectorAll(".modal .modal-close").length,
+    footHead: ((document.querySelector(".modal-foot") || {}).innerHTML || "").slice(0, 80),
+  }));
+  ck("E10f", "映射弹窗脚钮在位（`.modal-foot .btn` ≥1）——不在位就是真缺陷，如实红在这里而不是抛错连锁",
+     footState.masks === 0 || footState.footBtns >= 1 || footState.closeBtn >= 1,
+     "遮罩=" + footState.masks + " 脚钮=" + footState.footBtns + " 关闭钮=" + footState.closeBtn
+     + " 脚区HTML=「" + footState.footHead + "」");
+  if (footState.masks > 0) {
+    /* 🔴 草稿制（2026-10-05 第四次裁定）之后"关窗"可能要按两次：有未保存改动时第一次只警告。
+       门末这段是**兜底清理**，不是判据 —— 所以点到关为止（≤3 次），而不是点一次就断定"关不掉"。
+       真关不掉（比如脚钮坏了）仍然走下面的强制移除 + E10g 如实红。 */
+    for (let k = 0; k < 3; k++) {
+      const still = await page.evaluate(() => {
+        const b = document.querySelector(".modal .modal-close") || document.querySelector(".modal-foot .btn");
+        if (b) b.click();
+        return document.querySelectorAll(".modal-mask").length;
+      });
+      await page.waitForTimeout(400);
+      if (still === 0) break;
+    }
+    /* 两条都按不到 ⇒ 兜底：直接摘掉遮罩容器，保证不把脏状态漏给后续分段（并如实红）。 */
+    const stuck = await page.evaluate(() => {
+      const list = document.querySelectorAll(".modal-mask");
+      list.forEach((x) => x.remove());
+      return list.length;
+    });
+    if (stuck) ck("E10g", "兜底清理：弹窗无法经 UI 关闭时移除遮罩（不把滞留弹窗漏给后续分段）",
+                  false, "关不掉的遮罩数=" + stuck + "（已强制移除，下游 F3-F6 若仍红就不是本段的连锁）");
+  }
   const closed = await read();
   ck("E10e", "映射弹窗关闭后 #modal-root 回到基线（0 子节点）",
      closed.modalCount === 0, "modal-root 子节点=" + closed.modalCount);
@@ -2573,12 +3131,20 @@ def run_quota_legs(rep: Report, base: Path, shots: Path) -> None:
          + "（反向实验①：把空 plans 路由改回 503 ⇒ 本条 + QL4 必须红）",
          str(np_row.get("quota", "")).startswith("无套餐"),
          f"额度格=「{np_row.get('quota')}」")
-    emit(rep, "QL6", "联网后的额度格 = 数值 + 「查于」 + 「重置于 MM-DD HH:mm」，且**零裸 epoch**"
-         + "（钩子把上游 epoch 归一成 ISO 的界面后果，方案 §3-5 连带登记的 expiresSoon 首次真会命中）",
-         re.search(r"重置于 \d{2}-\d{2} \d{2}:\d{2}", qn_row.get("quota", "") or "") is not None
-         and "查于" in (qn_row.get("quota") or "")
-         and not re.search(r"\d{9,}", (qn_row.get("quota") or "") + (qn_row.get("sub") or "")),
-         f"额度格=「{qn_row.get('quota')}」 附属=「{qn_row.get('sub')}」"
+    # 🔴 2026-10-03 随额度格重做前进：「查于 + 绝对时刻」退出常驻面（改相对新鲜度），
+    #    「重置于」并入 meta 行的「至 MM-DD HH:mm」；裸 epoch 之外再钉"时刻位残串"这一支。
+    qn_all = " ".join(str(qn_row.get(k) or "") for k in ("quota", "sub", "chips"))
+    emit(rep, "QL6", "联网后的额度格 = 数值 + 相对新鲜度「…查」 + meta「至 MM-DD HH:mm」，"
+         + "且**零裸 epoch / 零时刻残串**（钩子把上游 epoch 归一成 ISO 的界面后果，"
+         + "方案 §3-5 连带登记的 expiresSoon 首次真会命中）",
+         re.search(r"(^|\s)至 \d{2}-\d{2} \d{2}:\d{2}", qn_all) is not None
+         and re.search(r"\S查", qn_all) is not None
+         and "查于" not in str(qn_row.get("quota") or "")
+         and not re.search(r"\d{9,}", qn_all + " " + str(qn_row.get("sub") or ""))
+         and not re.search(r"(?:至|查|失效于)\s*\d{4,8}(?![\d:])", qn_all)
+         and int(qn_row.get("fold") or 0) == 0,
+         f"额度格=「{qn_row.get('quota')}」 meta=「{qn_row.get('sub')}」 chips=「{qn_row.get('chips')}」"
+         f" 条宽={j0(qn_row.get('barW'))} 折叠入口={j0(qn_row.get('fold'))}"
          f" 盘上 items[0].expires_at={j0((aq.get('items') or [{}])[0].get('expires_at'))}")
 
     # ---------------- 段②：预写熔断 ----------------

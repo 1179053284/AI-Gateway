@@ -352,7 +352,7 @@ def test_credential_without_access_token_is_rejected_before_request(monkeypatch)
 
 
 def test_prepare_body_default_only_sets_vendor_model(monkeypatch):
-    """默认体塑造 = 只落厂商模型名（不塞自创字段；采样/推理注入归 IR 层）。
+    """默认体塑造 = 只落供应商模型名（不塞自创字段；采样/推理注入归 IR 层）。
 
     样本用 `_PlainFamilyOut`（族基类**缺省形状**：`stream_only=False`）—— buddy 现在
     自带"只收流式"这条产品事实，拿它测缺省塑造会把那条强制改写也算进"缺省"。

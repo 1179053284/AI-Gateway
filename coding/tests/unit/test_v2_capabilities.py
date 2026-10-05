@@ -60,7 +60,7 @@ def test_caps_fields_map_from_enum_entry():
 
 
 def test_custom_model_falls_back_without_crash():
-    """自定义系统模型（不在内置目录）→ 最小字段集，**不崩**（§12.3 兜底）。
+    """自定义网关模型（不在内置目录）→ 最小字段集，**不崩**（§12.3 兜底）。
 
     🔴 Q33 复验轮 R3-F-3 改判的三个能力位：`null` = **不知道**，不再印 `false`。
     `false` 是"这个模型明确不能干这件事"的 affirmative 承诺，而我们并没有这个证据；

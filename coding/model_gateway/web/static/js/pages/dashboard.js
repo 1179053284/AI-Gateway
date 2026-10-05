@@ -21,7 +21,7 @@ export async function renderDashboard(root) {
         "mi-orange", ICON.coins)}
       ${metricCard("资源健康", `健康 ${healthy} · 总数 ${data.resources.length}`,
         "mi-purple", ICON.shield)}
-      ${metricCard("厂商数量", c.vendors ?? "—", "mi-blue", ICON.factory)}
+      ${metricCard("供应商数量", c.vendors ?? "—", "mi-blue", ICON.factory)}
       ${metricCard("资源总数", c.resources ?? "—", "mi-purple", ICON.server)}
       ${metricCard("可用模型总数", c.models ?? "—", "mi-green", ICON.cpu)}
     </div>

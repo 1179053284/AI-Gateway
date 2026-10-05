@@ -18,7 +18,7 @@
 - `ProductOutAdapter`：契约载体（四个属性 + 三个方法的**接口声明** + 凭据解析）；
 - `FamilyOpenAIOut`：openai 族产品的「**基类 + 头/体钩子**」形态 —— 子类只需给
   `auth_headers(cred, meta, device)`（必装）与 `prepare_body(...)`（可选，默认只落
-  厂商模型名）；传输（客户端 / SSE 解析 / 错误映射 / 图片转 base64）全部复用
+  供应商模型名）；传输（客户端 / SSE 解析 / 错误映射 / 图片转 base64）全部复用
   `OpenAIOutAdapter`，**不复制第二份**。
 - `FamilyOpenAIOut.stream_only`：上游**只支持 SSE** 的产品置 `True`，非流式请求由本基类
   内部走流式并**本地聚合**成 `chat.completion` 返回（聚合器本模块唯一一份）——
@@ -150,7 +150,7 @@ class FamilyOpenAIOut(OpenAIOutAdapter, ProductOutAdapter):
     chat_path: str = "/chat/completions"
 
     #: 上游**只支持 SSE**（`stream:false` 被通道拒绝）的产品置 `True`：
-    #: 非流式请求由本基类内部走流式 + 本地聚合，不把厂商错误甩给客户端。
+    #: 非流式请求由本基类内部走流式 + 本地聚合，不把供应商错误甩给客户端。
     #: 取证（:8300 真实数据，`usage/events-20261004.jsonl`）：buddy / workbuddy 上
     #: **4/4** 次 `stream=false` 全回
     #: `400 {"code":11101,"msg":"Non-stream chat request is currently not supported"}`，
@@ -159,7 +159,7 @@ class FamilyOpenAIOut(OpenAIOutAdapter, ProductOutAdapter):
     #: 🔴 为什么不在调度器里"换号重试"了事：400 按 FR-3.13 归 BAD_REQUEST
     #: （请求本身的问题不换号），而 `stream:false` 是**客户端与网关的契约**、
     #: 不是客户端写错了 —— 能在自己这一层补齐的形态差异，不该变成调度策略或
-    #: 用户可见的厂商报错。
+    #: 用户可见的供应商报错。
     stream_only: bool = False
 
     def __init__(self, account: ProductAccount, *, client=None,
@@ -180,9 +180,9 @@ class FamilyOpenAIOut(OpenAIOutAdapter, ProductOutAdapter):
 
     def prepare_body(self, body: dict, *, vendor_model: str, cred: dict,
                      meta: dict, device: dict) -> dict:
-        """请求体塑形钩子（可选；默认只落厂商模型名）。
+        """请求体塑形钩子（可选；默认只落供应商模型名）。
 
-        工具传参 > 网关设置 > 厂商内置的字段级注入已在 `core/scheduler` 完成，
+        工具传参 > 网关设置 > 供应商通道默认的字段级注入已在 `core/scheduler` 完成，
         此处**只做产品私有塑形**（如 qoder 的信封、trae 的成帧 —— M6-5b），
         不要在族基类里重复注入采样参数。
         """
@@ -279,7 +279,7 @@ def _aggregate(chunks: list[dict]) -> dict:
         "id": last_id or f"chatcmpl-{secrets.token_hex(12)}",
         "object": "chat.completion",
         "created": created or int(time.time()),
-        "model": "",           # 由调度器按系统模型名替换（`execute_chat` 末尾）
+        "model": "",           # 由调度器按网关模型名替换（`execute_chat` 末尾）
         "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
     }
     if usage is not None:

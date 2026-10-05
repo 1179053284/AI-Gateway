@@ -19,7 +19,9 @@
  *   GET  /admin/api/accounts/{product}/{name}/models   单账号模型目录（B-1 生产出口；
  *        界面 2026-10-01 起**不再调用**——目录字段已由 /catalog 全字段带出，二级弹窗废除）
  *   GET  /admin/api/accounts/{product}/catalog         产品内部模型目录（模型映射弹窗）
- *   POST /admin/api/accounts/mappings                  批量初始化映射 {product, items}
+ *   POST /admin/api/accounts/mappings                  行内即时写映射 {product, items:[{model,target,enabled}]}
+ *   POST /admin/api/accounts/auto-map                  首次配置用：整表自动匹配并落库 {product}
+ *        （回执带 `via`=model|regex + `matched_model`/`matched_regex`/`reason`；真发一次出站请求）
  *   POST /admin/api/accounts/claim-all                 批量签到 / 领取 {product|null}
  *   GET  /admin/api/zcode/import/sources               ZCode 本机工具账号来源（导入账号弹窗）
  *   POST /admin/api/zcode/import                       导入（panel/switch/payload；409 = 设备身份冲突 → 用户二选一）
@@ -80,7 +82,7 @@
  */
 
 import { GET, POST, esc } from "../api.js";
-import { modal, confirmDialog, toast, copyText, initSplitResize } from "../components.js";
+import { modal, confirmDialog, toast, toastCard, copyText, initSplitResize } from "../components.js";
 
 /* ---------- 图标（Lucide 0.555.0，14×14 sw2；全站同契约） ---------- */
 const PLUS = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>`;
@@ -177,11 +179,6 @@ export async function renderAccounts(root) {
   const visible = railScope().ids;
   if (visible.length && !visible.includes(selected)) selected = visible[0];
   if (!productOf(selected)) selected = first;
-  /* 🔴 产品变了就清回执 —— 判据落在**这里**（渲染入口）而不是只落在 `selectProduct()`：
-     深链 `#/accounts?p=y` 与派生开关回落都不经过那颗 rail 点击函数，
-     实盘实测到"从 qoder（1 个号）深链切到 zcode，槽里还挂着『刷新 1 个』"。
-     同一产品的重绘**不清**（PM B-R4-5 要的就是迟到回执在重绘后仍可见）。 */
-  if (prevSelected && prevSelected !== selected) clearBulkReceipt();
   drawShell();
 }
 
@@ -219,7 +216,7 @@ function drawShell() {
   root.innerHTML = `
     <div class="panel-split panel-split-narrow">
       <aside class="subnav">
-        <button class="btn btn-sm" id="ac-claim-all" style="margin:0 12px 8px;width:calc(100% - 24px)"
+        <button class="btn btn-sm" id="ac-claim-all" style="margin:12px 12px 8px;width:calc(100% - 24px)"
           title="对所有支持签到的产品（能力位 checkin=True）的全部已启用账号执行签到 / 领取">${CHECKIN}一键签到</button>
         <div id="ac-filter"></div>
         <div class="subnav-scroll" role="tablist" aria-orientation="vertical"
@@ -273,9 +270,13 @@ function railDot(p) {
   return `<span class="dot ${on ? "on" : ""}"></span>`;
 }
 
-/** 产品图标：用各产品**官方图标**（参考程序从官方客户端资源提取，落 `web/static/img/products/`；
- *  其中 lobsterai/qoder/trae/loomy 是 SVG，其余 PNG）。`alt` = 首字母，图缺失时浏览器就地显示它。 */
-const ICON_SVG = new Set(["lobsterai", "qoder", "trae", "loomy"]);
+/** 产品图标 = 各产品**官方图标**（2026-10-03 全部换成官方资产，来源逐条记台账：
+ *  本机官方 App 包内资源 / 官网 favicon / 官方注册表），落 `web/static/img/products/`。
+ *  旧形态里有几枚是我手绘的占位符（loomy = 蓝底白字「L」、qoder = 放大镜、zcode = 187B 小方块），
+ *  那是"看着像图标"而不是图标 ⇒ 一律弃用。`alt` = 首字母，图缺失时浏览器就地显示它。
+ *  🔴 扩展名集合与磁盘上的文件**一一对应**，由 `tests/unit/test_v2_product_icons.py` 钉住
+ *     （少一个文件 / 扩展名对不上 = 界面上一个 404 破图，肉眼在 20px 下很容易漏）。 */
+const ICON_SVG = new Set(["qoder", "trae", "raccoon"]);
 function productMark(p) {
   const ext = ICON_SVG.has(p.id) ? "svg" : "png";
   return `<img src="/img/products/${esc(p.id)}.${ext}" alt="${esc((p.title[0] || "?").toUpperCase())}">`;
@@ -346,8 +347,6 @@ function selectProduct(pid) {
   selected = pid;
   deepMiss = "";                 // 回落注记只对入站深链/记忆有意义：用户已自己选定产品
   writeStore(PRODUCT_STORE, pid);
-  clearBulkReceipt();            // 🔴 切产品即清空批量回执：上一批的结论不属于这个产品
-                                 //    （槽是产品级 DOM，`paintPanel()` 会把模块级文本回填进**新**面板）
   /* 深链是**入站**判据：写 hash 会触发 main.js 的 hashchange → 整页重洗，与 §4-5 相悖，
      故只更新 localStorage 记忆，不改 `location.hash`。 */
   const cur = railEl.querySelector(`.anchor-item[data-pid="${cssAttr(pid)}"]`);
@@ -384,7 +383,6 @@ function paintPanel() {
   const p = selectedProduct();
   panelEl.innerHTML = panelHTML(p);       // p=null 时 panelHTML 自己出「读失败 alert + 空态」
   bindPanel(p);                           // bindPanel 对 null 仍绑「重试」
-  renderBulkReceipt();                     // 🔴 重绘之后回填：回执文本住模块级，不住 DOM
 }
 
 function panelHTML(p) {
@@ -404,7 +402,6 @@ function panelHTML(p) {
         ${headOpsHTML(p)}
       </div>
       ${p.accounts.length ? tableHTML(p) : emptyHTML(p)}
-      ${bulkReceiptHTML()}
     </div>`;
 }
 
@@ -521,8 +518,11 @@ function tableHTML(p) {
   return `
       ${quotaStaleAlertHTML(p)}
       <div class="table-wrap"><table class="tbl" id="ac-table"><thead><tr>
-        <th>账号</th><th>状态</th>
-        <th class="num">额度</th><th class="num">操作</th>
+        <!-- 🔴 列序 = 账号 / 额度 / 状态 / 操作（2026-10-03 用户指示「状态列和额度列交换下位置」）：
+             额度是这一页真正要读的东西，紧跟账号名；开关（状态）是动作位，挨着操作列成一组。
+             旧序「账号/状态/额度/操作」把 76px 的开关插在账号与额度中间，额度被推到最远端。 -->
+        <th>账号</th>
+        <th class="num">额度</th><th>状态</th><th class="ops-col">操作</th>
       </tr></thead><tbody>
         ${p.accounts.map((a) => rowHTML(p, a)).join("")}
       </tbody></table></div>`;
@@ -544,8 +544,8 @@ function rowHTML(p, a) {
         <div class="mono">${esc(a.name)}</div>
         ${subLine ? `<div style="margin-top:4px;font-size:12px;font-weight:600;color:var(--text-faint)">${subLine}</div>` : ""}
       </td>
-      <td><span data-sw="${esc(a.name)}" style="display:inline-flex;align-items:center"></span></td>
       <td class="num">${quotaCell(a)}</td>
+      <td><span data-sw="${esc(a.name)}" style="display:inline-flex;align-items:center"></span></td>
       <td class="ops">${opsHTML(p, a)}</td>
     </tr>`;
 }
@@ -581,11 +581,79 @@ function loginStateBit(p, a) {
 const EXPIRING_WINDOW_DAYS = 15;
 
 /** 数值格式化：token 用 K/M 两位小数（zcode-switch fmtTokens 同款），其余两位小数封顶。 */
-function fmtQuotaNumber(v, unit) {
-  if (unit === "token" && Math.abs(v) >= 1000) {
-    return v >= 1e6 ? (v / 1e6).toFixed(2) + "M" : (v / 1e3).toFixed(2) + "K";
+/** 中文量纲（照 ZCode-Panel 的 `fmtTokens`）：token ≥1e8 → 亿、≥1e4 → 万，其余带「 Token」；
+ *  积分 / 余额按 DSH 插件的 `formatCredits`——整数原样、小数定 2 位（`472.2328` → `472.23`）。
+ *  🔴 两套不混用：积分不写「万」（DSH 源码里明确否决过那种写法，实测 `9453.93万` 那种读不动）。 */
+const trimTail = (s) => String(s).replace(/\.0+$/, "").replace(/(\.\d*[1-9])0+$/, "$1");
+
+function fmtQuotaNum(v, unit) {
+  const n = Number(v);
+  if (!isFinite(n)) return "—";
+  if (String(unit || "").toLowerCase().startsWith("token")) {
+    const a = Math.abs(n);
+    if (a >= 1e8) return trimTail((n / 1e8).toFixed(2)) + "亿";
+    if (a >= 1e4) return trimTail((n / 1e4).toFixed(1)) + "万";
+    return trimTail(String(Math.round(n * 100) / 100)) + " Token";
   }
-  return String(Math.round(v * 100) / 100);
+  return Number.isInteger(n) ? String(n) : trimTail(n.toFixed(2));
+}
+
+/** 单位词：token 的量纲自带在数字里（亿/万/Token），不再缀；积分缀「积分」；
+ *  无名单位（cline 的「余额」unit 为空）**不编单位词**。 */
+function quotaUnitWord(unit) {
+  const u = String(unit || "").toLowerCase();
+  if (u.startsWith("token")) return "";
+  if (u === "积分" || u === "credit" || u === "credits") return " 积分";
+  return "";
+}
+
+/** 数据新鲜度 = **相对量**（三家参考一致：面板 `fmtAgo` / switch 的「1天前」）。
+ *  绝对时刻不常驻面——它对"还能不能用"这个判断没有信息量，只在悬停里给。
+ *  🔴 未来时刻（上游时钟偏 / 时区错）与超过 7 天都退回绝对串，不印「-3 小时前」也不印「8 天前」。 */
+function agoShort(iso) {
+  const raw = String(iso || "");
+  const t = Date.parse(raw.replace(" ", "T"));
+  if (!isFinite(t)) return "";
+  const s = (Date.now() - t) / 1000;
+  if (s < 0 || s >= 86400 * 7) return shortTime(raw);
+  if (s < 60) return "刚刚";
+  if (s < 3600) return `${Math.floor(s / 60)} 分钟前`;
+  if (s < 86400) return `${Math.floor(s / 3600)} 小时前`;
+  return `${Math.floor(s / 86400)} 天前`;
+}
+
+/** 同名包聚合成一组（照 zcode-switch 的 raw 池去重：30+ 包不会变 30+ 行）。
+ *  比参考更进一步做**求和**：CodeBuddy 实盘 31 个包里有 30 个同名「国内运营裂变包」，
+ *  名称零信息量，用户要的是"这类一共还剩多少"。组内取**最早**到期时刻。 */
+function quotaGroups(items) {
+  const g = new Map();
+  for (const it of items) {
+    const key = String(it.name || "未命名包");
+    let one = g.get(key);
+    if (!one) {
+      one = { name: key, unit: it.unit || "", rem: 0, tot: 0, hasRem: false, hasTot: false, exp: "", n: 1 };
+      g.set(key, one);
+    } else {
+      one.n += 1;
+    }
+    if (typeof it.remaining === "number") { one.rem += it.remaining; one.hasRem = true; }
+    if (typeof it.total === "number") { one.tot += it.total; one.hasTot = true; }
+    const e = String(it.expires_at || "");
+    if (ISO_RE.test(e) && (!one.exp || e < one.exp)) one.exp = e;
+  }
+  return [...g.values()].sort((x, y) => (y.hasTot ? y.tot : 0) - (x.hasTot ? x.tot : 0));
+}
+
+/** 占比条：画的永远是**剩余**（与 zcode-switch 同一条：条长 = 剩余占比，不是已用）。
+ *  🔴 分母缺失 ⇒ **不画条**——条是"还剩几成"的声明，没有分母就没资格声明
+ *  （ZCode-Panel 对拿不到 balances 的号也宁可写「用量未知」，不编 `500万/500万`）。
+ *  色档阈值照 switch：剩余 ≤10% 红、≤30% 琥珀、其余绿。 */
+function quotaBarHTML(rem, tot) {
+  if (!(typeof tot === "number" && tot > 0) || typeof rem !== "number") return "";
+  const pct = Math.max(0, Math.min(100, (rem / tot) * 100));
+  const cls = pct <= 10 ? " is-low" : pct <= 30 ? " is-mid" : "";
+  return `<span class="qbar${cls}" title="${esc("剩余 " + pct.toFixed(0) + "%")}"
+    aria-hidden="true"><i style="width:${pct.toFixed(1)}%"></i></span>`;
 }
 
 /** ISO 形状谓词：上游 epoch 未归一时**不渲染时间**（页面兜底，不把脏值印给用户）。 */
@@ -614,111 +682,157 @@ const QUOTA_NOTE = {
    这些档**保住上一轮的真实数值**（合并写），只在后面挂注记，绝不把数字洗成「未知」。 */
 const QUOTA_SILENT = ["circuit", "circuit-untrusted", "unreachable", "no_credentials", "no_identity"];
 
-/** 额度格（2026-10-02 五档定版）。数据面 = `runtime.json.quota`，**没有快照**才叫「尚未刷新」。 */
+
+/** 悬停 = **这一个额度格**的证据条：套餐名 + 数据绝对时刻 + 上游原话（`detail`）。
+ *  🔴 挂在 `.qcell` **根节点**上，不挂在某个词上：用户悬停的对象是「额度」这一整格，
+ *     挂在内部 span 上等于"鼠标差几像素就没证据看"（2026-10-03 真机门 D4/V13/V14 红的就是这条）。
+ *  `fallback` = 上游连原话都没给时**这一档自己的说法**，证据条不留空。 */
+function cellTip(rq, fallback) {
+  const bits = [];
+  if (rq) {
+    if (rq.plan) bits.push(`套餐：${rq.plan}`);
+    const when = rq.data_at || rq.checked_at;
+    if (when) bits.push(`数据时刻：${shortTime(when)}`);
+  }
+  const raw = (rq && rq.detail) ? String(rq.detail) : (fallback || "");
+  if (raw) bits.push(raw);
+  return bits.join(" · ");
+}
+
+/** 格根：`warn` ⇒ 整格**着色**为 `var(--warn)`（D1b 的判据对象是**这一格**，不是格子里的某个词）。
+ *  🔴 只给颜色不给字重：字重是"这一格里谁是主读数"的语言（见 base.css 的额度格字重档），
+ *     整格加粗会把标签、明细一起喊成主读数（2026-10-03 用户实拍「怎么有的字体加粗有的不加粗」）。 */
+function qcellOpen(tip, warn) {
+  return `<div class="qcell${warn ? " is-warn" : ""}"${tip ? ` title="${esc(tip)}"` : ""}>`;
+}
+
+/** 无结构化 items 的档位（五档词表原样）：只有档名 + 注记，**不出 meta 行**——
+ *  这是 2026-10-02 的定版（「已耗尽/未知/无套餐/尚未刷新」这四个早退档不排新鲜度行，
+ *  注记已经挂在档名后面），本轮重做只搬家常驻面，不推翻这条。 */
+function quotaPlainHTML(main, tip, warn) {
+  return qcellOpen(tip, warn) + `<div class="qrow">${main}</div></div>`;
+}
+
+/** 额度格（🔴 2026-10-03 用户实拍重做：「参考 zcode-switch / ZCode Panel / Jet Hub，
+ *  你在这里乱对齐一些乱七八糟信息放不下还弄个展开折叠」）。
+ *  一屏只回答三个问题，其余一律不上常驻面：
+ *    ① **还剩多少** = 剩余/总量 + 占比条（分子永远是剩余，中文量纲 亿/万）；
+ *    ② **什么时候没** = 最早到期时刻（`至 MM-DD HH:mm`，仅 ISO 形状才渲染）；
+ *    ③ **数多新** = 相对新鲜度（`刚刚 / N 分钟前 / N 小时前 / N 天前`），绝对时刻进悬停。
+ *  删掉的三样（用户点名）：套餐名徽章（同产品同值、零决策价值 → 悬停）、
+ *  「展开 N 个包」折叠交互（三家参考**都没有**折叠 → 同名聚合 + `+N 类`）、
+ *  「重置于 / 查于」两条绝对时刻并排（读不出重点）。
+ *  🔴 同名聚合后组数天然 ≤3 ⇒ 全量都在常驻面上，不存在「明细没出口」这件事
+ *     （`POST …/quota` 的响应本来也不回 items，不为此加后端字段）。
+ *  五档词表（`有余量 / 已耗尽 / 无套餐 / 未知 / 尚未刷新`）与附属注记**一字不改**——
+ *  那是 2026-10-02 定版、V7/V13/V14 钉着的机器码映射，本轮只动呈现不动语义。 */
 function quotaCell(a) {
   const rq = a.runtime && a.runtime.quota;
   if (!rq) {
-    return `<span style="color:var(--text-faint)" title="运行态里没有额度快照：网关还没查过这个账号（BUG-2 的可见态）">尚未刷新</span>`;
+    return quotaPlainHTML(`<span class="qnone">尚未刷新</span>`,
+      "运行态里没有额度快照：网关还没查过这个账号（BUG-2 的可见态）");
   }
   const note = QUOTA_NOTE[rq.reason] || "";
-  // 🔴 「无套餐」= 三态 `unknown` + `reason==="no_plan"`（**没有第四态枚举**，§22.3 冻结不动）。
-  //    它排在「未知」之前、也排在结构化分支之前：无论有没有 items 都必须出这一档
-  //    （V14 的反向变异打的就是这条分支）。
+  // 🔴 「无套餐」= 三态 `unknown` + `reason==="no_plan"`（没有第四态枚举，§22.3 冻结不动），
+  //    且排在结构化分支之前：有没有 items 都必须出这一档（V14 的反向变异打的就是这条分支）。
   if (rq.reason === "no_plan") {
-    return `<span style="color:var(--text-faint)" title="${esc(rq.detail || "上游返回空套餐列表")}">无套餐${esc(note)}</span>`;
+    return quotaPlainHTML(`<span class="qnone">无套餐${esc(note)}</span>`,
+      cellTip(rq, "上游返回空套餐列表"));
   }
   const items = (Array.isArray(rq.items) ? rq.items : []).filter((it) => it && it.name);
   if (!items.length) {
-    if (rq.state === "exhausted") return `<span style="color:var(--warn)">已耗尽${esc(note)}</span>`;
-    if (rq.state !== "available") {
-      return `<span style="color:var(--text-faint)" title="${esc(rq.detail || "上游未给出额度")}">未知${esc(note)}</span>`;
+    if (rq.state === "exhausted") {
+      return quotaPlainHTML(`<span class="qtier">已耗尽${esc(note)}</span>`, cellTip(rq), true);
     }
-    // 附属标注同样要挂上：熔断/读取失败轮里 `state` 仍是上一轮的 `available`，
-    // 不挂注记就等于把"这一轮没查成"说成"刚刚查过且有余量"（门探针实测到的漏注记分支）。
-    return `<span>有余量</span>${chkHTML(rq, note)}`;
+    if (rq.state !== "available") {
+      return quotaPlainHTML(`<span class="qnone">未知${esc(note)}</span>`,
+        cellTip(rq, "上游未给出额度"));
+    }
+    // `有余量` 无 items：档名独占主行，注记按 2026-10-02 定版挂在 **meta 行末尾**（与结构化档同一把尺）。
+    // 档位词一律走 `.qtier`（五档同字重）——漏了类的话它会退回 400，与「无套餐/未知」的 600 参差。
+    return qcellOpen(cellTip(rq))
+      + `<div class="qrow"><span class="qtier">有余量</span></div>`
+      + quotaMetaHTML(rq, [], 0, note) + `</div>`;
   }
   const active = items.filter((it) => it.active !== false);
   const expiredN = items.length - active.length;
-  const unit = items[0].unit || "";
-  const unitLabel = unit.toLowerCase() === "token" ? " Token" : " 积分";
-  // 🔴 `remaining` 可能是 `null`（上游没给出可用数）：**不得**当 0 累加、更**不得**因此判「已耗尽」
-  //    —— "没给数字" 与 "数字是 0" 是两件事，把前者渲染成后者是本轮点名的谎（工程 r3 B-R3-3）。
-  const nums = active.filter((it) => typeof it.remaining === "number");
-  const sum = (arr) => arr.reduce((acc, it) => acc + (typeof it.remaining === "number" ? it.remaining : 0), 0);
-  const fmt = (v) => fmtQuotaNumber(v, unit);
-  const daily = active.filter((it) => String(it.name).includes("每日"));
-  const rest = active.filter((it) => !String(it.name).includes("每日"));
-  const total = sum(active);
+  const groups = quotaGroups(active);
+  const unit = groups[0] ? groups[0].unit : "";
+  const word = quotaUnitWord(unit);
+  const fmt = (v) => fmtQuotaNum(v, unit);
+  // 🔴 `remaining` 可能是 `null`（上游没给可用数）：**不得**当 0 累加、更**不得**因此判「已耗尽」
+  //    ——「没给数字」与「数字是 0」是两件事（V13 钉的就是这条谎）。
+  const anyRem = active.some((it) => typeof it.remaining === "number");
+  const sumRem = active.reduce((acc, it) => acc + (typeof it.remaining === "number" ? it.remaining : 0), 0);
+  const sumTot = active.reduce((acc, it) => acc + (typeof it.total === "number" ? it.total : 0), 0);
+  const hasTot = active.some((it) => typeof it.total === "number");
+
+  // 🔴 整格是否「已耗尽」在 out 之前就定下来：着色对象是**这一格**（D1b），
+  //    只把档位词染琥珀、格子其余部分保持黑，等于"警示只有一行字"——读的人不知道整格在说什么。
+  const exhausted = anyRem && (rq.state === "exhausted" || !active.length || (sumTot <= 0 && sumRem <= 0));
+
   const out = [];
-  if (rq.plan) out.push(`<span class="badge b-gray" style="margin-bottom:4px" title="${esc("套餐：" + rq.plan)}">${esc(rq.plan)}</span>`);
-  if (!nums.length) {
-    out.push(`<span style="color:var(--text-faint)" title="${esc(rq.detail || "上游未给出可用数")}">未知</span>`);
-  } else if (rq.state === "exhausted" || !active.length || total <= 0) {
-    // 🔴 档位词「已耗尽」**不挂量纲** —— 写成「已耗尽 Token」是把单位接在一个不是数字的词后面，
-    //    实盘实测到（15:35 那一轮 `axxshx…` 等 4 号）。数值照旧出（`0 Token`，与 Σactive 一致，
-    //    V10' 的总额一致性才成立），档位紧跟其后，着色仍取 `--warn`（门 D1b 钉的是颜色不是拼接）。
-    const zero = nums.length ? `<b>${esc(fmt(total) + (unit ? unitLabel : ""))}</b> ` : "";
-    out.push(`${zero}<span style="color:var(--warn)">已耗尽${esc(note)}</span>`);
+  if (!anyRem) {
+    out.push(`<div class="qrow"><span class="qnone">用量未知</span></div>`);
   } else {
-    out.push(`<b>${esc(fmt(total) + (unit ? unitLabel : ""))}</b>`);
+    const val = `${esc(fmt(sumRem))}${word ? esc(word) : ""}`
+      + (hasTot ? ` / ${esc(fmt(sumTot))}` : "");
+    // 🔴 多组时主行标签必须是「合计」：实盘 lobsterai 的 `plan` 就等于其中一个包名
+    //    （「新用户赠送」），拿 plan 当标签会出现"主行和明细同名不同数"的怪相。
+    const many = groups.length > 1;
+    const name = many ? "合计" : groups[0].name;
+    // 🔴 2026-10-03 用户裁定「合计：900 积分」= **数值贴在标签后面**，不再右浮到列尾：
+    //    旧形态左一个孤立标签、右一个粗数，中间一大片空档，读的人要自己把两头对起来。
+    //    标签与数值同排左对齐；标签过长时**省略号只收在标签上**（`title` 给全名），
+    //    数值 `flex:none` 永不裁字 —— 被挤的只能是次要的那一半（与占比条那轮同一分工）。
+    out.push(`<div class="qrow"><span class="qname" title="${esc(name)}">${esc(name)}：</span>`
+      + `<b class="qnum">${val}</b>`
+      + (exhausted ? `<span class="qtier">已耗尽</span>` : "") + `</div>`);
+    // 🔴 占比条**独占一行、画满格宽**（照 zcode-switch 的形态：文字在上、条在下）。
+    //    内联在名称与数字之间 = 条的左边缘随两侧文字宽度漂移（用户实拍「进度条怎么还有错落啊」）；
+    //    而"定宽三列"的修法则把数字挤到裁字（:8300 实测 `.qnum` 需 129px、只给到 90px）。
+    //    条自占一行后，左边缘恒等于格的左边缘 ⇒ 对齐是**结构保证**，不靠列宽算式。
+    const bar = quotaBarHTML(sumRem, hasTot ? sumTot : null);
+    if (bar) out.push(`<div class="qbarline">${bar}</div>`);
   }
-  const buckets = [];
-  if (daily.length && rest.length) buckets.push(`长期 ${esc(fmt(sum(rest)))} · 每日 ${esc(fmt(sum(daily)))}`);
-  else if (active.length > 1) buckets.push(`${active.length} 个资源包有效`);
-  if (expiredN) buckets.push(`另有 ${expiredN} 已失效`);
-  // 🔴 「重置于 X」= **active 包里最早**的 `expires_at`（方案 §4-5 定义，不是"临期"的另一种说法）。
-  //    仅当该值是 ISO 形状时才渲染 —— 上游给的是**秒级 epoch 整数**，归一化是钩子的责任；
-  //    万一某条通道漏归一，这里**整段不出**，而不是把 `1790956800` 切成 `956800` 印给用户（V17）。
-  const isoExp = active.map((it) => it.expires_at).filter((v) => ISO_RE.test(String(v || "")))
-    .sort()[0];
-  if (isoExp) buckets.push(`重置于 ${esc(shortTime(isoExp).slice(5))}`);
-  if (buckets.length) {
-    out.push(`<span style="display:block;margin-top:4px;font-size:12px;font-weight:600;color:var(--text-faint)">${buckets.join(" · ")}</span>`);
+  // 多组：逐组明细**另起一行**（同名聚合 ≤3 + `+N 类`，ZCode-Panel 的 chip 上限同款）。
+  // 🔴 同一轮里我试过把这一行并进「合计：」后面 —— :8300 只读探针实测：实盘长包名
+  //    （「CodeBuddy个人版国内运营裂变包 1365.01 / 1400」）在 268px 的列里折成 **5~6 行**、
+  //    整格 112px 高 ⇒ 用户裁定改回「合计：900 积分」+ 明细另起一行（选项①）。
+  //    悬停给「同名 N 包合计」与各自量 ⇒ 聚合后组数本来就在 3 以内，既不必折叠也无从截断。
+  if (groups.length > 1) {
+    const chips = groups.slice(0, 3).map((g) => {
+      const gv = g.hasRem ? fmtQuotaNum(g.rem, g.unit) : "未给";
+      const gt = g.hasTot ? " / " + fmtQuotaNum(g.tot, g.unit) : "";
+      return `<span class="qchip" title="${esc(g.name + "：" + gv + gt + (g.n > 1 ? "（同名 " + g.n + " 包合计）" : ""))}">${esc(g.name)} ${esc(gv + gt)}</span>`;
+    }).join("");
+    const more = groups.length - 3;
+    const all = groups.map((g) => `${g.name} ${g.hasRem ? fmtQuotaNum(g.rem, g.unit) : "未给"}${g.hasTot ? "/" + fmtQuotaNum(g.tot, g.unit) : ""}`).join("\n");
+    out.push(`<div class="qchips">${chips}`
+      + (more > 0 ? `<span class="qchip qchip-more" title="${esc(all)}">+${more} 类</span>` : "")
+      + `</div>`);
   }
-  out.push(chkHTML(rq, note));
-  // 🔴 逐包明细走**就地展开**（frontend-spec §7.11 三正解之一），不再只住 tooltip：
-  //    31 个包时悬停既不可选中也不能复制，且被截断到 12 行 —— 用户以为只有 12 个包。
-  //    常驻面仍只有「档位 + 总额 + 分桶 + 查于」，展开行才是逐包全量（一行都不藏）。
-  out.push(`<button class="btn btn-sm" data-qpacks="${esc(a.name)}" aria-expanded="false"
-    title="${esc("展开后在本格逐包列出（可选中复制）；收起不影响任何数据")}"
-    style="margin-top:4px">展开 ${items.length} 个包</button>`);
-  out.push(packsDetailHTML(a, rq, items));
-  return `<span style="display:inline-block;text-align:right"
-    title="${esc(rq.plan ? "套餐：" + rq.plan : "")}">${out.join("")}</span>`;
+  out.push(quotaMetaHTML(rq, groups, expiredN, note));
+  // 证据条同样挂格根：`用量未知` 这一档上游原话没给时，兜底说法必须自己写清楚（V13）。
+  return qcellOpen(cellTip(rq, anyRem ? "" : "上游未给可用数"), exhausted)
+    + out.join("") + `</div>`;
 }
 
-/** 本格内的逐包明细（默认 hidden，点「展开 N 个包」显形）：全量列出，一行都不截断。
- *  🔴 时刻仍受 ISO 形状护栏约束（V17 的同一把尺）：上游给秒级 epoch 时**不渲染时刻**，
+/** meta 行 = 最早到期 + 相对新鲜度 + 失效计数 + 附属注记。
+ *  🔴 时刻一律受 ISO 形状护栏约束（V17 的同一把尺）：上游给秒级 epoch 时**不渲染时刻**，
  *     而不是把 `1790956800` 切成 6 位残串印在用户面前。 */
-function packsDetailHTML(a, rq, items) {
-  const unit = items[0].unit || "";
-  const fmt = (v) => fmtQuotaNumber(v, unit);
-  const unitLabel = unit ? (unit.toLowerCase() === "token" ? " Token" : " 积分") : "";
-  const sumAll = items.reduce((acc, it) =>
-    acc + (typeof it.remaining === "number" ? it.remaining : 0), 0);
-  const activeN = items.filter((it) => it.active !== false).length;
-  const lines = items.map((it) => {
-    const rem = typeof it.remaining === "number" ? `${fmt(it.remaining)}${unitLabel}` : "上游未给可用数";
-    const tot = typeof it.total === "number" ? ` / 总额 ${fmt(it.total)}` : "";
-    const exp = ISO_RE.test(String(it.expires_at || "")) ? ` · 失效于 ${shortTime(it.expires_at)}` : "";
-    const st = it.active === false ? "（已失效）" : "";
-    return `<div class="qpack-line">· ${esc(it.name)}${st}：${esc(rem + tot + exp)}</div>`;
-  }).join("");
-  return `
-    <div class="qpacks-detail" data-qpacks-for="${esc(a.name)}" hidden
-      style="text-align:left;margin-top:6px;font-size:12px;line-height:1.7;color:var(--text-soft)">
-      <div style="color:var(--text-faint);font-weight:700">共 ${items.length} 个包（有效 ${activeN} 个）
-        · 合计剩余 ${esc(fmt(sumAll))}${esc(unitLabel)} · 数据时刻 ${esc(shortTime(rq.data_at || rq.checked_at))}</div>
-      ${lines}
-    </div>`;
-}
-
-/** 「查于 X」= **上游数据时刻优先**（`data_at`），没有才退回网关写盘时刻（`checked_at`）。
- *  两个量必须分开：熔断/失败轮里上游什么都没给，此时"查于"若前进到本轮，
- *  就等于把十几分钟前的数值说成刚刚查过的（QA r3 X-R3-6 判的"伪装刷新"）。 */
-function chkHTML(rq, note = "") {
+function quotaMetaHTML(rq, groups, expiredN, note) {
+  const bits = [];
+  const exp = groups.map((g) => g.exp).filter(Boolean).sort()[0];
+  if (exp) bits.push(`至 ${esc(shortTime(exp).slice(5))}`);
   const when = rq.data_at || rq.checked_at;
-  return `<span class="qchk" style="display:block;margin-top:2px;font-size:12px;font-weight:600;color:var(--text-faint)">查于 ${esc(shortTime(when))}${esc(note || "")}</span>`;
+  const ago = agoShort(when);
+  if (ago) bits.push(`${esc(ago)}查`);
+  if (expiredN) bits.push(`另有 ${expiredN} 包已失效`);
+  if (note) bits.push(esc(note));   // 注记原形带括号（QUOTA_NOTE 五档映射的形状，门 V15 按原形钉）
+  // 🔴 meta 行**不自带悬停**：套餐名与数据绝对时刻的证据条统一挂在额度格根节点上（`cellTip`），
+  //    同一件事有两个悬停主人 = 这一格里"乱七八糟"的来源之一。
+  return `<div class="qmeta">${bits.join(" · ") || "—"}</div>`;
 }
 
 /** 行内动作 = **中文文字按钮**（2026-10-01 用户指示）：签到（能力门控）·
@@ -789,20 +903,10 @@ function bindRow(p, a) {
     sw.append(switchEl(a.enabled, `启用 / 停用账号 ${a.name}`, (next) => setEnabled(p, a, next)));
   }
   for (const b of tr.querySelectorAll("[data-op]")) b.onclick = () => runOp(p, a, b.dataset.op, b);
-  /* 逐包明细就地展开（2026-10-02 用户指令：明细不该只住 tooltip）。
-     展开态记在**数据行**的 data-open 上，重绘后据此恢复（否则刷一次额度就自己收起）。 */
-  const btn = tr.querySelector("[data-qpacks]");
-  const detail = tr.querySelector(`.qpacks-detail[data-qpacks-for="${sel}"]`);
-  if (btn && detail) {
-    const apply = (open) => {
-      detail.hidden = !open;
-      btn.setAttribute("aria-expanded", open ? "true" : "false");
-      btn.textContent = open ? "收起明细" : `展开 ${(a.runtime && a.runtime.quota && a.runtime.quota.items || []).length} 个包`;
-      tr.dataset.open = open ? "1" : "";
-    };
-    apply(tr.dataset.open === "1");
-    btn.onclick = () => apply(detail.hidden);
-  }
+  /* 🔴 2026-10-03 用户实拍「还弄个展开折叠，无语了」：逐包折叠交互**整体删除**
+     （三家参考实现 zcode-switch / ZCode-Panel / Jet Hub 都没有折叠）。
+     多包改由 `quotaCell` 做**同名聚合**（zcode-switch 同款：同名只留一条），
+     聚合后组数天然 ≤3 ⇒ 全量本来就在常驻面上，既不必折叠也无从截断。 */
 }
 
 /** 三级重绘之第三级：单行原地替换；结构变化时退化为面板级重绘。 */
@@ -840,63 +944,36 @@ async function refreshAfter(pid, name) {
   if (name) patchRow(pid, name); else paintPanel();
 }
 
-/* ---------- 批量动作的回执（🔴 单层弹窗红线的构造化落点） ----------
+/* ---------- 批量动作的回执（2026-10-03 用户裁定：**不许固化显示**） ----------
  *
- * 项目红线：任意交互序列后 `.modal-mask` 计数 ∈ {0,1}（frontend-spec §7.11/§8-13 + 规矩 16）。
- * `components.js::modal()` 是**追加不是替换**，而批量腿的形状天生危险：
- *   页级按钮 → 长 await（产品级扇出是**分钟级**窗口）→ 迟到回执。
- * 用户在等待期顺手点开「模型映射」→ 回执到达时页面上已经有一层遮罩 → 直接开第二层就违规。
+ * 用户原话（实拍 Raccoon 面板上那块常驻的「刷新 0 个 · 失败 0 个 · 未发起 2 个」+ 术语解释 +
+ * 逐号列表）：「各类处理结果，不允许用这种形式固化显示。执行完毕，弹窗提示具体执行结果，
+ * 3s 后自动消失，也可以手动关闭。参考设计规范进行设计」。
  *
- * v4 的"就地槽 + 判遮罩"写法被 PM r5 判为**半个修法**：槽会被随后的整块重绘吃掉。
- * 因此这里把**文本**存进模块级 `bulkReceipt`，由 `paintPanel()` 末尾回填 ——
- * 送达不再依赖"记得按顺序调用"，红线与可见性都由构造保证。
- * 切产品 / 换页 / 再次触发批量动作时清空（旧结论不留在新画面上）。 */
-let bulkReceipt = null;
-
-/** 槽的骨架（每次面板重绘都会重建；文本由 `renderBulkReceipt()` 回填）。 */
-function bulkReceiptHTML() {
-  return `<div class="bulk-receipt" id="ac-receipt" hidden></div>`;
+ * 旧形态（我 2026-10-02 定版、现被推翻）有两处毛病：
+ * ① 结果写进面板里一块常驻槽 ⇒ 下一批之前它一直挂在页面上，且会被整块重绘吃掉
+ *    （所以才需要模块级文本 + `paintPanel()` 末尾回填 —— 那套机器本身就是病的补丁）；
+ * ② 为了绕开「等待期用户已开弹窗 ⇒ 迟到回执会叠第二层遮罩」而写的**判遮罩**分支，
+ *    把"提示"做成了"常驻块"的借口。
+ *
+ * 新出口 = `components.js::toastCard`（结果浮层）：执行完毕弹一条，**3s 自动消失 + × 手动关闭**。
+ * 它不是 modal ⇒ 单层弹窗红线（`.modal-mask` ∈ {0,1}）由**构造**保证，不再需要判遮罩；
+ * 面板里也不留任何回执位（权威状态在表里：回执发出前已按服务端重取过视图）。
+ * 🔴 术语解释（「未发起」/「未参与」那段）挂**计数行悬停**，不进正文 ——
+ *    3 秒是读完"计数 + 逐号结果"的时间，不是读定义的时间；定义不许做成必读正文。 */
+function showBulkReceipt(title, { sum = "", note = "", rows = "", empty = "", tone = "" } = {}) {
+  const html = (sum
+    ? `<div class="t-sum"${note ? ` title="${esc(note)}"` : ""}>${sum}</div>` : "")
+    + `<div class="t-rows">${rows || (empty ? `<div class="t-empty">${esc(empty)}</div>` : "")}</div>`;
+  toastCard(title, html, { type: tone, ms: 3000 });
 }
 
-function renderBulkReceipt() {
-  if (!panelEl || !bulkReceipt) return;
-  const slot = panelEl.querySelector("#ac-receipt");
-  if (!slot) return;
-  slot.innerHTML = bulkReceipt.html;
-  slot.hidden = false;
-  const close = slot.querySelector("[data-receipt-close]");
-  if (close) close.onclick = () => clearBulkReceipt();
-}
-
-/** 清空批量回执：模块级文本与**当前画面上那个槽**一起清。
- *
- *  🔴 只清 `bulkReceipt` 变量不够：槽的 DOM 要等下一次 `paintPanel()` 才重绘，
- *  于是"新批次在飞的几十秒里，屏幕上仍挂着**上一批**的结论"—— 实盘实测到
- *  （连点两个产品的「刷新额度」，第二个产品的回执位一度还写着第一个产品的「刷新 2 个」，
- *  而它那一批只有 1 个号）。产品级扇出是分钟级窗口，这个错位不是边角料。 */
-function clearBulkReceipt() {
-  bulkReceipt = null;
-  if (!panelEl) return;
-  const slot = panelEl.querySelector("#ac-receipt");
-  if (!slot) return;
-  slot.hidden = true;
-  slot.innerHTML = "";
-}
-
-/** 批量回执的唯一出口：有遮罩 → 只写就地槽（**不开第二层**）；无遮罩 → 弹窗 + 同文入槽兜底。 */
-function showBulkReceipt(title, html) {
-  bulkReceipt = { title, html };
-  const masked = document.querySelector(".modal-mask");
-  if (!masked) {
-    const body = document.createElement("div");
-    body.innerHTML = html;
-    const foot = document.createElement("div");
-    foot.innerHTML = `<button class="btn">关闭</button>`;
-    const closeBtn = foot.querySelector(".btn");        // modal() 之前取引用（§7.11 契约）
-    const dlg = modal({ title, body, footer: foot });
-    closeBtn.onclick = dlg.close;
-  }
-  renderBulkReceipt();                                   // 遮罩存在时这是**唯一**出口；否则是兜底
+/** 逐号一行：名称（过长省略号 + `title` 全名）+ 可选明细 + 结果词（色只走令牌）。 */
+function receiptRow(name, tag, tone = "", detail = "") {
+  return `<div class="t-row"><span class="t-cell">`
+    + `<span class="t-name" title="${esc(name)}">${esc(name)}</span>`
+    + (detail ? `<span class="t-detail" title="${esc(detail)}">${esc(detail)}</span>` : "")
+    + `</span><span class="t-tag${tone ? " " + tone : ""}">${esc(tag)}</span></div>`;
 }
 
 /* ---------- 行内操作 ---------- */
@@ -947,7 +1024,7 @@ function checkBodyHTML(p, a, list, info) {
   const warn = !list.length
     ? `<div class="alert alert-warn" style="margin-bottom:12px">
          <div>该账号没有任何**已开启**的模型映射，检测不会发出任何请求。
-         要测别的模型，先到卡头「模型映射」里挂上并把「进池」开关打开。</div></div>`
+         要测别的模型，先到卡头的模型映射入口挂上目标，再打开进池开关。</div></div>`
     : (info.resource_enabled === false
       ? `<div class="alert alert-warn" style="margin-bottom:12px">该账号当前停用，
              其资源不参与调度；下面这些请求仍会真发（只为验证凭据与上游是否可用）。</div>` : "")
@@ -1030,7 +1107,6 @@ async function batchQuota(btn, p) {
   const label = btn.innerHTML;
   btn.disabled = true;
   btn.textContent = "执行中…";
-  clearBulkReceipt();                       // 上一批的结论不留在这一批的画面上（槽也要清）
   let r = null;
   try {
     r = await POST(`/admin/api/accounts/${p.id}/quota-all`, {});
@@ -1041,21 +1117,36 @@ async function batchQuota(btn, p) {
   await refreshAfter(p.id, null);           // 🔴 先重绘（拿到服务端最新额度），再落回执
   if (!r) return;
   const rc = r.receipt || {};
-  const rows = Object.entries(rc.by_reason || {}).map(([acc, reason]) => `
-    <div class="list-row" style="display:flex;gap:8px;align-items:center;min-height:40px">
-      <b class="mono" style="flex:1;min-width:0">${esc(acc)}</b>
-      <span class="badge ${reason ? "b-gray" : "b-ok"}">${esc(reason || "已刷新")}</span>
-    </div>`).join("");
-  const html = `
-    <p class="form-hint" style="margin:0 0 12px">
-      刷新 ${esc(String(rc.refreshed ?? 0))} 个 · 失败 ${esc(String(rc.failed ?? 0))} 个 ·
-      未发起 ${esc(String(rc.not_fired ?? 0))} 个${rc.not_participating ? ` · 未参与（停用）${esc(String(rc.not_participating))} 个` : ""}。
-    </p>
-    <p class="form-hint" style="margin:0 0 12px">「未发起」= 熔断中 / 网络不可达 / 缺凭据（本轮未对上游发请求，
-      上一轮的数值原样保留）/ 查了但上游没给可量化余量；「未参与」= 这一轮没被执行到
-      （账号锁没拿到 / 该产品下没有账号）。停用账号照样查（额度是只读视图）。前两者与「未参与」都不是一回事。</p>
-    ${rows || `<p class="form-hint" style="margin:0">该产品下没有账号。</p>`}`;
-  showBulkReceipt(`刷新额度结果 · ${p.title}`, html);
+  // 🔴 逐号那一行的词**不能只看 `by_reason`**（:8300 实盘抓出来的假态）：`reason=""` 在后端是
+  //    一格**多义**值 —— 既出现在 `success`（查到了）也出现在 `inactive`（查了但上游没给可量化余量，
+  //    计入「未发起」J，见 `_quota_receipt` 的 ⚠️ 段）。旧写法 `reason || "已刷新"` 把后者也标成
+  //    「已刷新」⇒ 同一张浮层里计数行说「未发起 2 个」、下面两行写「已刷新」，自己跟自己矛盾。
+  //    定版 = 逐号词读**权威分桶**（`report.failed / success / inactive`）+ 原因码查既有词表。
+  const rep = r.report || {};
+  const reasons = rc.by_reason || {};
+  const inList = (list, acc) => (list || []).some((x) => (typeof x === "string" ? x : x.account) === acc);
+  const quotaWord = (acc) => {
+    const code = String(reasons[acc] ?? "");
+    if (inList(rep.failed, acc)) return ["失败", "is-err"];
+    if (inList(rep.success, acc)) return ["已刷新", "is-ok"];
+    if (code === "no_plan") return ["无套餐", "is-warn"];
+    if (code === "expired") return ["凭据已失效", "is-warn"];
+    if (code === "quota_net_off") return ["未发起（自动腿未授权）", "is-warn"];
+    if (QUOTA_REASON_TEXT[code]) return [QUOTA_REASON_TEXT[code], "is-warn"];
+    return ["未发起", "is-warn"];   // 含 `""`：查了但上游没给可量化余量（计数里就落在 J）
+  };
+  const rows = Object.keys(reasons).sort()
+    .map((acc) => { const [tag, tone] = quotaWord(acc); return receiptRow(acc, tag, tone); }).join("");
+  showBulkReceipt(`刷新额度 · ${p.title}`, {
+    sum: `刷新 ${esc(String(rc.refreshed ?? 0))} 个 · 失败 ${esc(String(rc.failed ?? 0))} 个`
+      + ` · 未发起 ${esc(String(rc.not_fired ?? 0))} 个`
+      + (rc.not_participating ? ` · 未参与（停用）${esc(String(rc.not_participating))} 个` : "") + "。",
+    note: "「未发起」= 熔断中 / 网络不可达 / 缺凭据（本轮未对上游发请求，上一轮的数值原样保留）"
+      + "/ 查了但上游没给可量化余量；「未参与」= 这一轮没被执行到（账号锁没拿到 / 该产品下没有账号）。"
+      + "停用账号照样查（额度是只读视图）。前两者与「未参与」都不是一回事。",
+    rows, empty: "该产品下没有账号。",
+    tone: (rc.failed ?? 0) > 0 ? "err" : "ok",
+  });
 }
 
 async function doProbe(p, a) {
@@ -1111,27 +1202,58 @@ async function delAccount(p, a) {
  *   GET  /admin/api/accounts/{product}/catalog → {product,title,checkin,source,models[],accounts[]}
  *        （ModelInfo 全字段随 asdict 带出——映射行的目录辅助信息即来源于此，**无需第二个弹窗**；
  *         单账号 `/{product}/{name}/models` 是 B-1 生产出口，仅后端/测试消费，界面不再调用）
- *   POST /admin/api/accounts/mappings          {product, items:[{model,target}]}
+ *   POST /admin/api/accounts/mappings          {product, items:[{model,target}]}   🔴 **唯一**写入口 =「保存」那一次提交
+ *   POST /admin/api/accounts/auto-map          {product, models:[空行 id…]}   常驻「AI智能匹配」：**只出建议、零写盘**
+ *        （服务端选一条当前可用的 chat 腿（优先 flash/lite 档）逐条判定；没有可用腿或
+ *         回答不可解析 ⇒ **整表**降级正则；回执 `via` 说清用了哪档引擎、`reason` 说清为什么）
  *   POST /admin/api/accounts/claim-all         {product} 或 {product:null}（null = 全部支持签到的产品）
  * 两处共用纪律：动作期间触发钮进「执行中…」禁用态（顺序执行可达数十秒，**不加人为超时**）；
  * 结果一律从响应 payload 出（失败只报原文，不编造成功）；写完重取服务端视图自同步（D3）。
  */
 
-/** 模型映射弹窗（root = 页面 root，落库后按 models.js `persist(root)` 同款口径重绘本页）。
+/** 模型映射弹窗（root = 页面 root，保存成功后按 models.js `persist(root)` 同款口径重绘本页）。
  *  🔴 **宽版 + 单层弹窗**（2026-10-01 用户定版：弹窗里绝不许再叠弹窗——需要更多信息就
- *  加宽弹窗、把信息融合进列表或就地展开）。目录字段（上下文/输出/推理…）直接画进映射行。 */
+ *  加宽弹窗、把信息融合进列表或就地展开）。目录字段（上下文/输出/推理…）直接画进映射行。
+ *
+ * 🔴 2026-10-05 第四次裁定 = **草稿制**（「调用AI分析结果直接回填到弹窗内，但不提交保存，
+ * 仅在前端进行展示。右侧显示黑色 保存按钮，所有修改、设置 点击保存提交数据后才能入库存储」）：
+ *   · 弹窗里**没有任何一条腿会自己写盘** —— 选目标、拨进池开关、改回「暂不设置」、采纳建议、
+ *     AI 回填，全部只改内存里那份 `draft`；
+ *   · 唯一的写入口 = 脚部那颗黑色「保存」（`mappings` 一条 + 逐行 `product-models/remove`），
+ *     没有改动时它是禁用的；
+ *   · 「取消 / ×」在有未保存改动时必须**真能取消**（就地两步确认后才放弃，不弹二级窗）。
+ *   这条裁定作废上一轮的「行内一改即落库」；它同时也把 10-04 那两条常驻说明
+ *   （「未落库 · …才写入」「保存后解除关联」）**请了回来** —— 上一轮删它们不是因为话错，
+ *   而是因为那一步不存在了；现在这一步重新存在，话就重新是真话。 */
 async function openModelMap(root, p) {
   if (!p) return;
   const body = document.createElement("div");
   body.innerHTML = `<div class="loading">正在读取模型目录…</div>`;
-  const foot = document.createElement("div");
-  foot.innerHTML = `<button class="btn">取消</button>
-    <button class="btn btn-primary" disabled>初始化映射</button>`;
-  /* 必须在 modal() **之前**取引用（components.js 会把 footer 子节点平铺走，§7.11） */
-  const [cancelBtn, okBtn] = foot.querySelectorAll("button");
-  const dlg = modal({ title: `模型映射 · ${p.title}`, body, footer: foot, wide: true });
-  cancelBtn.onclick = dlg.close;
+  /* 🔴 三颗钮、三种语义，**没有一颗有两态**（2026-10-05 第三次指示那颗钮常驻 = 保留；
+     第四次指示补回「保存」= 它只有一态：有没有未保存的改动，读的是 `draft` 不是文案）：
+       · 「取消」= 放弃草稿（有改动时两步确认）；
+       · 「AI智能匹配」= 常驻，打 `auto-map`：**只出建议、只回填下拉、一个字都不写**，
+         分析范围 = 屏幕上仍显示「暂不设置」的那些行（前端带 `models`，后端再与"配置里从没落过位"取交集）；
+         网关内没有可用模型时后端整表降级正则。
+       · 「保存」= 唯一的写入口（黑色主钮，脏态数决定使能与文案）。
+     两态史（写在这里免得下轮又猜）：Q34「初始化映射 ⇄ 保存」→ 上一轮「落库后收起」→
+     本轮「AI智能匹配」常驻 + 「保存」回归，但**两颗是不同的钮、不同的语义**，不再是一钮两态。 */
+  const draft = new Map();            // i → { target?, enabled? }（键缺失 = 这一项没动过）
   let catalog = null;
+  const foot = document.createElement("div");
+  foot.innerHTML = `<button class="btn" data-map="cancel">取消</button>
+    <button class="btn" data-map="ai" disabled>AI智能匹配</button>
+    <button class="btn btn-primary" data-map="save" disabled>保存</button>`;
+  /* 必须在 modal() **之前**取引用（components.js 会把 footer 子节点平铺走，§7.11） */
+  const [cancelBtn, aiBtn, saveBtn] = [...foot.querySelectorAll("button")];
+  const dlg = modal({ title: `模型映射 · ${p.title}`, body, footer: foot, wide: true, cls: "map-modal" });
+  /* AI 钮的使能只由**一件事**决定：有没有落点（账号 + 目录非空）。请求在飞时由 `runAiMatch`
+     自己临时改文案并禁用、结束（成功或失败）都调 `setMode()` 回到真实态。 */
+  const setMode = () => {
+    aiBtn.textContent = "AI智能匹配";
+    aiBtn.disabled = !(catalog && (catalog.accounts || []).length)
+      || !(catalog && (catalog.models || []).length);
+  };
   try {
     const [cat, cfg, enums] = await Promise.all([
       GET(`/admin/api/accounts/${p.id}/catalog`),
@@ -1140,122 +1262,399 @@ async function openModelMap(root, p) {
     ]);
     catalog = cat || {};
     const options = targetOptions((cfg && cfg.models) || [], (enums && enums.entries) || []);
+    /* 「首次」的判据 = 后端那个**三态位**：所有行的 `map_enabled` 都是 `null`（既无产品位、
+       也无条目）才算没初始化过。不看 `mapped_to`（那只是条目扇出的结果，号全停时会是空表
+       而位还在），也不看前端缓存。 */
     body.innerHTML = mapBodyHTML(catalog, options, p);
-    /* 没账号 = 没有资源可挂：目录照常可看，落库按钮禁用（写了也挂不上，只会在配置里留空映射）。 */
-    okBtn.disabled = !(catalog.accounts || []).length;
-    /* 行开关：状态存在 mapOn（渲染态与配置态在点成功后一起更新），关掉时行变灰但保留映射。 */
-    const mapOn = new Map();
-    (catalog.models || []).forEach((m, i) => { mapOn.set(i, m.map_enabled !== false); });
+    /* 没账号 = 没有资源可挂：目录照常可看，匹配钮禁用（写了也挂不上，只会在配置里留空映射）。 */
+    setMode();
+    /* 行开关（🔴 2026-10-02 用户「让增加的开关哪里去了呢，需求丢了么」）：需求原文是
+     * **每个产品内的模型**都要有开关 ⇒ 判据 = 这一行**当前有没有目标**
+     * （下拉已选 / 联想命中 / 已有映射），不是"历史上有没有映射"。旧实现只在已映射行画开关，
+     * :8300 实盘 10 个产品里 9 个整列只有 `—`（zcode 2 行 / buddy 17 行 = 0 颗开关），
+     * 等于需求没做。没目标的行照旧画开关，但置灰 + 悬停说清为什么按不动（不隐藏、不假装有状态）。 */
+    /* 🔴 2026-10-03 用户实拍「资源池里已经关联并开启进池的怎么没显示？」追出来的**读取面假态**：
+       后端对「既无产品位、也无条目」的行返回 `map_enabled = null`（= 未映射；
+       `admin_accounts.py::_map_enabled` 末行 `return False if seen else None`），
+       而旧写法 `!== false` 把 `null` 当成"开着" ⇒ 弹窗里同一行同时出现三个互相矛盾的信号：
+       开关是绿的 + 下拉里有**自动建议预选**的模型名（`pickTarget()`，不是已落库的 `mapped_to`）
+       + 状态徽章写「未映射」。用户据此以为"已关联并开启进池"，而盘上 `product_models: []`，
+       资源池自然一行都不显示（资源池读的是 `models[].resources[]` 里的真绑定）。
+       定版 = **开关只认后端那个位：`null` ⇒ 关**（没落库就是没进池），拨一下才写。 */
+    let saving = false;                  // 保存在飞：三颗钮全禁用，别让人在半程里改
+    let aiBusy = false;                  // AI 在飞：`syncFoot` 期间不许把文案/使能抢回真实态
+    let armed = false;                   // 「再点一次就放弃」已经提示过
+
+    /* 🔴 草稿制的三份状态，各自只有一个主人（上一轮那两份 `mapOn` / `mapKnown` 是"落库后的真实态"
+       在前端的副本 —— 行内即落库时它们还有意义，草稿制下会变成第四套真相，一起删）：
+         · 盘上真相 = `m.mapped_to` + 后端那个三态位 `m.map_enabled`（`null` = 从没落过位）；
+         · 草稿     = 外层那张 `draft`（键缺失 = 这一项没动过）；
+         · 画出来的 = `curTarget(i)` / `curEnabled(i)`（草稿优先，回落盘上真值）。
+       🔴 2026-10-03 那条读取面假态的教训原样保留：三态位只认 `=== true`，`null` 不是"开着"。 */
+    const modelOf = (i) => (catalog.models || [])[i] || {};
+    const selOf = (i) => body.querySelector(`select[data-idx="${i}"]`);
     const rowOf = (i) => body.querySelector(`[data-mapsw="${i}"]`)?.closest(".list-row");
+    const persistedTarget = (i) => pickTarget(modelOf(i), options);
+    const persistedEnabled = (i) => {
+      const m = modelOf(i);
+      return mapHasBit(m) ? m.map_enabled === true : null;   // null = 盘上没这条 ⇒ 保存时按缺省进池
+    };
+    const staged = (i, key) => {
+      const d = draft.get(i);
+      return d && d[key] !== undefined ? d[key] : undefined;
+    };
+    const curTarget = (i) => {
+      const t = staged(i, "target");
+      return t === undefined ? persistedTarget(i) : t;
+    };
+    const curEnabled = (i) => {
+      const e = staged(i, "enabled");
+      if (e !== undefined) return e;
+      const p = persistedEnabled(i);
+      return p === null ? true : p;      // 新映射缺省进池（Q37 ② 保留，只是主人换成「保存」那一次）
+    };
+    const isDirty = (i) => {
+      const t = staged(i, "target");
+      if (t !== undefined && t !== persistedTarget(i)) return true;
+      const e = staged(i, "enabled");
+      if (e === undefined) return false;
+      const p = persistedEnabled(i);
+      if (p === null) return !!curTarget(i) && e !== true;   // 没落库 + 缺省本就是 true ⇒ 不算改过
+      return e !== p;
+    };
+    const dirtyRows = () => (catalog.models || []).map((_m, i) => i).filter(isDirty);
+    /* 脚部那颗「保存」= 脏态数的唯一出口。文案里带数（0 处禁用）：
+       "点了什么都没改"与"改了 20 行还没存"在界面上绝不能长得一样。 */
+    const syncFoot = () => {
+      const n = dirtyRows().length;
+      saveBtn.disabled = n === 0 || saving;
+      saveBtn.textContent = n ? `保存（${n} 处未保存）` : "保存";
+      saveBtn.title = n ? "一次提交这一屏的改动：写入配置、成功才关窗" : "没有需要保存的改动";
+      if (saving || aiBusy) { aiBtn.disabled = true; } else { setMode(); }   // AI 钮的判据只有一份 = setMode
+    };
+    /* 只换自己那一行（旧"整格 innerHTML= 覆盖"会把同格的下拉一起吃掉 = 10-04 抓到的那条病，纪律保留）。 */
     const repaintState = (i) => {
       const row = rowOf(i);
       if (!row) return;
-      const m = (catalog.models || [])[i] || {};
-      const mapped = (m.mapped_to || []).filter(Boolean);
-      const on = mapOn.get(i);
-      const cell = row.children[3];
-      if (cell) cell.innerHTML = !mapped.length ? `<span class="badge b-gray">未映射</span>`
-        : on ? `<span class="badge b-ok" title="${esc("已映射到：" + mapped.join("、"))}">已映射 · 进池</span>`
-             : `<span class="badge b-gray" title="${esc("已映射到：" + mapped.join("、") + "；当前关闭：不进资源池、不出现在 /v1/models")}">已映射 · 已关</span>`;
-      row.style.opacity = on ? "" : "0.6";
+      const slot = row.querySelector(`[data-mapfoot="${i}"]`);
+      if (slot) slot.innerHTML = mapFootHTML(modelOf(i), i, {
+        target: curTarget(i),
+        dirty: isDirty(i),
+        hadBit: mapHasBit(modelOf(i)),
+        options,
+      });
+      row.style.opacity = curTarget(i) && curEnabled(i) ? "" : "0.6";
     };
-    const mountSwitch = (i, on) => {
+    /* 开关画的是**草稿位**（不是"请求成功后的回执"）：草稿制下没有请求，所以这里只读 `curEnabled`。
+       🔴 没有目标的行照旧画开关但禁用 + 悬停给原因（2026-10-02 定版：绝不消失）。 */
+    const mountSwitch = (i) => {
       const holder = body.querySelector(`[data-mapsw="${i}"]`);
-      if (!holder) return;
-      const m = (catalog.models || [])[i] || {};
+      if (!holder) return null;
+      const m = modelOf(i);
+      const target = curTarget(i);
+      /* 🔴 没有目标 ⇒ 牌必须画成"关"。缺省进池（`curEnabled` 对新行返回 true）说的是
+         **保存之后**会是什么，不是这一格现在的状态；拿它去画牌，禁用的开关照样是绿的，
+         等于替一个还不存在的映射宣称"已进池" —— 2026-10-03 那条「读取面不许撒谎」的病
+         换了个位置复活，被真机门 MS2f 当场抓回（:8497 临时实例 8 行无位行全绿）。 */
+      const on = target ? curEnabled(i) : false;
       holder.replaceChildren();
-      holder.append(switchEl(on, `进池开关 ${m.name || m.id}`, () => togglePool(i)));
+      const el = switchEl(on, () => {
+        if (!target) { toast("该行还没有映射目标：先在「网关模型映射」里选一个", "warn"); return false; }
+        stage(i, { enabled: !on });
+        return false;      // 🔴 不许 switchEl 自己翻牌：位置由 `stage` 重画出来的那一个说
+      });
+      if (!target) {
+        el.disabled = true;
+        el.title = "该行还没有映射目标：先在「网关模型映射」里选一个，选完这颗开关立刻可用（保存后才入库）";
+      } else if (!mapHasBit(m)) {
+        el.title = `这一行还没落库（挂着「${target}」）：保存后按${on ? "进池" : "不进池"}写入配置`;
+      } else {
+        el.title = on ? `开启：该映射（→ ${target}）进资源池、可对外调用；改完要点「保存」才写入`
+          : `关闭：该映射（→ ${target}）不进资源池、不出现在 /v1/models（映射关系保留）；改完要点「保存」才写入`;
+      }
+      if (saving) el.disabled = true;                     // 保存在飞：禁二次点击
+      holder.append(el);
+      return el;
     };
-    /* 单行开关 = 一次即时落库（D3 操作即保存）：目标取当前下拉值，
-       落点仍是后端那个 (产品, 模型) 组的全部账号条目；失败把原因留在槽内并按原态重挂。 */
-    const togglePool = async (i) => {
-      const m = (catalog.models || [])[i] || {};
-      const select = body.querySelector(`select[data-idx="${i}"]`);
-      const target = String((select && select.value) || (m.mapped_to || [])[0] || "");
-      if (!target) { toast("该条目还没有映射目标，先选系统模型", "warn"); return; }
-      const next = !mapOn.get(i);
-      mountSwitch(i, next);                            // 先落到目标态并禁二次点击（执行中）
+    /* 唯一的改草稿入口：改内存 + 重画那一行 + 刷新脚部。**一个 POST 都没有**。 */
+    const stage = (i, patch) => {
+      draft.set(i, { ...(draft.get(i) || {}), ...patch });
+      armed = false;                       // 用户还在编辑 ⇒ 那句"再点一次就放弃"作废
+      const warn = body.querySelector("[data-discard]");
+      if (warn) warn.remove();
+      const sel = selOf(i);
+      if (sel && patch.target !== undefined) sel.value = patch.target;
+      repaintState(i);
+      mountSwitch(i);
+      syncFoot();
+    };
+    /* 「取消 / × / 点遮罩」三条通道都走这里（modal() 的 ✕ 与遮罩 mousedown 是两条不经过按钮的
+       关闭路径 —— 同一形状在 components.js 的 confirmDialog 注释里记过一次，这里照同一口径堵）。 */
+    const tryClose = () => {
+      const n = dirtyRows().length;
+      if (!n || armed) { detachGuard(); dlg.close(); return; }
+      armed = true;
+      const slot = body.querySelector("#ac-map-err");
+      if (slot) slot.innerHTML = `
+        <div class="alert alert-warn" data-discard style="margin-bottom:12px">
+          <div class="alert-title">${n} 处改动还没有保存</div>
+          <div>再点一次「取消」（或右上角 ×）就全部放弃 —— 配置里一点没动；
+            要继续编辑就点「保存」，或改任意一行让这句提示消失。</div></div>`;
+      syncFoot();
+    };
+    cancelBtn.onclick = tryClose;
+    dlg.el.querySelector(".modal-close").onclick = tryClose;
+    const guardBackdrop = (e) => {
+      if (e.target !== dlg.el || !dirtyRows().length || armed) return;
+      // 捕获阶段 + stopPropagation：modal() 自己在遮罩上注册了一条 close，我这条在它之后，
+      // 同一元素上注册顺序决定先后 ⇒ 只能从祖先节点的捕获阶段抢下来。
+      e.stopPropagation();
+      e.preventDefault();
+      tryClose();
+    };
+    const detachGuard = () => document.removeEventListener("mousedown", guardBackdrop, true);
+    document.addEventListener("mousedown", guardBackdrop, true);
+    /* 下拉一改 / 采纳一颗建议 = 只改草稿（🔴 这个接线块里一次 POST 都不许有 —— 静态门 V29 钉这条）。 */
+    body.querySelectorAll("select[data-idx]").forEach((sel) => {
+      const i = Number(sel.dataset.idx);
+      sel.onchange = () => stage(i, { target: String(sel.value || "") });
+    });
+    body.querySelectorAll("[data-adopt]").forEach((btn) => {
+      btn.onclick = () => {
+        const i = Number(btn.dataset.for);
+        stage(i, { target: btn.dataset.adopt });
+      };
+    });
+    body.querySelectorAll("[data-mapsw]").forEach((holder) => {
+      mountSwitch(Number(holder.dataset.mapsw));
+    });
+    syncFoot();
+
+    /* ---------- 唯一的出站腿：「AI智能匹配」= 只回填、不写盘 ---------- */
+    const runAiMatch = async () => {
+      // 🔴 分析范围 = **屏幕上仍显示「暂不设置」的行**（2026-10-05 第四次指示第③条）。
+      //    草稿制下这个清单只能由界面给：AI 的答案不落库，所以"配置里没落位"这件事
+      //    在第二次点击时依然成立 —— 只按后端那道闸门判，就会把同一批行再烧一次额度。
+      const empty = (catalog.models || [])
+        .map((m, i) => ({ m, i }))
+        .filter(({ i }) => !curTarget(i))
+        .map(({ m }) => String(m.id));
+      aiBusy = true;
+      aiBtn.disabled = true;
+      aiBtn.textContent = "AI 匹配中…";
+      const slot = () => body.querySelector("#ac-map-err");
+      if (slot()) slot().innerHTML = "";
+      if (!empty.length) {
+        setMode();
+        syncFoot();
+        toast(`没有待匹配的行：${(catalog.models || []).length} 行要么已配置过、要么这一屏已经填着目标`
+              + "（要重挑哪一行，先把那一行改回「暂不设置」）", "ok");
+        return;
+      }
       try {
-        const r = await POST("/admin/api/accounts/mappings",
-          { product: p.id, items: [{ model: m.id, target, enabled: next }] });
-        mapOn.set(i, next);
-        m.map_enabled = next;
-        m.mapped_to = m.mapped_to && m.mapped_to.length ? m.mapped_to : [target];
-        repaintState(i);
-        const n = next ? (r.turned_on ?? 0) : (r.turned_off ?? 0);
-        toast(next ? `已进池（${n} 个账号的映射）`
-                   : `已移出资源池（${n} 个账号的映射，映射关系保留）`, "ok");
+        const r = await POST("/admin/api/accounts/auto-map", { product: p.id, models: empty });
+        const sug = r.suggested || [];
+        /* 🔴 只回填、不写盘：`written` 必须恒 false（后端这条腿从此没有写面字段），
+           界面把"还没入库"这件事说在明面上 —— 否则用户带着"AI 已经帮我配好了"离开，
+           而盘上一条都没写，正是这一整轮要消灭的那个形状。 */
+        let filled = 0;
+        sug.forEach((s) => {
+          const i = (catalog.models || []).findIndex((m) => String(m.id) === String(s.model));
+          if (i < 0) return;
+          const sel = selOf(i);
+          if (!sel || !options.some((o) => o.value === s.target)) return;   // 名单外的名字不填（后端已丢，双保险）
+          stage(i, { target: s.target, enabled: persistedEnabled(i) === null ? true : curEnabled(i) });
+          filled += 1;
+        });
+        const engine = r.via === "model"
+          ? `由模型分析（${r.analyzed_by}）判定 ${r.matched_model ?? 0} 条`
+          : `由正则匹配判定 ${r.matched_regex ?? 0} 条`;
+        toast(`AI 匹配完成：${engine}`
+              + (r.via === "model" && r.matched_regex ? `、正则补齐 ${r.matched_regex} 条` : "")
+              + `；已回填 ${filled} 行到下拉里 —— 🔴 还没入库，点「保存」才写入配置`
+              + (r.kept ? `；${r.kept} 行（已配置或已填值）本轮没送去分析` : ""), "ok");
+        if (r.reason) toast(r.reason, "warn");
+        if (r.unmatched) toast(`${r.unmatched} 行模型与正则都没给出可信目标 ⇒ 这些行保持「暂不设置」`, "warn");
+        if (r.written !== false) {
+          // 后端要是哪天偷偷开始写盘，这里当场说一句 —— 草稿制的契约由界面这一眼也盯一遍
+          toast(`⚠️ 后端回执写着 written=${JSON.stringify(r.written)}，与"AI 只出建议"的契约不符`, "err");
+        }
       } catch (e) {
-        const slot = body.querySelector("#ac-map-err");
-        if (slot) slot.innerHTML = `
-          <div class="alert alert-err" style="margin-bottom:12px"><div class="alert-title">开关写入失败</div>
-            <div>${esc(e.message)}</div></div>`;
-        mountSwitch(i, mapOn.get(i));                  // 回到落库前的真实态，不假装成功
+        const el = body.querySelector("#ac-map-err");
+        if (el) el.innerHTML = `
+          <div class="alert alert-err" style="margin-bottom:12px"><div class="alert-title">AI 匹配失败</div>
+            <div>${esc(e.message)}（下拉里的内容一个字没动）</div></div>`;
+      }
+      aiBusy = false;
+      setMode();                        // 回真实态：不留「AI 匹配中…」的假忙碌
+      syncFoot();
+    };
+    aiBtn.onclick = () => runAiMatch();
+
+    /* ---------- 唯一的写入口：「保存」 ----------
+     * 两条腿一次点完：① 有目标且改过的行 → 一次 `mappings`（新行缺省进池、改挂 = 条目整条搬）；
+     * ② 改回「暂不设置」而盘上有位的行 → 逐行 `product-models/remove`。
+     * 🔴 成功才关窗：任何一条被拒 / 任何一行解除失败 ⇒ 不关窗、就地列原话、草稿保留（用户改的
+     *    东西绝不能因为一次失败的提交而丢）。回显按后端权威字段 `product_models`，不自己算。 */
+    const saveAll = async () => {
+      const rows = dirtyRows();
+      if (!rows.length) { dlg.close(); return; }
+      saving = true;
+      syncFoot();
+      const items = [];
+      const unbinds = [];
+      rows.forEach((i) => {
+        const m = modelOf(i);
+        const t = curTarget(i);
+        if (t) items.push({ model: String(m.id), target: t, enabled: curEnabled(i) });
+        else if (mapHasBit(m)) unbinds.push(i);
+      });
+      const slot = () => body.querySelector("#ac-map-err");
+      if (slot()) slot().innerHTML = "";
+      const lines = [];
+      try {
+        if (items.length) {
+          const r = await POST("/admin/api/accounts/mappings", { product: p.id, items });
+          const bits = new Map((r.product_models || []).map((b) => [b && b.model, b]));
+          const rejected = (r.skipped || []).filter((x) => !bits.has(x.model));
+          (r.product_models || []).forEach((b) => {
+            const i = (catalog.models || []).findIndex((m) => String(m.id) === String(b.model));
+            if (i < 0) return;
+            const m = modelOf(i);
+            m.mapped_to = [b.target];
+            m.map_enabled = b.enabled !== false;
+            draft.delete(i);                       // 盘上现在就是这一格画的样子 ⇒ 草稿交还给真相
+            repaintState(i);
+            mountSwitch(i);
+          });
+          rejected.forEach((x) => {
+            const i = (catalog.models || []).findIndex((m) => String(m.id) === String(x.model));
+            if (i >= 0) {                          // 被拒的那行**退回盘上的真值**（不留"看着已改"的假态）
+              draft.delete(i);
+              const sel = selOf(i);
+              if (sel) sel.value = persistedTarget(i);
+              repaintState(i);
+              mountSwitch(i);
+            }
+          });
+          if (rejected.length) {
+            lines.push(...rejected.map((x) => `「${x.model}」这条未生效：${x.reason || "后端没有说明原因"}`));
+          }
+          const partial = (r.skipped || []).filter((x) => bits.has(x.model));
+          if (partial.length) {
+            lines.push(`另有 ${partial.length} 个号本轮没挂上：`
+                       + String(partial[0].reason || "").split("——")[0]);
+          }
+          if ((r.emptied_models || []).length) {
+            lines.push(`系统模型 ${r.emptied_models.join("、")} 已无任何映射，将从 /v1/models 隐藏`);
+          }
+          if (r.reload === false) {
+            lines.push(`配置已写入，但运行态未换代：${(r.reload_errors || []).join("；")}`);
+          }
+          if (!rejected.length) {
+            toast(`已保存：${(r.product_models || []).length} 条映射入库`
+                  + `（新增 ${r.added ?? 0} · 改挂 ${r.moved ?? 0} · 已存在 ${r.already ?? 0}`
+                  + ` · 进池 ${r.turned_on ?? 0} · 出池 ${r.turned_off ?? 0}）`, "ok");
+          }
+        }
+        for (const i of unbinds) {
+          const m = modelOf(i);
+          try {
+            const r = await POST("/admin/api/accounts/product-models/remove",
+                                 { product: p.id, model: String(m.id) });
+            m.map_enabled = null; m.mapped_to = [];
+            draft.delete(i);
+            const sel = selOf(i);
+            if (sel) sel.value = "";
+            repaintState(i);
+            mountSwitch(i);
+            if ((r.emptied_models || []).length) {
+              lines.push(`系统模型 ${r.emptied_models.join("、")} 已无任何映射，将从 /v1/models 隐藏`);
+            }
+            if (r.reload === false) {
+              lines.push(`解除已写入，但运行态未换代：${(r.reload_errors || []).join("；")}`);
+            }
+          } catch (e) {
+            // 解除失败：这一行退回盘上的真值（位还在），并把原话留在错误槽里
+            draft.delete(i);
+            const sel = selOf(i);
+            if (sel) sel.value = persistedTarget(i);
+            repaintState(i);
+            mountSwitch(i);
+            lines.push(`「${m.name || m.id}」解除失败：${e.message}（这一行仍是原来的关联）`);
+          }
+        }
+        await repaintPanel(root);
+        if (lines.length) {
+          const el = slot();
+          if (el) el.innerHTML = `
+            <div class="alert alert-warn" style="margin-bottom:12px">
+              <div class="alert-title">没有全部生效（弹窗不关，改完再保存一次）</div>
+              ${lines.map((x) => `<div>· ${esc(String(x))}</div>`).join("")}</div>`;
+          toast("部分改动未生效，详见弹窗上方的说明", "warn");
+        } else {
+          detachGuard();
+          dlg.close();
+        }
+      } finally {
+        saving = false;
+        armed = false;
+        syncFoot();
+        body.querySelectorAll("[data-mapsw]").forEach((h) => mountSwitch(Number(h.dataset.mapsw)));
       }
     };
-    body.querySelectorAll("[data-mapsw]").forEach((holder) => mountSwitch(Number(holder.dataset.mapsw), mapOn.get(Number(holder.dataset.mapsw))));
+    saveBtn.onclick = () => saveAll();
   } catch (e) {
     body.innerHTML = `
       <div class="alert alert-err"><div class="alert-title">模型目录读取失败</div>
         <div>${esc(e.message)}</div></div>`;
     return;
   }
-  okBtn.onclick = async () => {
-    const models = catalog.models || [];
-    const items = [];
-    for (const select of body.querySelectorAll("select[data-idx]")) {
-      const target = String(select.value || "");
-      const i = Number(select.dataset.idx);
-      const m = models[i];
-      // 空值 = 跳过（用户显式没选）；开关态一并带上，否则"初始化映射"会把刚关掉的行悄悄拨回进池
-      if (m && target) items.push({ model: m.id, target, enabled: mapOn.get(i) !== false });
-    }
-    okBtn.disabled = true;
-    try {
-      const r = await POST("/admin/api/accounts/mappings", { product: p.id, items });
-      toast(`新增映射 ${r.added ?? 0} 条（已存在 ${r.already ?? 0} 条）`, "ok");
-      dlg.close();
-      await repaintPanel(root);
-    } catch (e) {
-      const slot = body.querySelector("#ac-map-err");
-      if (slot) slot.innerHTML = `
-        <div class="alert alert-err" style="margin-bottom:12px"><div class="alert-title">映射写入失败</div>
-          <div>${esc(e.message)}</div></div>`;
-      okBtn.disabled = !(catalog.accounts || []).length;
-    }
-  };
 }
 
 /** 弹窗体：来源行（服务端口径原样给出，含 fallback 的如实声明）+ 账号操作区 + 表头 + 逐模型一行。
- *  状态列只报事实：`mapped_to` 非空 = 已映射（目标名进 title 悬停可见），空 = 未映射（不猜）。
  *  🔴 2026-10-01 用户定版：**目录字段直接画进行内**（上下文/输出/推理/图片/工具——取不到不展示），
- *  原「模型目录」二级弹窗废除（弹窗套弹窗 = 用户明令禁止的交互，frontend-spec §7.11 红线）。 */
+ *  原「模型目录」二级弹窗废除（弹窗套弹窗 = 用户明令禁止的交互，frontend-spec §7.11 红线）。
+ *  🔴 2026-10-04 用户定版：**「状态」列删除**（「有关联映射配置不就是映射了吗，没关联就是没映射啊」）。
+ *     这一列本来同时承载三件事，删列不等于丢信息，而是把它们交还给各自真正的对象：
+ *       · 映射了什么 = 「网关模型映射」下拉的**当前值**（`pickTarget` 已改为先读已落库的 `mapped_to`）；
+ *       · 进不进池   = 那颗开关本身的位置；
+ *       · 没落库而正则有一条够格的建议 = 下拉下面那一行的「建议挂到 X · 采纳」（`mapFootHTML`）。 */
 function mapBodyHTML(cat, options, p) {
   const models = cat.models || [];
   const src = cat.source || {};
-  const grid = "display:grid;grid-template-columns:minmax(0,1.4fr) 60px 196px 104px 72px;gap:12px;align-items:center";
+  /* 列宽一次定死（红线：同一列表行几何必须统一）。2026-10-04 去掉状态列那一档宽度 ⇒ 省下的
+     全给模型名（它本就最长）。进池列 44px = 开关 40px + 4 的余量，不用更宽把开关推到列右缘。
+     配合 `.modal.wide.map-modal{width:880px}`。 */
+  const grid = "display:grid;grid-template-columns:minmax(0,1fr) 56px 208px 44px;gap:12px;align-items:center";
   const th = (t) => `<span style="font-size:12px;font-weight:700;color:var(--text-faint)">${t}</span>`;
+  /* 🔴 消耗声明必须在**按下之前**看得见（与「模型检测」同一纪律，2026-10-02 定版）：
+     初始化 = 真发一次出站请求。放在弹窗顶部而不是脚注，因为脚注在 483 行的表里根本滚不到。 */
+  /* 🔴 这颗钮常驻 ⇒ 消耗声明也**常驻**（每次点都可能真发一次出站），不再随"是否首次"隐去。
+     草稿制（2026-10-05 第四次裁定）改的是后半句：答案**只回填下拉、不写配置**，
+     而"还要不要再问模型"这件事由屏幕上还空着几行决定 —— 这两点都必须写在按下之前看得见的位置。 */
+  const initNote = `
+    <div class="alert alert-warn" style="margin-bottom:12px">
+      <div class="alert-title">「AI智能匹配」= 让网关替你把这些模型挂到网关模型上</div>
+      <div>将请网关内一条<b>当前可用</b>的模型（优先 flash / lite 档）逐条判断这份目录里
+        <b>当前显示为「暂不设置」的</b>模型该挂到哪个网关模型；答案<b>只回填进下面的下拉，
+        不写入配置</b> —— 填完要点右下角<b>「保存」</b>才入库。
+        <b>真实出站一次，会消耗那条资源/账号的额度</b>；网关内没有可用模型时自动降级为正则匹配
+        （不联网、零消耗）。🔴 <b>已配置过的行、以及这一屏已经填着目标的行都不再送去分析</b>
+        （要重挑哪一行，先把那一行改回「暂不设置」）；一屏都填满了这颗钮一次请求都不发。</div>
+    </div>`;
   const head = `
     <p class="form-hint" style="margin:0 0 12px">${esc(src.detail || "目录来源未说明")}</p>
     ${(cat.accounts || []).length ? "" : `
     <div class="alert alert-warn" style="margin-bottom:12px">
       该产品还没有账号：目录可查看，但映射要等「接入账号」后才有资源可挂。</div>`}
-    <div id="ac-map-err"></div>`;
+    ${initNote}<div id="ac-map-err"></div>`;
   if (!models.length) {
     return `${head}<p class="form-hint" style="margin:0">目录为空：未读到该产品的模型条目。</p>`;
   }
   const rows = models.map((m, i) => {
-    const mapped = (m.mapped_to || []).filter(Boolean);
-    // 状态三态：未映射 / 已映射·进池 / 已映射·已关（`map_enabled` 由后端与调度读同一个位）
-    const on = m.map_enabled !== false;
-    const state = !mapped.length
-      ? `<span class="badge b-gray">未映射</span>`
-      : on
-        ? `<span class="badge b-ok" title="${esc("已映射到：" + mapped.join("、"))}">已映射 · 进池</span>`
-        : `<span class="badge b-gray" title="${esc("已映射到：" + mapped.join("、") + "；当前关闭：不进资源池、不出现在 /v1/models")}">已映射 · 已关</span>`;
-    const sw = mapped.length
-      ? `<span data-mapsw="${i}" title="${esc(on ? "开启：该映射进资源池，可对外调用" : "关闭：该映射不进资源池，不可对外调用（映射关系保留，随时可拨回）")}"></span>`
-      : `<span style="color:var(--text-faint);font-size:12px">—</span>`;
+    const cur = pickTarget(m, options);          // 下拉当前显示的那个目标（已落库优先）
+    const sw = `<span data-mapsw="${i}"></span>`;
     return `
       <div class="list-row" style="${grid}">
         <span style="min-width:0">
@@ -1264,20 +1663,60 @@ function mapBodyHTML(cat, options, p) {
             <span class="mono">${esc(m.id)}</span>${modelFactsHTML(m)}</span>
         </span>
         <span>${ruleHTML(m)}</span>
-        <select class="in" data-idx="${i}" style="width:100%" aria-label="映射目标 ${esc(m.name || m.id)}"
-          >${optionHTML(options, pickTarget(m, options))}</select>
-        <span>${state}</span>
-        <span style="display:flex;justify-content:flex-end">${sw}</span>
+        <span style="min-width:0">
+          <select class="in" data-idx="${i}" style="width:100%" aria-label="网关模型映射 ${esc(m.name || m.id)}"
+            >${optionHTML(options, cur)}</select>
+          <span data-mapfoot="${i}" style="display:block;margin-top:6px">${mapFootHTML(m, i,
+            { target: cur, dirty: false, hadBit: mapHasBit(m), options })}</span>
+        </span>
+        <span class="map-sw">${sw}</span>
       </div>`;
   }).join("");
   return `${head}
     <div class="list-card">
-      <div class="list-row" style="${grid}">${th("模型")}${th("规则")}${th("目标网关模型")}${th("状态")}${th("进池")}</div>
+      <div class="list-row" style="${grid}">${th("模型")}${th("规则")}${th("网关模型映射")}${th("进池")}</div>
       ${rows}
     </div>
     <p class="form-hint" style="margin-top:12px">行内辅助信息 = 目录字段（上下文 / 输出 / 推理 / 图片 / 工具——
-      取不到的不展示，不编造）；目录来源见顶部。<b>「进池」开关</b>：开 = 该映射参与资源池并可被对外调用；
-      关 = 不进资源池、不出现在 /v1/models（映射关系与账号凭据都保留，随时可拨回）。</p>`;
+      取不到的不展示，不编造）；目录来源见顶部。🔴 <b>这一屏的改动要点「保存」才写入配置</b>：
+      <b>网关模型映射</b> = 这一行要挂的网关模型（选一个 = 填进草稿；改另一个名字 = 改挂，
+      保存时条目整条跟着搬过去（旧落点不留残条目）；改回「暂不设置」= 保存时解除，
+      产品位与该产品全部账号的对应条目一起撤，映射行本身不删）。
+      <b>进池开关</b>：每个模型一行、行行都有；一颗开关管该产品<b>全部账号</b>的同名映射
+      （落点是配置里的产品位，不是逐号各刷一遍）。开 = 参与资源池、可被对外调用；
+      关 = 不进资源池、不出现在 /v1/models（映射关系与账号凭据都保留，随时可拨回）。
+      新挂上的目标<b>缺省就是进池</b>；还没有目标的行开关是灰的，选好目标后立刻可用。
+      「取消」或右上角 × 会放弃所有未保存的改动（先问一次，盘上一点不会动）。</p>`;
+}
+
+/** 「这一行的映射在盘上有位」= 曾关联过（2026-10-04 起这也是"改回「暂不设置」要不要发解除"的判据）。
+ *  读的是后端那个**三态位**（`_map_enabled`：`null` = 从没写入配置），与开关、进池、规格同源。 */
+const mapHasBit = (m) => m.map_enabled !== null && m.map_enabled !== undefined;
+
+/** 下拉下面那一行 = 这一行「这一格现在说的是草稿还是配置」的**唯一**常驻出口。
+ *  🔴 草稿制（2026-10-05 第四次裁定）下这三条都是真话，而上一轮它们被删过一次 ——
+ *    删它们不是因为话说错，是因为那一步（「保存」）不存在了：当时一改即落库，
+ *    再写「未落库 · 点保存才写入」就是假陈述。现在「保存」回来了、且是**唯一**写入口，
+ *    于是"改了还没入库"这件事重新需要一个常驻的地方说清（否则用户带着"AI 已经配好了"离开）。
+ *   · 有草稿改动且改回「暂不设置」而盘上有位 ⇒ 「保存后解除关联」；
+ *   · 有草稿改动（挂了/改了目标或拨了开关）⇒ 「已改动 · 点「保存」才入库」；
+ *   · 没改动、盘上没位、正则有一条够格的建议 ⇒ 「建议挂到 X · 采纳」（点了才进草稿，
+ *     不点不写、点了也还没写 —— 一句话里两个不许混）；
+ *   · 其余 ⇒ 空着。下拉的值 + 开关的位置已经把"挂到哪、进不进池"说完了，
+ *     「进不进池」绝不在这里再说一遍（说两遍就会有两套真相）。 */
+function mapFootHTML(m, i, st) {
+  const note = (t) => `<span style="font-size:12px;color:var(--text-muted)">${t}</span>`;
+  const s = (st && st.target) || "";
+  if (st && st.dirty) {
+    if (!s && st.hadBit) return note("保存后解除关联（现在还没写入配置）");
+    return note(s ? "已改动 · 点「保存」才入库" : "已清空 · 点「保存」才入库");
+  }
+  if (mapHasBit(m)) return "";
+  const sug = suggestionOf(m, (st && st.options) || []);
+  if (!sug) return "";
+  return note(`建议挂到 <b class="mono">${esc(sug)}</b>（正则匹配）`
+    + ` <button class="btn btn-sm" data-adopt="${esc(sug)}" data-for="${i}">采纳</button>`
+    + "（只填进下拉，还要点「保存」）");
 }
 
 /** 目录字段辅助段（拼在模型 ID 后；只列上游明确给出的事实，None/缺省一律不展示）。 */
@@ -1300,28 +1739,77 @@ function ruleHTML(m) {
   return `<span style="color:var(--text-faint)">—</span>`;
 }
 
-/** 目标下拉选项：跳过 → 网关现有模型（可直接挂资源）→ 内置目录里**尚未接入**的（`新建：`，服务端建档）。
- *  同名按 value 去重，现有模型优先（同一目标不会出现两个选项）。 */
+/** 目标下拉选项 = **一张平铺的网关模型清单**（2026-10-03 用户实拍「网关模型不用区分新建的还是之前的，
+ *  输出的数据都是网关模型」⇒ 旧版给「内置目录里尚未接入」的名字加 `新建：` 前缀、并按"现有 / 新建"分两段，作废）。
+ *  排序（同条指示「按照模型名称排序。按照能力等级降序排列」）：
+ *    ① **名称族**自然序 —— 族 = 名单里真实存在的前缀关系（`glm-5.3-flash` 以 `glm-5.3-` 开头 ⇒ 归进 `glm-5.3`；
+ *       不引入任何"档位词表"，谁是谁的前缀由数据自己说）；
+ *    ② 同族内按**能力等级降序** —— 分数只取内置目录已有字段，逐级比较：
+ *       上下文 → 最大输出 → 推理档位数 → 深度推理 → 图片/视频/音频输入 → 工具调用；
+ *    ③ 目录里没有这个模型 = **无据可判** ⇒ 排同族最后（不编一个分数出来）；分数相同再按名称自然序。
+ *  同名按 value 去重（现有模型优先，同一目标不会出现两个选项）。
+ *  🔴 真机门按 `value` 比对选中项（`verify_accounts_ui_live.py:2019` 就是被 label 前缀坑过一次才改成按 value），
+ *     所以去掉前缀不影响判据；但**别再把语义写进 label**。 */
 function targetOptions(cfgModels, enumEntries) {
-  const opts = [{ value: "", label: "跳过" }];
-  const seen = new Set([""]);
-  for (const m of cfgModels) {
-    const n = m && m.name;
-    if (n && !seen.has(n)) { seen.add(n); opts.push({ value: n, label: n }); }
-  }
+  const names = [];
+  const seen = new Set();
+  const add = (n) => { if (n && !seen.has(n)) { seen.add(n); names.push(n); } };
+  for (const m of cfgModels) add(m && m.name);
+  const spec = new Map();
   for (const e of enumEntries) {
     const n = e && e.name;
-    if (n && !seen.has(n)) { seen.add(n); opts.push({ value: n, label: `新建：${n}` }); }
+    if (!n) continue;
+    add(n);
+    spec.set(n, [Number(e.context_window) || 0, Number(e.max_output) || 0,
+      (e.effort_levels || []).length, e.reasoning ? 1 : 0, e.image_input ? 1 : 0,
+      e.video_input ? 1 : 0, e.audio_input ? 1 : 0, e.tool_call ? 1 : 0]);
   }
-  return opts;
+  const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+  const nat = (a, b) => collator.compare(a, b);
+  const familyOf = (n) => {
+    let root = n;
+    for (const c of names) {
+      if (c !== n && c.length < root.length && n.startsWith(c + "-")) root = c;
+    }
+    return root;
+  };
+  const capDesc = (a, b) => {
+    const x = spec.get(a), y = spec.get(b);
+    if (!x && !y) return 0;
+    if (!x) return 1;                       // 无据可判的排最后
+    if (!y) return -1;
+    for (let i = 0; i < x.length; i += 1) { if (x[i] !== y[i]) return y[i] - x[i]; }
+    return 0;
+  };
+  const fam = new Map(names.map((n) => [n, familyOf(n)]));
+  const sorted = names.slice().sort((a, b) => nat(fam.get(a), fam.get(b)) || capDesc(a, b) || nat(a, b));
+  return [{ value: "", label: "暂不设置" },
+    ...sorted.map((n) => ({ value: n, label: n }))];
 }
 
-/** 预选：`suggest.confidence >= 0.7` 且该目标**真在下拉里** → 选中；否则「跳过」。
- *  🔴 不在下拉（= 网关没有这个模型）时不得硬塞一个不存在的 value —— 原生 select 会
- *  找不到匹配项而显示空白，看着像已选、提交时却什么也没选。 */
+/** 下拉**初始**显示哪一个目标 = **配置里的事实，一个字的建议都不掺**。
+ *  草稿制（2026-10-05 第四次裁定）之后"这一格现在显示什么"分两层：初始值由本函数给（盘上挂着谁），
+ *  之后由 `draft` 覆盖（用户/AI 改了什么）—— 两者都不是"我建议挂哪"，建议永远只住行内那一行小字。
+ *  ① `mapped_to` = 配置里真实挂上的网关模型名（后端 `_mapped_to`：条目优先，条目为空而产品位还在时
+ *     回落到位上那个 `system_model`），且它必须真在下拉清单里 —— 原生 select 塞不进清单外的 value
+ *     （会显示成空白，看着像已选、提交时什么也没选）；
+ *  ② 没落库 = 「暂不设置」（空）。
+ *  🔴 旧写法只读建议、从不读 `mapped_to` ⇒ 一条**已挂 hy3** 的行只要建议低于阈值（或建议指向别的名字），
+ *     下拉就显示「暂不设置」，把"有映射"读成"没映射"（2026-10-04 那一刀修的是这半边）。
+ *  🔴 而 2026-10-04 补上的那半腿（没落库就回落成正则建议）是**反向的同一个假态**：:8300 实盘
+ *     workbuddy 9 / trae 8 / raccoon 4 / loomy 3 / zcode 2 = 26 行下拉里挂着一个从没写进配置的网关模型名，
+ *     配一句小字「未落库」，用户据此以为"已关联并进池"，而资源池当然一行都不显示。
+ *     建议不再进下拉，改由行内**一键采纳**给（`mapFootHTML`）—— 打开弹窗不写任何东西，点一下才算。 */
 function pickTarget(m, options) {
-  const s = m.suggest;
-  const name = s && typeof s.confidence === "number" && s.confidence >= 0.7 ? String(s.name || "") : "";
+  const inList = (n) => !!n && options.some((o) => o.value === n);
+  return (m.mapped_to || []).find(inList) || "";
+}
+
+/** 正则建议（`_enum_suggest` 的三级匹配，置信 ≥0.7 才敢拿出来），且只服务"一键采纳"这一件事。 */
+function suggestionOf(m, options) {
+  const s = (m && m.suggest) || null;
+  const name = s && typeof s.confidence === "number" && s.confidence >= 0.7
+    ? String(s.name || "") : "";
   return name && options.some((o) => o.value === name) ? name : "";
 }
 
@@ -1332,7 +1820,6 @@ const optionHTML = (options, cur) => options.map((o) =>
  *  `payload.product = null` = 全部支持签到的产品（谁参与由后端按能力位判，前端不筛）。 */
 async function batchClaim(btn, payload) {
   if (!btn || btn.disabled) return;
-  clearBulkReceipt();            // 与另两条批量腿同一条纪律：新批次在飞时不留上一批结论
   const label = btn.innerHTML;
   btn.disabled = true;
   btn.textContent = "执行中…";
@@ -1353,7 +1840,6 @@ async function batchClaim(btn, payload) {
  *  回执只说"动了谁"：续期 / 失败 / 失效时间未知（不猜、不续）三类分开列。 */
 async function batchRenew(btn, p) {
   if (!btn || btn.disabled || !p) return;
-  clearBulkReceipt();
   const label = btn.innerHTML;
   btn.disabled = true;
   btn.textContent = "执行中…";
@@ -1372,58 +1858,59 @@ async function batchRenew(btn, p) {
 function showRenewResult(r) {
   const SKIP_TEXT = { "no-expiry": "未续（失效时间未知）", cooldown: "冷却中（30 分钟内已续过）",
     terminal: "需重新登录（上游判不可续期）" };
-  const rows = (r.results || []).map((x) => `
-    <div class="list-row" style="display:flex;gap:8px;align-items:center;min-height:40px">
-      <b class="mono" style="flex:1;min-width:0">${esc(x.account)}</b>
-      ${x.skipped ? `<span class="badge b-gray">${esc(SKIP_TEXT[x.skipped] || "未续")}</span>`
-        : x.ok ? `<span class="badge b-ok">已续期</span>` : `<span class="badge b-err">失败</span>`}
-      <span style="color:var(--text-muted);font-size:12px">${esc(x.detail || "")}</span>
-    </div>`).join("");
+  const rows = (r.results || []).map((x) => receiptRow(
+    x.account,
+    x.skipped ? (SKIP_TEXT[x.skipped] || "未续") : x.ok ? "已续期" : "失败",
+    x.skipped ? "is-warn" : x.ok ? "is-ok" : "is-err",
+    x.detail || "")).join("");
   const sk = r.skipped || {};
   const bits = [`续期 ${r.renewed} 个`, `失败 ${r.failed} 个`];
   if (sk["no-expiry"]) bits.push(`失效时间未知 ${sk["no-expiry"]} 个`);
   if (sk.cooldown) bits.push(`冷却中 ${sk.cooldown} 个`);
   if (sk.terminal) bits.push(`需重新登录 ${sk.terminal} 个`);
-  const html = `
-    <p class="form-hint" style="margin:0 0 12px">窗口 ${esc(String(r.within_hours))} 小时内到期的账号：
-      ${esc(bits.join(" · "))}。</p>
-    ${rows || `<p class="form-hint" style="margin:0">该窗口内没有到期的账号（未发起任何续期）。</p>`}`;
-  // 🔴 走 `showBulkReceipt` 这**一条**出口（不再自己 `modal()`）：批量腿的形状是
-  //    "页级按钮 → 长 await → 迟到回执"，无条件开弹窗在"等待期用户已开映射弹窗"的序列里
-  //    会叠出第二层遮罩 = 撞单层弹窗红线；文本同时进就地槽 ⇒ 重绘后仍看得见。
   const p = productOf(r.product);
-  showBulkReceipt(`批量续期结果 · ${p ? p.title : r.product}`, html);
+  showBulkReceipt(`批量续期 · ${p ? p.title : r.product}`, {
+    sum: `窗口 ${esc(String(r.within_hours))} 小时内到期的账号：${esc(bits.join(" · "))}。`,
+    note: "「冷却中」= 30 分钟内已续过（不重复打上游）；「失效时间未知」= 上游没给到期时刻，无法判断要不要续；"
+      + "「需重新登录」= 上游判不可续期。三者都**不是**失败。",
+    rows, empty: "该窗口内没有到期的账号（未发起任何续期）。",
+    tone: (r.failed ?? 0) > 0 ? "err" : "ok",
+  });
+  // 🔴 出口只有 `showBulkReceipt` 这一条（它走结果浮层，不是 modal）⇒ 批量腿"迟到回执叠第二层
+  //    遮罩"那条红线由构造消失，不再需要判遮罩分支。
 }
 
-/** 批量结果弹窗：摘要行 + 每参与账号一行（分类 + 明细）；**只有失败着红**（行级 claim 同口径）。 */
+/** 批量结果：摘要行 + 每参与账号一行（分类 + 明细）；**只有失败着红**（行级 claim 同口径）。 */
 function showClaimAllResult(r) {
   const p = r.product ? productOf(r.product) : null;
-  showBulkReceipt(`批量签到结果 · ${p ? p.title : "全部支持签到的产品"}`, claimReportHTML(r));
+  const rep = r.report || {};
+  // 🔴 `no_participants` 是后端给的**权威标记**（N=0 不得报成功，`test_v2_ops.py` 钉）：
+  //    它成立时即使 `participants` 非空也说"没有可参与的账号"，不自己数中文串。
+  const none = rep.no_participants || !(r.participants || []).length;
+  showBulkReceipt(`批量签到 · ${p ? p.title : "全部支持签到的产品"}`, {
+    sum: none ? "" : claimReportSum(r),
+    note: "「已领」= 上游说这个号今天已经领过；「未参与」= 停用或本轮没被执行到，**不是**失败。",
+    rows: none ? "" : claimReportRows(r),
+    empty: "没有可参与的账号（全部停用/无账号）。",
+    tone: ((rep.failed || []).length) > 0 ? "err" : "ok",
+  });
 }
 
-function claimReportHTML(r) {
+function claimReportSum(r) {
   const rep = r.report || {};
-  const details = r.details || {};
-  const people = r.participants || [];
-  const none = `<p class="form-hint" style="margin:0">没有可参与的账号（全部停用/无账号）。</p>`;
-  if (rep.no_participants || !people.length) return none;
-  const sum = `成功 ${(rep.success || []).length} · 已领 ${(rep.already_done || []).length}`
+  return `成功 ${(rep.success || []).length} · 已领 ${(rep.already_done || []).length}`
     + ` · 未参与 ${(rep.inactive || []).length} · 失败 ${(rep.failed || []).length}`;
-  const grid = "display:grid;grid-template-columns:minmax(0,1fr) 64px minmax(0,1.6fr);gap:12px;align-items:center";
-  return `
-    <p style="margin:0 0 12px;font-size:13px;font-weight:700;color:var(--text-soft)">${esc(sum)}</p>
-    <div class="list-card">${people.map((name) => {
-      const d = details[name] || {};
-      const cat = String(d.category || "");
-      const failed = cat === "failed";
-      return `
-      <div class="list-row" style="${grid}">
-        <span class="mono" style="font-weight:700">${esc(name)}</span>
-        <span style="font-size:12px;font-weight:700;color:${failed ? "var(--err)" : "var(--text-muted)"}"
-          >${esc(CLAIM_LABEL[cat] || cat || "—")}</span>
-        <span style="font-size:12px;font-weight:500;color:var(--text-faint)">${esc(d.detail || "—")}</span>
-      </div>`;
-    }).join("")}</div>`;
+}
+
+function claimReportRows(r) {
+  const details = r.details || {};
+  return (r.participants || []).map((name) => {
+    const d = details[name] || {};
+    const cat = String(d.category || "");
+    return receiptRow(name, CLAIM_LABEL[cat] || cat || "—",
+      cat === "failed" ? "is-err" : cat === "success" ? "is-ok" : "",
+      d.detail || "");
+  }).join("");
 }
 
 /** 批量动作后的重绘（服务端为准）：重取视图 → rail + 面板。

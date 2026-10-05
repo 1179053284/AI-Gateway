@@ -337,8 +337,9 @@ def _build_model(model_id: str, fallback, entry: dict | None, free_set: set[str]
     return ModelInfo(
         id=model_id,
         name=display_name(base_name, is_free),
-        # vendor：本网关口径是**厂商展示名**（`enums/matcher.py:27` 的 `vendor` 语义）。
-        # 远端只给 id 的命名空间前缀（`deepseek/…`）与兜底表都不含厂商展示名，
+        # vendor：口径 = **厂商（模型生产公司）展示名** —— `ModelInfo` 逐字段镜像内置目录
+        # `EnumEntry`（`accounts/types.py:201`），而 `enums/matcher.py:27` 的 `vendor` 就是厂商。
+        # 远端只给 id 的命名空间前缀（`deepseek/…`）与兜底表都不带可核对的厂商展示名，
         # 无法可靠映射 → **留空（未归类），不编造**。
         vendor="",
         context_window=fallback.context_window if fallback is not None else None,

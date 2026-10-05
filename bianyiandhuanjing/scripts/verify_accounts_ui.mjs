@@ -56,10 +56,10 @@
  *     （探活/续期/签到/删除）与模型目录弹窗**不在本门面内**（它们要 POST 桩与真实
  *     落库语义，归 pytest / 真机断言）。
  *   · 🔴 2026-10-02（方案 §8.2 V10'-④ / QA N-7）：V10' 的「总额一致性」需要**页面自己的**
- *     缩写函数 `fmtQuotaNumber` 来算期望串 —— 门内重写第二份 = 判据自证（两份实现一起错就永远绿）。
+ *     缩写函数 `fmtQuotaNum` 来算期望串 —— 门内重写第二份 = 判据自证（两份实现一起错就永远绿）。
  *     实现姿势 = `DRIVER` 多收一份 probe（每号 `[Σactive remaining, unit]`，由 `buildRuns` 从
  *     fixture 算好送进 realm），realm 调页面函数算出缩写串回传 `qfmt`；页面若删掉那个函数，
- *     V10' 直接报「realm 取不到 fmtQuotaNumber」而不是悄悄换算法。此项属**门改动**须入台账。
+ *     V10' 直接报「realm 取不到 fmtQuotaNum」而不是悄悄换算法。此项属**门改动**须入台账。
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -362,17 +362,17 @@ globalThis.__drive = async (payloadJson) => {
     errs.push("renderAccounts 抛错 " + (e && e.name) + ": " + String(e && e.message).slice(0, 200));
   }
   stages.push({ kind: "page", tree: __tree(root) });
-  /* 🔴 V10'-④：额度总额的**缩写串**必须由**页面自己的** fmtQuotaNumber 算（realm 内直调），
+  /* 🔴 V10'-④：额度总额的**缩写串**必须由**页面自己的** fmtQuotaNum 算（realm 内直调），
      门内不得重写第二份缩写算法（两份一起错就永远绿）。probe 是门外从 fixture 算好的
      [Σactive remaining, unit] 对，回传一一对齐的字符串数组；页面没有那个函数 → hasFmt=false，
      V10' 报"取不到页面缩写函数"而不是换算法。（本段在本门源码里，注释不得用反引号。） */
   let qfmt = null;
   let hasFmt = false;
   try {
-    hasFmt = typeof fmtQuotaNumber === "function";
-    if (hasFmt) qfmt = (P.probes || []).map((x) => fmtQuotaNumber(x.sum, x.unit));
+    hasFmt = typeof fmtQuotaNum === "function";
+    if (hasFmt) qfmt = (P.probes || []).map((x) => fmtQuotaNum(x.sum, x.unit));
   } catch (e) {
-    errs.push("realm 调页面 fmtQuotaNumber 抛错 " + (e && e.name) + ": " + String(e && e.message).slice(0, 160));
+    errs.push("realm 调页面 fmtQuotaNum 抛错 " + (e && e.name) + ": " + String(e && e.message).slice(0, 160));
   }
   /* 向导段：点页面唯一的接入入口 → 开始登录 → 有短信备选形态就切过去（V8 的「已取消」面在这里） */
   const mroot = __els["modal-root"];
@@ -525,7 +525,7 @@ const quotaCellOf = (tbl, tdRow) => {
  *    「查于」+ 非数字通配 的旧正则 —— 旧正则会把时间戳旁边**别的数字**一起剥掉（V10'-① 去自我豁免）；
  *  · `tipOf`：递归收 tooltip（title 属性）文本 —— 方案 §4-7「量纲保留（**可见或 tooltip**）」
  *    要求同时读两处（旧子句只读 visibleText ⇒ 永远读不到 tooltip，评审 X-R5-2 的误红根因）；
- *  · 缩写串**不在门内算**：由 realm 调页面 `fmtQuotaNumber` 回传（`r.qfmt`），见 V10'-④。 */
+ *  · 缩写串**不在门内算**：由 realm 调页面 `fmtQuotaNum` 回传（`r.qfmt`），见 V10'-④。 */
 const cellTextExcept = (n, skipClass) => {
   if (has(n, skipClass)) return "";
   let t = n.x || "";
@@ -849,8 +849,10 @@ async function runChecks() {
     dotInSwitch === 0 && dotOnly.length === 0,
     `[role=switch] 内 .dot=${dotInSwitch}（必须 0）; 圆点为唯一语义载荷的按钮=${dotOnly.length}${dotOnly.length ? `（${dotOnly.slice(0, 2).join(" / ")}）` : ""}`);
 
-  /* ---------- V6 · 表头逐字（2026-10-01 改版：展开列已废，4 列固定列集） ---------- */
-  const HEAD_EXACT = ["账号", "状态", "额度", "操作"];
+  /* ---------- V6 · 表头逐字（2026-10-01 改版：展开列已废，4 列固定列集） ----------
+   * 🔴 2026-10-03 用户指示「状态列和额度列交换下位置」⇒ 列序前进为 账号/额度/状态/操作。
+   *    这是**随设计推进**（列集仍是这四列、逐字仍钉），不是放宽判据。 */
+  const HEAD_EXACT = ["账号", "额度", "状态", "操作"];
   const headBad = [];
   for (const r of runs) {
     if (!r.selected.accounts.length) continue;
@@ -864,7 +866,7 @@ async function runChecks() {
     }
     if (tbl.ths.some((t) => t.exp)) headBad.push(`${r.fixture}/${r.selected.id}: 残留 .exp 展开指示列（2026-10-01 已废除展开行）`);
   }
-  check("V6", "⑥ 表头逐字 = 账号 / 状态 / 额度 / 操作（4 列，无展开指示列），且无「参与运营」「最近结果」列",
+  check("V6", "⑥ 表头逐字 = 账号 / 额度 / 状态 / 操作（4 列，无展开指示列；2026-10-03 额度与状态交换），且无「参与运营」「最近结果」列",
     headBad.length === 0, () => headBad.length ? `${headBad.length} 处：${[...new Set(headBad)].slice(0, 3).join(" | ")}` : "列集逐字相符");
 
   /* ---------- V7' · 额度**五档**词表 + `state/reason → 文案` 映射断言（方案 §8.2 ②③） ----------
@@ -961,67 +963,122 @@ async function runChecks() {
       const q = quotaCellOf(tbl, row.k.filter((c) => c.t === "td"));
       if (q.err) { structBad.push(`${r.fixture}/${r.selected.id}/${a.name}: ${q.err}`); continue; }
       const got = visibleText(q.cell);
-      const main = cellTextExcept(q.cell, "qchk");          // ① 结构剥离「查于 …」那一行
-      const tipX = tipOf(q.cell);                            // 量纲允许只出现在 tooltip
+      const tipX = tipOf(q.cell);
       const expiredN = items.filter((it) => it && it.active === false).length;
       const problems = [];
-      if (got.indexOf("查于") < 0) problems.push("缺「查于」刷新时间");
-      if (rq.plan && got.indexOf(rq.plan) < 0) problems.push(`缺套餐徽章「${rq.plan}」`);
+      /* 🔴 2026-10-03 用户实拍重做（「乱对齐一些乱七八糟信息放不下还弄个展开折叠」+ 点名照
+         zcode-switch / ZCode-Panel / Jet Hub 做）⇒ 本判据**随设计前进**：
+         旧契约正向钉的四样（「查于」/ 套餐徽章 / 「展开 N 个包」/ `.qpacks-detail`）
+         现在全部改成**反向判据**（出现即红 = 不许退回旧版），并补上新的三行结构判据。
+         理由写在这里而不是删掉了事：下一轮看见"为什么禁徽章"不用再猜。 */
+      const collect = (n, c, acc) => {
+        const out = acc || [];
+        if (n && has(n, c)) out.push(n);
+        for (const k of (n && n.k) || []) collect(k, c, out);
+        return out;
+      };
+      if (!collect(q.cell, "qrow").length) problems.push("额度格缺主行 .qrow（结构：主行含逐组明细 / 占比条 / meta 行）");
+      // 🔴 `.qnum` 只钉在**上游给了可量化余量**的行上：`remaining` 全为 null 的行本来就没有数字，
+      //    要求它出 `.qnum` 等于逼页面编一个数（V13 禁的正是这种谎）——那一行的必需面是「用量未知」。
+      const gaveNum = items.filter((it) => it && it.active !== false)
+        .some((it) => typeof it.remaining === "number");
+      if (gaveNum && !collect(q.cell, "qnum").length) {
+        problems.push("给了可量化余量的行缺数值位 .qnum（剩余/总量，分子=剩余）");
+      }
+      if (!gaveNum && !/(用量未知|未知)/.test(got)) {
+        problems.push("上游一个可用数都没给的行必须写「用量未知」（不得凭空出数字，V13 同一把尺）");
+      }
+      if (collect(q.cell, "badge").length) problems.push("额度格内不得再放套餐徽章（同产品同值、零决策价值；2026-10-03 用户指令删）");
+      if (collect(q.cell, "qpacks-detail").length || collect(q.cell, "data-qpacks").length
+          || (q.cell.a && q.cell.a["data-qpacks"])) {
+        problems.push("额度格内不得有折叠明细块（三家参考实现都没有折叠；2026-10-03 用户指令删）");
+      }
+      if (/(展开|收起)/.test(got)) problems.push(`额度格可见面不得再出现「展开/收起」文案：「${cut(got, 48)}」`);
+      if (got.indexOf("查于") >= 0) problems.push("「查于 + 绝对时刻」已换成相对新鲜度（绝对时刻只进悬停），出现即回退旧版");
+      if (got.indexOf("重置于") >= 0) problems.push("「重置于」措辞已随 2026-10-03 改版作废（到期改由 meta 行「至 MM-DD HH:mm」承担）");
+      const metaN = collect(q.cell, "qmeta");
+      if (!metaN.length) problems.push("缺 meta 行（最早到期 · 相对新鲜度 · 失效计数）");
+      else if (!/(刚刚|\d+ 分钟前|\d+ 小时前|\d+ 天前|\d{2}-\d{2} \d{2}:\d{2})/.test(text(metaN[0]))) {
+        problems.push(`meta 行没有新鲜度表述（应为 刚刚/N 分钟前/N 小时前/N 天前 或退回的绝对短时刻）：「${cut(text(metaN[0]), 40)}」`);
+      }
       const unit0 = String((items[0] && items[0].unit) || "");
-      if (unit0 && !/(Token|积分)/i.test(`${got} ${tipX}`)) problems.push("缺量纲标签（Token/积分，可见或 tooltip）");
+      if (unit0 && !/(亿|万|Token|积分|\d)/i.test(`${got} ${tipX}`)) problems.push("缺量纲（亿/万/Token/积分，可见或 tooltip）");
       // ③ 只钉"给了量化余量却合计 0"的行；一个都没给的行归 V14b 管
       const hasNum = items.some((it) => typeof it.remaining === "number");
       const actX = items.filter((it) => it && it.active !== false);
       const sumAct = actX.reduce((s, it) => s + (typeof it.remaining === "number" ? it.remaining : 0), 0);
+      const sumTotX = actX.reduce((s, it) => s + (typeof it.total === "number" ? it.total : 0), 0);
+      // 占比条：有分母**必画**且宽度 = 剩余/总量；无分母**不得画**（条 = 占比声明，没分母就没资格声明）
+      const barI = collect(q.cell, "qbar").map((b) => collect(b, "qbar-fill")[0] || (b.k || [])[0])[0];
+      if (hasNum && sumTotX > 0 && !barI) {
+        problems.push("有总量分母却没画占比条（.qbar > i）——用户要靠这条读还剩几成");
+      } else if (!(hasNum && sumTotX > 0) && barI) {
+        problems.push("上游未给总量却画了占比条 = 编造占比（V13 同一把尺：没给数字 ≠ 数字是 0）");
+      }
+      if (barI && barI.a && /width:\s*([\d.]+)%/.test(String(barI.a.style || "")) && sumTotX > 0) {
+        const w = parseFloat(String(barI.a.style).match(/width:\s*([\d.]+)%/)[1]);
+        const want = Math.max(0, Math.min(100, sumAct / sumTotX * 100));
+        if (Math.abs(w - want) > 0.6) problems.push(`占比条宽度 ${w}% 与 Σ剩余/Σ总量 = ${want.toFixed(1)}% 不符`);
+      }
+      // 同名聚合后组数 ≤3 ⇒ 明细行必须逐组给量；>3 才允许 `+N 类`（不许虚报也不许静默吞组）
+      const gNames = [...new Set(actX.map((it) => String(it.name || "未命名包")))];
+      const chipN = collect(q.cell, "qchip");
+      if (gNames.length > 1 && !chipN.length) problems.push(`聚合后 ${gNames.length} 组却没有逐组明细行（多组必须逐组给量）`);
+      if (chipN.length) {
+        const plus = chipN.filter((c) => /\+\d+ 类/.test(text(c)));
+        if (gNames.length > 3 && plus.length !== 1) problems.push(`组数 ${gNames.length} > 3 却缺唯一「+N 类」收尾`);
+        if (gNames.length <= 3 && plus.length) problems.push(`组数只有 ${gNames.length} 却出现「+N 类」= 虚报还有没给的组`);
+        if (chipN.length - plus.length > 3) problems.push("明细行超过 3 组（ZCode-Panel 的 chip 上限就是 3 + N）");
+      }
+      // 🔴 2026-10-03 用户裁定「合计：900 积分」= **数值贴在标签后面**，不再右浮到列尾。
+      //    判据三腿：① 主行标签以「：」收尾（语法是"标签：数值"，不是"左标签…右浮数"）；
+      //    ② `.qnum` 直接住在 `.qrow` 里（旧版包了一层右浮的 `.qval` 壳 ⇒ 出现即红）；
+      //    ③ 主行里既有标签也有数值（缺一半就是没做）。
+      const row0 = collect(q.cell, "qrow")[0];
+      const nm = row0 ? collect(row0, "qname")[0] : null;
+      const numIn = row0 ? collect(row0, "qnum")[0] : null;
+      if (row0 && collect(row0, "qval").length) problems.push("主行又出现右浮的 .qval 壳（用户裁定：数值贴标签）");
+      if (nm && !/[：:]$/.test(text(nm).trim())) problems.push(`主行标签没有以「：」收尾：「${text(nm).slice(0, 24)}」`);
+      if (nm && !numIn) problems.push("主行里标签与数值不同排（缺 .qnum）");
       if (hasNum && sumAct <= 0) {
-        if (!/(已耗尽|无套餐)/.test(main)) {
-          problems.push("Σ余量=0 的行必须显式出「已耗尽」或「无套餐」（不得只印 0）");
-        } else if (unit0 && !/\d[\s,]*(Token|积分|\/token)/i.test(
-          `${cellTextExceptAll(q.cell, ["qchk", "qpacks-detail"])} ${tipX}`)) {
+        if (!/(已耗尽|无套餐|用量未知)/.test(got)) {
+          problems.push("Σ余量=0 的行必须显式出「已耗尽」/「无套餐」/「用量未知」（不得只印 0）");
+        } else if (unit0 && !/\d[\s,]*(亿|万|Token|积分|\/token)/i.test(`${got} ${tipX}`)) {
           // 🔴 本意是「Σ=0 的行不许把量纲弄丢」（评审 N-3），不是「量纲必须紧贴在档位词后面」。
           //    原写法 `(已耗尽|无套餐)\s*(Token|积分)` 把两件事混成一件，于是页面只能渲染成
           //    「已耗尽 Token」——状态词后面直接接单位，用户读作"已耗尽 个 Token？"（实盘 15:39 看着就别扭）。
-          //    现行页面把**数值与量纲放在一起**（`0 Token`）、档位词紧随其后。
-          //    ⚠️ 判据面必须剥掉折叠的逐包明细（`.qpacks-detail` 里恒写「合计剩余 N Token」），
-          //    否则"摘掉常驻量纲"的坏实现也会被判绿（实测：不剥时 23/0 全绿；剥后该变异必红）。
+          //    现行页面把**数值与量纲放在一起**（`0 积分` / `0 / 1亿`）、档位词紧随其后。
+          //    ⚠️ 2026-10-03 两处自纠：① 上一版重做时我把量纲 alternatives 写成了**可选组**
+          //       （`(亿|万|Token|积分)?`），于是"只要格子里有任何数字就绿"= 本条被我自己写空；
+          //       现改回必含量纲词。② 旧注释要求"剥掉 `.qpacks-detail` 再判"——折叠块已随
+          //       本轮改版删除，判据面就是整格可见文本 + 悬停，不再需要剥离。
           problems.push("Σ余量=0 的行量纲标注不得消失（常驻面须有『数字+量纲』，可见或 tooltip，评审 N-3）");
         }
       } else if (hasNum && sumAct > 0) {
         // ②④ 期望串来自 realm 里的页面函数，门内不重算缩写
         const want10 = r.qfmt[`${r.selected.id}/${a.name}`];
         if (!r.hasFmt) {
-          problems.push("realm 取不到页面缩写函数 fmtQuotaNumber（V10'-④：判据不得在门内重写第二份算法）");
+          problems.push("realm 取不到页面缩写函数 fmtQuotaNum（V10'-④：判据不得在门内重写第二份算法）");
         } else if (want10 === undefined) {
           problems.push(`realm 没回传本号的缩写串（probe 缺键 ${r.selected.id}/${a.name}）`);
-        } else if (!tokenRe(want10).test(main)) {
-          problems.push(`总额与 Σactive remaining 不符：期望完整 token「${want10}」，实得「${cut(main, 48)}」（禁 300⊂1300 子串侥幸）`);
+        } else if (!tokenRe(want10).test(got)) {
+          problems.push(`剩余与 Σactive remaining 不符：期望「${want10}」，实得「${cut(got, 48)}」（禁 300⊂1300 子串侥幸）`);
         }
       }
       if (expiredN > 0 && got.indexOf("已失效") < 0) problems.push(`有 ${expiredN} 个失效包却无「已失效」注记`);
-      // 排除与套餐同名的包：套餐徽章的 title（「套餐：X」）也含 X，拿它核对是假通过
-      const firstActive = items.find((it) => it && it.active !== false && it.name && it.name !== rq.plan);
-      /* 🔴 2026-10-02 用户指令推进（旧判据"逐包明细只许写在本格 title 上"随之作废）：
-         31 个包时 tooltip 既不可选中也不能复制，还被实现截断到 12 行 ⇒ 明细必须住在
-         **本格内的就地展开块**（`.qpacks-detail`）里并**全量**列出；tooltip 只留套餐名。
-         设计变了，钉旧设计的判据要带着理由前进，不许退回。 */
-      const detail = (r.pageNodes || []).filter((n) => has(n, "qpacks-detail")
-        && String((n.a && n.a["data-qpacks-for"]) || "") === a.name)[0];
-      const dtxt = detail ? text(detail) : "";
-      if (!detail) problems.push("本格无就地展开的逐包明细块（.qpacks-detail）");
-      else if (firstActive && dtxt.indexOf(firstActive.name) < 0) problems.push("展开块里没有逐包行");
-      if (got.indexOf("展开") < 0 || !/个包/.test(got)) problems.push("缺「展开 N 个包」入口（明细只能靠悬停 = 用户指令的原始缺陷）");
-      if (items.length > 12 && dtxt.indexOf(`共 ${items.length} 个包`) < 0) {
-        problems.push(`展开块必须全量并写明「共 ${items.length} 个包」（截断到 12 行会让用户以为只有 12 个）`);
-      }
+      /* 2026-10-02 那条「明细必须住在 .qpacks-detail 里并全量列出」的判据**整段作废**：
+         2026-10-03 用户否掉了折叠本身（三家参考都没有折叠），改由**同名聚合**保证全量可见
+         ——同名裂变包合成一组、每组一行，聚合后组数天然 ≤3，所以既没有"只住 tooltip"
+         也没有"截断到 12 行"这两个病。反向判据见上面（出现折叠块 / 「展开」文案即红）。 */
       if (problems.length) structBad.push(`${r.fixture}/${r.selected.id}/${a.name}: ${problems.join("；")}`);
     }
   }
   if (structRows < 5) {
     structBad.push(`结构化判别样本只剩 ${structRows} 行（V10' 没有对象 = 死判据；正常应 ≥5：buddy-main + 5 条 ix-* 结构化行）`);
   }
-  check("V10", "⑩' 结构化套餐余粮：查于 + 套餐徽章 + 量纲 + **总额=Σactive remaining（页面缩写函数算）** + 失效包注记 + 本格 tooltip 逐包明细",
+  check("V10", "⑩' 额度格结构（2026-10-03 三次改判收口）：主行 =「标签：数值」**同排左对齐**（多组时标签恒为「合计：」，数值永不右浮/永不裁字）+ 占比条自占一行 + 逐组明细行（≤3 + N 类）+ meta 行（至 MM-DD HH:mm · 相对新鲜度 · 失效计数）；剩余=Σactive（页面缩写函数算）、有分母必画条无分母必不画；反向钉零徽章零折叠**零右浮 .qval 壳**",
     structBad.length === 0 && structRows > 0,
-    () => structBad.length ? `${structBad.length} 处：${[...new Set(structBad)].slice(0, 3).join(" | ")}` : `结构化展示核对 ${structRows} 行（总额一致性用 realm fmtQuotaNumber）`);
+    () => structBad.length ? `${structBad.length} 处：${[...new Set(structBad)].slice(0, 3).join(" | ")}` : `结构化展示核对 ${structRows} 行（剩余一致性用 realm fmtQuotaNum；反向判据：徽章/折叠/查于/重置于 出现即红）`);
 
   /* ---------- V11 · 续期回行内 + 登录态倒计时（2026-10-01 用户裁决） ----------
    * ① 行内动作 = 中文文字按钮，`data-op="refresh"` 的**有无**必须与能力位 `refresh` 严格同相
@@ -1179,8 +1236,14 @@ async function runChecks() {
       if (got.indexOf("已耗尽") >= 0) {
         nullBad.push(`${r.fixture}/${r.selected.id}/${a.name}: 上游只给了桶、一个可用数都没给（remaining 全 null）却渲染「${got}」——「没给数字」≠「数字是 0」（§4-3 任一桶 None ⇒ 整号 None，禁止当 0）`);
       }
-      if (/\b0\s*(Token|积分)\b/.test(got)) {
-        nullBad.push(`${r.fixture}/${r.selected.id}/${a.name}: 无量化余量却印「0 余量」形态：${got}`);
+      /* 🔴 2026-10-03 随额度格重做前进：主行现在是 `剩余 / 总量`（如 `0 / 1亿`），
+         旧正则 `\b0\s*(Token|积分)\b` 只认「0 Token」这一种形态 ⇒ 摘掉护栏的坏实现照样绿
+         （变异自证实测到这条**纹丝不动**）。改成两条：正确档位词必须在 + 任何「0 接量纲或分母」都算撒谎。 */
+      if (!/(用量未知|未知)/.test(got)) {
+        nullBad.push(`${r.fixture}/${r.selected.id}/${a.name}: 上游一个可用数都没给，可见面却没有「用量未知」档：「${got}」（护栏被摘 = 把"没给数字"渲染成数字）`);
+      }
+      if (/\b0\s*(Token|积分|\/\s*[\d.]+[亿万]?)/.test(got)) {
+        nullBad.push(`${r.fixture}/${r.selected.id}/${a.name}: 无量化余量却印「0 余量」形态（含 0 / 总量 这种写法）：${got}`);
       }
     }
   }
@@ -1198,6 +1261,8 @@ async function runChecks() {
    *    两行都要在；摘掉映射时这两行必须**同时红**，否则映射表是假的）。 */
   const v15Bad = [];
   let resetRows = 0;
+  let freshBad = 0;
+  let freshRel = 0;
   const noteSeen = {};
   for (const r of runs) {
     const tbl = tableInfo(r.pageNodes);
@@ -1209,27 +1274,51 @@ async function runChecks() {
       if (!row) continue;
       const q = quotaCellOf(tbl, row.k.filter((c) => c.t === "td"));
       if (q.err || !q.cell) continue;
-      const got = cut(visibleText(q.cell), 90);
+      /* 🔴 自纠（2026-10-03）：本条原先拿 `cut(..., 90)` 的**截断串**当判据面，
+         于是三行结构的 buddy 行被切成「… 至 10-1」——到期时刻正好被尾巴削掉，判据假红。
+         判据跑整格全文，**消息里**才用截断串（不然输出会刷屏）。 */
+      const gotAll = visibleText(q.cell);
+      const got = cut(gotAll, 90);
       const items = Array.isArray(rq.items) ? rq.items.filter((it) => it && it.name) : [];
       // 🔴 no_plan 行**没有数值面**（正确文案就是「无套餐」，裁决③），所以不要求「重置于」；
       //    它仍然要过"出现即合形"（②）与标注映射（③）。
       const act = rq.reason === "no_plan" ? [] : items.filter((it) => it.active !== false);
       const hasISO = act.some((it) => isISOShape(it.expires_at));
-      const hasReset = got.indexOf("重置于") >= 0;
+      /* 🔴 2026-10-03 措辞随设计前进：「重置于 X」改成 meta 行的「至 MM-DD HH:mm」
+         （同一个量 = 有效包里最早的到期时刻，两家参考都写成"有效期至 …"）。
+         两条硬约束一字不改：**正形必合 `MM-DD HH:mm`**（ISO 护栏被摘时上游秒级 epoch
+         会被残切成 6 位数字）+ **新鲜度必须是相对量**。 */
+      /* 🔴 自纠（2026-10-03 变异自证抓到）：上一版把 `hasReset` 直接定义成"合形的到期段"，
+         于是"出现即合形"这条反向判据**永远不可能红**（出现但不合形 ⇒ hasReset=false ⇒ 不进检查），
+         摘掉 ISO 护栏的坏实现（`至 956800`）就这么漏了。"出现"按段面判，"合形"另判一次。 */
+      const hasReset = /(^|\s)至 /.test(gotAll);
       if (items.length && hasISO) {
         resetRows += 1;
-        if (!/重置于 \d{2}-\d{2} \d{2}:\d{2}/.test(got)) {
-          v15Bad.push(`${r.fixture}/${r.selected.id}/${a.name}: 有 active 且 ISO 形状的到期时刻，却没有「重置于 MM-DD HH:mm」：「${got}」（§4-5 定义 = 有效包里最早的那个）`);
+        if (!hasReset) {
+          v15Bad.push(`${r.fixture}/${r.selected.id}/${a.name}: 有 active 且 ISO 形状的到期时刻，却没有 meta 行的「至 MM-DD HH:mm」：「${got}」（§4-5 定义 = 有效包里最早的那个）`);
         }
       }
-      if (hasReset && !/重置于 \d{2}-\d{2} \d{2}:\d{2}/.test(got)) {
-        v15Bad.push(`${r.fixture}/${r.selected.id}/${a.name}: 出现了不合形的「重置于」（应为 MM-DD HH:mm）：「${got}」—— 页面 ISO 护栏被摘时上游 epoch 会残切成 6 位数字`);
+      if (hasReset && !/(^|\s)至 \d{2}-\d{2} \d{2}:\d{2}/.test(gotAll)) {
+        v15Bad.push(`${r.fixture}/${r.selected.id}/${a.name}: 出现了不合形的到期时刻（应为 至 MM-DD HH:mm）：「${got}」—— 页面 ISO 护栏被摘时上游 epoch 会残切成 6 位数字`);
       }
+      if (gotAll.indexOf("重置于") >= 0) v15Bad.push(`${r.fixture}/${r.selected.id}/${a.name}: 旧措辞「重置于」又回来了（2026-10-03 已并入 meta 行「至 …」）`);
+      // 新鲜度段必须存在（`… 查`），且**相对形态**要有足够样本量——
+      // 🔴 不许在门里复刻页面的 7 天阈值（那等于第二份实现，两份一起错就永远绿）：
+      //    本条只钉"有 查 段"+"整轮里至少 2 行是相对量（刚刚/N 分钟前/N 小时前/N 天前）"，
+      //    页面若把新鲜度整个退回绝对时刻（旧版那种「查于 2026-10-03 08:35」），样本数归零即红。
+      // 🔴 `no_plan` 行**不要求**新鲜度段：档位本身就是这一轮的结论（旧契约同样不给「查于」），
+      //    而 fixture 里 `ix-noplan-items` 是"reason=no_plan 但 items 非空"的形状，
+      //    对它提"必须有 …查"等于要求页面在一个空档位行里再塞一行元数据。
+      if (items.length && rq.reason !== "no_plan" && !/\S查/.test(gotAll)) {
+        freshBad += 1;
+        v15Bad.push(`${r.fixture}/${r.selected.id}/${a.name}: meta 行没有新鲜度段（应形如「… 分钟前查」）：「${cut(gotAll, 60)}」`);
+      }
+      if (items.length && rq.reason !== "no_plan" && /(刚刚|\d+ 分钟前|\d+ 小时前|\d+ 天前)查/.test(gotAll)) freshRel += 1;
       // ③ 附属标注映射：五档**各自**要求（同文案两档由同一注记串自然覆盖）
       const want = QUOTA_NOTE_MAP[rq.reason];
       if (want) {
         noteSeen[rq.reason] = (noteSeen[rq.reason] || 0) + 1;
-        if (got.indexOf(want) < 0) {
+        if (gotAll.indexOf(want) < 0) {
           v15Bad.push(`${r.fixture}/${r.selected.id}/${a.name}: reason=${rq.reason} 应带附属标注「${want}」，实得「${got}」（§4-7：标注是附属不是档，摘了映射这一档就没人知道上游这轮没说话）`);
         }
       }
@@ -1238,11 +1327,12 @@ async function runChecks() {
   const missNote = Object.keys(QUOTA_NOTE_MAP).filter((k) => !noteSeen[k]);
   if (missNote.length) v15Bad.push(`附属标注五档缺判别样本：${missNote.join(",")}（fixture 每档各一行，` 
     + "且 no_credentials 与 no_identity 同文案 ⇒ 两行都要在）");
-  if (resetRows < 2) v15Bad.push(`「重置于」正形样本只剩 ${resetRows} 行（至少 2 行，否则本条对新契约恒真）`);
-  check("V15", "⑮ 「重置于 MM-DD HH:mm」正形 + 出现即合形 + 附属标注五档映射（冷却中/熔断状态不可读/读取失败/未发起×2）",
+  if (resetRows < 2) v15Bad.push(`到期时刻正形样本只剩 ${resetRows} 行（至少 2 行，否则本条对新契约恒真）`);
+  if (freshRel < 2) v15Bad.push(`相对新鲜度样本只剩 ${freshRel} 行（至少 2 行，否则"退回绝对时刻"这种旧版回退抓不到）`);
+  check("V15", "⑮ meta 行「至 MM-DD HH:mm」正形 + 出现即合形（摘 ISO 护栏必出 6 位残串 ⇒ 红）+ 相对新鲜度必出 + 附属标注五档映射（冷却中/熔断状态不可读/读取失败/未发起×2）",
     v15Bad.length === 0,
     () => v15Bad.length ? `${v15Bad.length} 处：${[...new Set(v15Bad)].slice(0, 3).join(" | ")}`
-      : `重置于核对 ${resetRows} 行；标注覆盖 ${Object.keys(noteSeen).length}/5 档（同文案两档 ${noteSeen.no_credentials || 0}+${noteSeen.no_identity || 0} 行）`);
+      : `到期核对 ${resetRows} 行 · 相对新鲜度 ${freshRel} 行（缺段 ${freshBad}）；标注覆盖 ${Object.keys(noteSeen).length}/5 档（同文案两档 ${noteSeen.no_credentials || 0}+${noteSeen.no_identity || 0} 行）`);
 
   /* ---------- V17 · 额度格**用户可见面**零裸 epoch（方案 §8.2 ④ = QA X-R5-5 重排后的定稿） ----------
    * 分工写死：钩子 epoch→ISO 归一的真相由 **pytest** 钉（§8.1-3 的撤证，静态门够不着 `upstream/*.py`）；
@@ -1252,8 +1342,9 @@ async function runChecks() {
    *   钩子漏归一的 `data_at` 会原样印在那里（交付要求的反向自证实验 (c) 实测：把 ix-quota-net 的
    *   `data_at` 换成 `1790956800` ⇒ 本条红）。数值面（V10' 的总额一致性）仍按原口径剥 `.qchk`，
    *   两处不混用：**判据只会比方案更严，不会更松**。
-   * tooltip 也在扫描面内：`失效于` 那一支就在 title 里，只扫 visibleText 会让本条**没有任何可红路径**
-   *   （= 死判据；X-R5-5 说的"epoch 被切片成 6 位残串"由 V15 的「出现即合形」补抓）。
+   * tooltip 也在扫描面内。🔴 2026-10-03 起本条扫**两支**：10 位裸 epoch + 时刻位上的 4-8 位残串
+   *   （逐包 `失效于` 那行随折叠一起删了 ⇒ 只剩残串这一种泄漏形态，只扫 10 位就成死判据）。
+   *   "出现即合形"仍归 V15，两条不重叠：V15 管形状对不对，V17 管不许出现裸数字。
    * `ix-epoch` 常驻 fixture：正确实现下必须**绿**（页面整段不出「重置于」，tooltip 也不印）。 */
   const epochBad = [];
   let epochScanned = 0;
@@ -1268,7 +1359,9 @@ async function runChecks() {
       const q = quotaCellOf(tbl, row.k.filter((c) => c.t === "td"));
       if (q.err || !q.cell) continue;
       epochScanned += 1;
-      const numFace = cellTextExcept(q.cell, "qchk");     // 数值面（剥掉「查于 …」）
+      /* 2026-10-03 额度格重做：「查于 …」那一行（`.qchk`）已换成 meta 行 `.qmeta`
+         （到期 + 相对新鲜度 + 失效计数）⇒ 剥离对象跟着换，"数值面"的语义不变。 */
+      const numFace = cellTextExcept(q.cell, "qmeta");    // 数值面（剥掉 meta 行）
       const visFace = visibleText(q.cell);                // 整格可见文本（含「查于」）
       const tipFace = tipOf(q.cell);                      // 本格 tooltip
       const hay = `${visFace} | ${tipFace}`;
@@ -1277,6 +1370,17 @@ async function runChecks() {
         const where = EPOCH_RE.test(numFace) ? "数值面"
           : (EPOCH_RE.test(visFace) ? "查于/文案面" : "tooltip");
         epochBad.push(`${r.fixture}/${r.selected.id}/${a.name}: 额度格用户可见面（${where}）出现裸 epoch「${hit[0]}」（上游秒级整数没归一 / 页面 ISO 护栏被摘）：${cut(hay, 70)}`);
+      }
+      /* 🔴 2026-10-03 随额度格重做补的第二支：逐包 `失效于` 那行没了 ⇒ 摘掉 ISO 护栏后
+         泄漏形态从"10 位裸 epoch"变成"被 slice(5) 切出来的 4-8 位残串"（`至 56800`），
+         只扫 10 位的本条**再没有可红路径**（变异自证实测到 V17 纹丝不动 = 死判据）。
+         合形与否归 V15，本条只管"时刻的位置上不许出现裸数字"。
+         误报核查：`至 10-05 00:00` 里 `至` 后是两位 + 连字符，不匹配 `\d{4,8}`；
+         `2 天前查` 的「查」在词尾，后面没有数字。 */
+      const TAIL_RE = /(?:至|查|失效于)\s*(\d{4,8})(?![\d:])/;
+      const tail = TAIL_RE.exec(hay);
+      if (tail) {
+        epochBad.push(`${r.fixture}/${r.selected.id}/${a.name}: 时刻位上出现裸数字残串「${tail[0].trim()}」（ISO 护栏被摘 ⇒ 上游秒级 epoch 被 slice 切成几位数印给用户）：${cut(hay, 70)}`);
       }
     }
   }
@@ -1352,6 +1456,346 @@ async function runChecks() {
     staleBad.length === 0 && staleRounds >= 1 && cleanRounds >= 1,
     () => staleBad.length ? `${staleBad.length} 处：${[...new Set(staleBad)].slice(0, 2).join(" | ")}`
       : `有 SILENT 轮 ${staleRounds} / 无 SILENT 轮 ${cleanRounds}（两向都有样本）`);
+
+  /* ---------- V20 · 网关模型下拉不区分「新建 / 现有」（2026-10-03 用户实拍） ----------
+   * 「网关模型不用区分新建的还是之前的。输出的数据都是网关模型」⇒ `targetOptions` 的函数体里
+   * ① 不得再出现「新建」二字（旧版给目录里尚未接入的名字加 `新建：` 前缀、并按现有/新建分两段）；
+   * ② `label` 与 `value` 同源；③ 必须经过排序（名称族自然序 + 族内能力降序 ⇒ 没有 `.sort(` 就是回潮）。
+   * 🔴 只截函数体：函数**上方**的注释允许写「新建」（那记的是这条裁决的来由，不是用户可见面）。 */
+  const toFn = (() => {
+    const i = pageSrc.indexOf("function targetOptions(");
+    if (i < 0) return null;
+    const j = pageSrc.indexOf("\n}", i);
+    return j < 0 ? null : pageSrc.slice(i, j + 2);
+  })();
+  check("V20", "⑳ 网关模型下拉平铺一张清单：不出现「新建」前缀、label 与 value 同源、且经过排序",
+    !!toFn && toFn.indexOf("新建") < 0 && /label:\s*n\b/.test(toFn) && toFn.indexOf(".sort(") >= 0,
+    () => toFn === null ? "找不到 targetOptions（结构变了就要跟着改判据，不许删判据）"
+      : `函数体 ${toFn.length} 字：含「新建」=${toFn.indexOf("新建") >= 0}｜label 与 value 同源=${/label:\s*n\b/.test(toFn)}｜有 .sort=${toFn.indexOf(".sort(") >= 0}`);
+
+
+  /* V21（2026-10-03 用户「资源池里已经关联并开启进池的怎么没显示？」）：进池开关的**读取面**
+   * 只许认后端那个位。后端对「既无产品位、也无条目」的行返回 `map_enabled = null`（未映射），
+   * 旧写法 `!== false` 把 null 当"开着" ⇒ 弹窗里「开关绿 + 徽章未映射 + 下拉有自动建议的模型名」
+   * 三个信号互相矛盾，用户据此以为已落库。定版 = `=== true`。
+   * 🔴 这是源码级不变量（真机门 MS2f 量的是画出来的态，两条各管一头）。 */
+  // 🔴 负向判据（"某个写法不许再出现"）**必须先剥注释**：解释性文字里出现被禁字符串是**好事**
+  //    （说明为什么禁），拿原文扫就是自己造红（本门 2026-10-03/04 连着两次踩到）。
+  //    局限：只剥 /* */ 与整行 //，不处理字符串里的 //（本门判据找的都是中文定字符串，够用）。
+  const stripComments = (src) => src
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
+  const fnSlice = (start, end) => {
+    const i = pageSrc.indexOf(start);
+    if (i < 0) return null;
+    const j = pageSrc.indexOf(end, i);
+    return j < 0 ? null : pageSrc.slice(i, j + end.length);
+  };
+  /* 🔴 草稿制（2026-10-05 第四次裁定）之后这一条**判据不换、只换主人**：
+     旧对象是 `mapOn.set(i, m.map_enabled === true)`（前端那份"落库后的真实态"），
+     新对象是 `persistedEnabled(i)`（盘上真值），而"三态位只认 `=== true`、`null` 不是开着"
+     这条律一字未改 —— 它管的是**读**，草稿制改的是**写**。
+     新增一条腿：草稿缺省位（`p === null ? true : p`）必须也走 `persistedEnabled` 那一个出口，
+     不许在别处再算一遍"没落库算开还是算关"（两处算 = 两套真相）。 */
+  const persistedSlice = fnSlice("const persistedEnabled = (i) => {", "\n    };");
+  const curOnSlice = fnSlice("const curEnabled = (i) => {", "\n    };");
+  check("V21", "㉑ 进池位只认后端那个三态位：`=== true` 才算开（null 不得当成开）+ 草稿缺省只经这一个出口算",
+    !!persistedSlice && /m\.map_enabled === true/.test(persistedSlice)
+      && pageSrc.indexOf("map_enabled !== false") < 0
+      && !!curOnSlice && /return p === null \? true : p;/.test(curOnSlice)
+      && stripComments(pageSrc).indexOf("mapOn.get(i)") < 0,
+    () => `persistedEnabled 体=${persistedSlice ? persistedSlice.length + " 字" : "找不到"}`
+      + `｜curEnabled 体=${curOnSlice ? "有" : "找不到"}`
+      + `｜残留「!== false」写法=${pageSrc.indexOf("map_enabled !== false") >= 0}`
+      + `｜旧 mapOn 回潮=${stripComments(pageSrc).indexOf("mapOn.get(i)") >= 0}`);
+
+  /* ---------- V22/V23 · 脚部三颗钮 +「AI智能匹配」这条腿（2026-10-05 第三、四次裁定） ----------
+   * 需求演进（写在这里免得下轮又猜哪句作废）：
+   *   Q34「初始化之后…变为保存按钮」→ 10-04 23:2x「编辑区由保存提交、取消必须真能取消」
+   *   → 10-05 第二次「为什么要多保存这一步呢，好傻好蠢」⇒ **删掉那一步**、行内一改即落库
+   *   → 10-05 第三次「不用首次自动初始化…增加『AI智能匹配』按钮，规定显示」⇒ 那颗钮**常驻一态**
+   *   → 🔴 10-05 第四次（本轮）「调用AI分析结果直接回填到弹窗内，但不提交保存，仅在前端进行展示。
+   *     右侧显示黑色 保存按钮，所有修改、设置 点击保存提交数据后才能入库存储」
+   *     ⇒ **「保存」回来当唯一写入口**，而「AI智能匹配」仍是一颗独立的常驻钮。
+   * 🔴 为什么这次不是把上两轮白做：第二次裁定杀掉的是**"人已经逐行做过动作、还要再确认一次"**；
+   *   第四次杀掉的是**"机器给的答案不经人确认就进配置"**。两句合起来是一条更准的规则：
+   *   **谁做的决定谁负责落库 —— 人做的动作当场生效，机器给的结果必须人看过才生效。**
+   *   草稿制同时满足了两句：人改的（下拉/开关/采纳）都进草稿，但草稿**只有一份**、
+   *   由「保存」一次提交，所以既没有"多一步确认已生效的东西"，也没有"AI 替我写了配置"。
+   * V22 钉**形状**：footer 恰三颗钮、每颗只有一种语义（零 `hidden`、零 `initialized`、零 `okBtn`）；
+   * V23 钉**实质**：AI 那条腿打 `auto-map`、**只回填不写盘**、范围 = 屏幕上还空着的行、在飞有可见态。
+   * 🔴 两条都是源码级不变量；画出来的态由真机门 MS3/MS4/MS6 量（各管一头，不互相顶）。 */
+  const aiSlice = fnSlice("const runAiMatch = async () => {", "\n    };");
+  const saveSlice = fnSlice("const saveAll = async () => {", "\n    };");
+  const footHtmlSlice = fnSlice('foot.innerHTML = `<button class="btn" data-map="cancel">',
+                                'data-map="save" disabled>保存</button>`;');
+  const wiringSlice = fnSlice('body.querySelectorAll("select[data-idx]").forEach',
+                              "\n    syncFoot();");
+  const bodySlice = fnSlice("function mapBodyHTML(", "\n}");
+  check("V22", "㉒ 脚部恰三颗钮、**一钮只有一态**：取消 / AI智能匹配（常驻）/ 保存（primary，读脏态使能）"
+     + " + 两态机器（`okBtn` / `hidden` / `initialized`）零回潮 + AI 钮使能只看有没有落点",
+     !!footHtmlSlice && (footHtmlSlice.match(/<button /g) || []).length === 3
+     && /const \[cancelBtn, aiBtn, saveBtn\] = \[\.\.\.foot\.querySelectorAll\("button"\)\];/.test(pageSrc)
+     && /<button class="btn btn-primary" data-map="save" disabled>保存<\/button>/.test(pageSrc)
+     && /<button class="btn" data-map="ai" disabled>AI智能匹配<\/button>/.test(pageSrc)
+     && /aiBtn\.textContent = "AI智能匹配";/.test(pageSrc)
+     && stripComments(pageSrc).indexOf("okBtn") < 0
+     && !/Btn\.hidden/.test(stripComments(pageSrc))   // 三颗钮任何一颗长显隐都红（不认旧变量名）
+     && stripComments(pageSrc).indexOf("initialized") < 0
+     && /aiBtn\.disabled = !\(catalog && \(catalog\.accounts \|\| \[\]\)\.length\)/.test(pageSrc)
+     // 「保存」的使能读的是**脏态数**，不是文案、不是"有没有点过 AI"
+     && /saveBtn\.disabled = n === 0 \|\| saving;/.test(pageSrc)
+     && !!aiSlice && !!saveSlice,
+     () => `脚部钮数=${!!footHtmlSlice ? (footHtmlSlice.match(/<button /g) || []).length : -1}`
+       + `｜三颗引用=${/const \[cancelBtn, aiBtn, saveBtn\]/.test(pageSrc)}`
+       + `｜primary=保存=${/<button class="btn btn-primary" data-map="save" disabled>保存/.test(pageSrc)}`
+       + `｜AI 文案固定=${/aiBtn\.textContent = "AI智能匹配";/.test(pageSrc)}`
+       + `｜okBtn 回潮=${stripComments(pageSrc).indexOf("okBtn") >= 0}`
+       + `｜任一钮长显隐=${/Btn\.hidden/.test(stripComments(pageSrc))}`
+       + `｜initialized 回潮=${stripComments(pageSrc).indexOf("initialized") >= 0}`
+       + `｜AI 看落点=${/aiBtn\.disabled = !\(catalog && \(catalog\.accounts/.test(pageSrc)}`
+       + `｜保存看脏态=${/saveBtn\.disabled = n === 0 \|\| saving;/.test(pageSrc)}`
+       + `｜runAiMatch 体=${aiSlice ? aiSlice.length + " 字" : "找不到"}`
+       + `｜saveAll 体=${saveSlice ? saveSlice.length + " 字" : "找不到"}`);
+
+  check("V23", "㉓ 「AI智能匹配」= 打 auto-map 且**只回填、零写盘**：这条腿体内一次 mappings/remove 都不许有"
+     + " + 分析范围 = 屏幕上还空着的行（`models: empty` 由 `!curTarget(i)` 算）"
+     + " + 后端要是写了盘界面当场指出（`r.written !== false`）+ 回填后把「还没入库」说在明面上"
+     + " + 常驻消耗声明坐在表上方并写明「不写入配置」",
+     !!aiSlice
+     && aiSlice.indexOf('POST("/admin/api/accounts/auto-map", { product: p.id, models: empty })') >= 0
+     && aiSlice.indexOf("accounts/mappings") < 0
+     && aiSlice.indexOf("product-models/remove") < 0
+     && /\.filter\(\(\{ i \}\) => !curTarget\(i\)\)/.test(aiSlice)
+     && aiSlice.indexOf("r.written !== false") >= 0
+     && /还没入库，点「保存」才写入配置/.test(aiSlice)
+     && /r\.kept/.test(aiSlice)
+     && (aiSlice.match(/setMode\(\);/g) || []).length >= 1
+     && /aiBusy = true;/.test(aiSlice) && /aiBusy = false;/.test(aiSlice)
+     && !!bodySlice && /真实出站一次，会消耗/.test(bodySlice)
+     && /不写入配置/.test(bodySlice)
+     && /当前显示为「暂不设置」的/.test(bodySlice)
+     && stripComments(bodySlice).indexOf("view.firstTime") < 0
+     && bodySlice.indexOf("initNote") < bodySlice.indexOf('<div id="ac-map-err">'),
+     () => `auto-map=${!!aiSlice && aiSlice.indexOf("auto-map") >= 0}`
+       + `｜AI 腿里的写调用=${!!aiSlice ? (aiSlice.match(/accounts\/mappings|product-models\/remove/g) || []).length : -1}`
+       + `｜范围=屏幕空集=${/!curTarget\(i\)/.test(aiSlice || "")}`
+       + `｜written 自查=${!!aiSlice && aiSlice.indexOf("r.written !== false") >= 0}`
+       + `｜未入库上界面=${/还没入库，点「保存」才写入配置/.test(aiSlice || "")}`
+       + `｜kept 上报=${!!aiSlice && /r\.kept/.test(aiSlice)}`
+       + `｜消耗声明=${/真实出站一次，会消耗/.test(bodySlice || "")}`
+       + `｜声明写明不写盘=${/不写入配置/.test(bodySlice || "")}`);
+
+  /* ---------- V24 · 批量处理结果只走结果浮层（2026-10-03 用户裁定） ----------
+   * 原话：「各类处理结果，不允许用这种形式固化显示。执行完毕，弹窗提示具体执行结果，
+   * 3s 后自动消失，也可以手动关闭。参考设计规范进行设计」。
+   * 这条**推翻我自己 2026-10-02 定版并写进 §7.11 的「异步批量回执落就地槽（重绘后仍可见）」**，
+   * 所以判据是"反转 + 新增"，不是删条目：
+   * ① 出口唯一 = `showBulkReceipt` → `toastCard`（三条批量腿：刷新额度 / 批量续期 / 批量签到都经它）；
+   * ② 固化槽整族清零：`bulkReceipt` 模块级文本、`#ac-receipt` 槽、`renderBulkReceipt` 回填、
+   *    `clearBulkReceipt` 清理、`.bulk-receipt` 样式 —— 留一件就是留一条回潮的路；
+   * ③ 浮层契约：默认 **3000ms** 自动消失 + × 手动关闭（带 `aria-label`）+ 复用 `#toast-wrap` 载体；
+   * ④ 术语解释**不许坐正文**：那段「未发起」/「未参与」定义必须走 `note:`（挂计数行悬停）——
+   *    3 秒是读完"计数 + 逐号结果"的时间，不是读定义的时间。 */
+  const compSrc = readFileSync(DEPS.components, "utf-8");
+  const cssSrc = readFileSync(join(ROOT, "coding/model_gateway/web/static/css/base.css"), "utf-8");
+  // 🔴 判"某个类还在不在"必须先剥注释：`.bulk-receipt` 已经删了，但**我写的注释里提到它**
+  //    （"旧的 .bulk-receipt 整族删除"），拿原文扫就是自己造红（同一课在令牌判据里也踩过一次）。
+  const cssPlain = cssSrc.replace(/\/\*[\s\S]*?\*\//g, "");
+  // 🔴 负向判据（"某个写法不许再出现"）**必须先剥注释**：今天第三次踩——CSS 类名扫到我自己
+  //    写的"旧的 .bulk-receipt 已删"，这次又扫到注释里引的旧代码 `reason || "已刷新"`。
+  //    解释性文字里出现被禁字符串是**好事**（说明为什么禁），拿原文扫就是自己造红。
+  //    局限：只剥 `/* */` 与整行 `//`，不处理字符串里的 `//`（本判据只找一个中文串，够用）。
+  const receiptBodies = {
+    quota: fnSlice("async function batchQuota(btn, p) {", "\n}"),
+    renew: fnSlice("function showRenewResult(r) {", "\n}"),
+    claim: fnSlice("function showClaimAllResult(r) {", "\n}"),
+  };
+  const leftovers = ["bulkReceipt =", "renderBulkReceipt", "clearBulkReceipt",
+                     "bulkReceiptHTML", "ac-receipt", "bulk-receipt"]
+    .filter((k) => pageSrc.indexOf(k) >= 0);
+  check("V24", "㉔ 批量结果只走结果浮层：出口唯一（三条腿都经 `showBulkReceipt`→`toastCard`）"
+     + " + 固化槽零残留（模块级文本/槽/回填/清理/样式）+ 3s 自动消失 + × 手动关闭"
+     + " + 术语解释走悬停不坐正文",
+     /function showBulkReceipt\(/.test(pageSrc)
+     && /toastCard\(title, html, \{ type: tone, ms: 3000 \}\);/.test(pageSrc)
+     && Object.values(receiptBodies).every((b) => !!b && b.indexOf("showBulkReceipt(") >= 0)
+     && leftovers.length === 0
+     && cssPlain.indexOf(".bulk-receipt") < 0
+     && /export function toastCard\(title, html, \{ type = "", ms = 3000 \} = \{\}\)/.test(compSrc)
+     && /class="t-close" type="button" aria-label="关闭提示"/.test(compSrc)
+     && /setTimeout\(kill, ms\);/.test(compSrc)
+     && /note: "「未发起」=/.test(pageSrc)
+     && /\.t-sum \{[^}]*cursor: help/.test(cssSrc)
+     // 第五条腿（:8300 实盘抓出来的自我矛盾）：逐号那一行的词必须读**权威分桶**
+     // （`report.failed/success/inactive`），不许再用 `reason || "已刷新"` ——
+     // 后端 `reason=""` 是一格多义（既给 success 也给"查了但没给数值"的 inactive），
+     // 旧写法让同一张浮层上面写「未发起 2 个」、下面两行写「已刷新」。
+     && /inList\(rep\.failed, acc\)/.test(pageSrc)
+     && /inList\(rep\.success, acc\)/.test(pageSrc)
+     && stripComments(pageSrc).indexOf('reason || "已刷新"') < 0,
+     () => Object.entries(receiptBodies).map(([k, v]) => `${k}=${v ? "有" : "找不到"}`).join(" ")
+       + `｜固化残留=${leftovers.length ? leftovers.join(" ") : "无"}`
+       + `｜css 留类=${cssPlain.indexOf(".bulk-receipt") >= 0}`
+       + `｜浮层=${/export function toastCard\(/.test(compSrc)}｜3s=${/ms = 3000/.test(compSrc)}`
+       + `｜出口=${/toastCard\(title, html, \{ type: tone, ms: 3000 \}\);/.test(pageSrc)}`
+       + `｜关闭钮=${/aria-label="关闭提示"/.test(compSrc)}｜解释挂悬停=${/note: "「未发起」=/.test(pageSrc)}`);
+
+  /* ---------- V25 · 「状态」列删除（10-04）+ 草稿说明常驻（10-05 第四次裁定，**方向反转**） ----------
+   * 删列那条不变：那一列同时说三件事，各格已有主人（下拉 = 挂哪、开关 = 进不进池）。
+   * 🔴 本轮反转的是**第③腿**：上一版 V25 禁「保存后解除关联」这类常驻文案（那时没有「保存」，
+   *   那句话是假陈述）；现在「保存」是**唯一**写入口，"改了还没入库"重新变成一个真实、
+   *   且必须常驻说清的状态 —— 否则用户带着"AI 已经帮我配好了"离开，而盘上一条没写。
+   *   判据随设计前进 = **反过来要求它在册**，不是把这条删掉（删掉 = 这条腿从此无人看管）。 */
+  const footSlice = fnSlice("function mapFootHTML(", "\n}");
+  const pickSlice = fnSlice("function pickTarget(", "\n}");
+  const sugSlice = fnSlice("function suggestionOf(", "\n}");
+  const repaintSlice = fnSlice("const repaintState = (i) => {", "\n    };");
+  const thCount = ((bodySlice || "").match(/\bth\("/g) || []).length;
+  const draftNotes = ["点「保存」才入库", "保存后解除关联"];
+  check("V25", "㉕ 映射弹窗无「状态」列（表头恰 4 列 + 旧徽章文案零回潮）+ 下拉**只读已落库**的目标"
+     + "（建议不得进下拉）+ 🔴 草稿说明常驻在册（「点「保存」才入库」「保存后解除关联」）"
+     + " + 重绘只换 [data-mapfoot] 那一行",
+     !!bodySlice && !!footSlice && !!pickSlice && !!sugSlice && !!repaintSlice
+     && thCount === 4 && (bodySlice || "").indexOf('th("状态")') < 0
+     && (bodySlice || "").indexOf("104px") < 0
+     && (bodySlice || "").indexOf('badge b-gray">未映射') < 0
+     && pageSrc.indexOf("已映射 · 进池") < 0
+     && /return \(m\.mapped_to \|\| \[\]\)\.find\(inList\) \|\| "";/.test(pickSlice)
+     && pickSlice.indexOf("suggest") < 0
+     && /confidence >= 0\.7/.test(sugSlice)
+     && /data-adopt="\$\{esc\(sug\)\}" data-for="\$\{i\}"/.test(footSlice)
+     && footSlice.indexOf(">采纳<") >= 0
+     && draftNotes.every((k) => footSlice.indexOf(k) >= 0)
+     && /data-mapfoot="\$\{i\}"/.test(bodySlice || "")
+     && /slot\.innerHTML = mapFootHTML\(modelOf\(i\), i, \{/.test(repaintSlice)
+     && repaintSlice.indexOf("row.children[") < 0
+     // 🔴 反向腿：脚注必须告诉用户"这一屏要点保存"（旧版禁「保存」字样，随本轮作废）
+     && /点「保存」才写入配置/.test(stripComments(bodySlice || "")),
+     () => `表头 th 数=${thCount}｜含状态列=${(bodySlice || "").indexOf('th("状态")') >= 0}`
+       + `｜104px 残留=${(bodySlice || "").indexOf("104px") >= 0}`
+       + `｜徽章回潮=${(bodySlice || "").indexOf('badge b-gray">未映射') >= 0 || pageSrc.indexOf("已映射 · 进池") >= 0}`
+       + `｜下拉只读落库=${!!pickSlice && /return \(m\.mapped_to \|\| \[\]\)\.find\(inList\) \|\| "";/.test(pickSlice)}`
+       + `｜建议混进下拉(红)=${!!pickSlice && pickSlice.indexOf("suggest") >= 0}`
+       + `｜建议出口=${!!sugSlice}｜采纳钮=${/data-adopt/.test(footSlice || "")}`
+       + `｜草稿说明缺=${draftNotes.filter((k) => !(footSlice || "").includes(k)).join(" / ") || "无"}`
+       + `｜重绘整格覆盖=${!!repaintSlice && repaintSlice.indexOf("row.children[") >= 0}`
+       + `｜脚注说保存=${/点「保存」才写入配置/.test(stripComments(bodySlice || ""))}`);
+
+  /* ---------- V26 · 「保存」= 唯一写入口（2026-10-05 第四次裁定）+ 删除入口零残留（10-04 不变） ----------
+   * 🔴 本轮的反转项：上一版 V26 钉的是「`saveAll` 整族**不许存在**」，现在反过来钉它**必须在册且是唯一出口**。
+   *   四条腿：
+   *   ① 行内接线块（下拉 onchange / 采纳钮 / 开关）与 `stage` 体内**零 POST** ——
+   *      这一条就是"草稿制"在代码里的形状：改一格只动内存；
+   *   ② `saveAll` 体内两个端点各**恰一处**：有目标的行走 `mappings`（一次提交，不逐行发），
+   *      改回「暂不设置」而盘上有位的行走 `product-models/remove`（位与条目一起删，判据在后端）；
+   *      🔴 不在 `mappings` 写入面里另造第二套「解除」语义（两套真相 = 本项目反复抓的那类病）；
+   *   ③ 被拒 / 解除失败的那些行必须**退回盘上的真值**（`draft.delete(i)` + 下拉回写），
+   *      且**不关窗**、就地列原话 —— 用户带着"保存过了"离开而盘上没动，是复验 R10 抓过的同一形状；
+   *   ④ 删除入口（旧的「删除映射」钮族）零残留：解除只有一个入口 = 改回「暂不设置」。 */
+  const delGhosts = ["data-mapdel", "data-del-yes", "data-del-no", "askRemove",
+                     "removeMapping", "wireRemove", "const delBtn"]
+    .filter((k) => pageSrc.indexOf(k) >= 0);
+  const stageSlice = fnSlice("const stage = (i, patch) => {", "\n    };");
+  const postInWiring = !!wiringSlice ? (wiringSlice.match(/POST\(/g) || []).length : -1;
+  check("V26", "㉖ 保存 = 唯一写入口：行内接线块零 POST + saveAll 两条腿各恰一处（mappings 一次 / 逐行 remove）"
+     + " + 被拒行退回盘上真值且不关窗 + 删除入口整族零残留",
+     !!saveSlice && !!wiringSlice && !!stageSlice
+     && postInWiring === 0 && stageSlice.indexOf("POST(") < 0
+     && (saveSlice.match(/POST\("\/admin\/api\/accounts\/mappings"/g) || []).length === 1
+     && (saveSlice.match(/POST\("\/admin\/api\/accounts\/product-models\/remove"/g) || []).length === 1
+     && /if \(items\.length\) \{/.test(saveSlice)
+     && /else if \(mapHasBit\(m\)\) unbinds\.push\(i\);/.test(saveSlice)
+     && (saveSlice.match(/draft\.delete\(i\);/g) || []).length >= 3
+     && /if \(lines\.length\) \{/.test(saveSlice)
+     && /else \{[\s\S]{0,60}detachGuard\(\);[\s\S]{0,60}dlg\.close\(\);/.test(saveSlice)
+     && delGhosts.length === 0,
+     () => `行内接线块 POST 数=${postInWiring}｜stage 内 POST=${stageSlice.indexOf("POST(") >= 0}`
+       + `｜mappings 处数=${!!saveSlice ? (saveSlice.match(/accounts\/mappings/g) || []).length : -1}`
+       + `｜remove 处数=${!!saveSlice ? (saveSlice.match(/product-models\/remove/g) || []).length : -1}`
+       + `｜空 items 不发=${!!saveSlice && /if \(items\.length\)/.test(saveSlice)}`
+       + `｜没位不发解除=${!!saveSlice && /else if \(mapHasBit\(m\)\) unbinds\.push/.test(saveSlice)}`
+       + `｜退回真值次数=${!!saveSlice ? (saveSlice.match(/draft\.delete\(i\);/g) || []).length : -1}`
+       + `｜有失败不关窗=${!!saveSlice && /if \(lines\.length\)/.test(saveSlice)}`
+       + `｜删除入口残留=${delGhosts.length ? delGhosts.join(" ") : "无"}`);
+
+
+  /* ---------- V27 · 两态机器零回潮 +「还没入库」这件事在界面上有主人 ----------
+   * 2026-10-04 加的是"脚钮显隐跟着数据走"；10-05 第三次指示改常驻 ⇒ 那台机器作废；
+   * 本轮「保存」回来，但它**不是那颗钮的第二态** —— 两颗钮、两种语义、两个主人（V22 钉形状）。
+   * 三条腿：
+   *   ① 行内三条腿（开关 / 下拉 / 采纳）体内零 `setMode(`：翻态机器留半套就是留着两套真相；
+   *   ② 脏态数上界面（`保存（N 处未保存）`）+ 回执 `kept` 上界面 —— 否则"什么都没改"、
+   *      "改了 20 行没存"、"AI 填了 20 行没存"三种状态在画面上长得一样；
+   *   ③ 在飞有可见态且两支都收回（`aiBusy` + `setMode()`），不留下「AI 匹配中…」的假忙碌。 */
+  const switchSlice = fnSlice("const mountSwitch = (i) => {", "\n    };");
+  const dirtySlice = fnSlice("const isDirty = (i) => {", "\n    };");
+  check("V27", "㉗ 两态机器零回潮（行内三条腿都不翻钮）+ 脏态数与回执 `kept` 都上界面 + 匹配中有可见态",
+     !!switchSlice && !!dirtySlice && !!aiSlice && !!saveSlice
+     && switchSlice.indexOf("setMode(") < 0
+     && wiringSlice.indexOf("setMode(") < 0
+     && /保存（\$\{n\} 处未保存）/.test(pageSrc)
+     && /已配置的 \$\{r\.kept\}|\$\{r\.kept\} 行/.test(aiSlice)
+     && /aiBtn\.textContent = "AI 匹配中…";/.test(aiSlice)
+     && (aiSlice.match(/setMode\(\);/g) || []).length >= 1
+     && /dirtyRows\(\)\.length/.test(pageSrc),
+     () => `开关体内 setMode=${switchSlice.indexOf("setMode(") >= 0}`
+       + `｜接线块 setMode=${wiringSlice.indexOf("setMode(") >= 0}`
+       + `｜脏态计数上钮=${/保存（\$\{n\} 处未保存）/.test(pageSrc)}`
+       + `｜kept 上界面=${/\$\{r\.kept\} 行/.test(aiSlice || "")}`
+       + `｜在飞文案=${/AI 匹配中…/.test(aiSlice || "")}`);
+
+  /* ---------- V28 · 行内三条腿都只改草稿（2026-10-05 第四次裁定第①条的代码形状） ----------
+   *   ① `select.onchange` 指向 `stage`（旧形状 = 指向 `commitTarget` 当场写盘，本轮作废）；
+   *   ② 新映射缺省**进池**：这条从 Q37 原样保留，只是主人从"逐行落库"换成"保存那一次提交" ——
+   *      判据 = `curEnabled` 里那一句 `return p === null ? true : p;`（V21 已钉它只有一个出口）；
+   *      已有位的行**保持盘上开关态**（用户明确关掉的那条不因改名被悄悄拨开）；
+   *   ③ 采纳钮按 `data-for` 行号 + `data-adopt` 目标名派发（按错索引 = 改错行）；
+   *   ④ 保存在飞禁二次点击（开关与 AI 钮都禁用），否则半程里改的东西会被上一次提交的结果盖掉。 */
+  check("V28", "㉘ 行内只改草稿：onchange/采纳/开关三条腿全走 `stage` + 新行缺省进池只算一处"
+     + " + 保存在飞禁二次点击 + 旧「整表按开关位置取 enabled」零回潮",
+     /sel\.onchange = \(\) => stage\(i, \{ target: String\(sel\.value \|\| ""\) \}\);/.test(pageSrc)
+     && /stage\(i, \{ target: btn\.dataset\.adopt \}\);/.test(pageSrc)
+     && /stage\(i, \{ enabled: !on \}\);/.test(switchSlice || "")
+     && /return p === null \? true : p;/.test(curOnSlice || "")
+     && /if \(saving\) el\.disabled = true;/.test(switchSlice || "")
+     && /aiBtn\.disabled = true;/.test(aiSlice || "")
+     && stripComments(pageSrc).indexOf("enabled: mapOn.get(i) !== false") < 0
+     && stripComments(pageSrc).indexOf("commitTarget") < 0,
+     () => `onchange 走 stage=${/sel\.onchange = \(\) => stage\(i/.test(pageSrc)}`
+       + `｜采纳走 stage=${/stage\(i, \{ target: btn\.dataset\.adopt/.test(pageSrc)}`
+       + `｜开关走 stage=${/stage\(i, \{ enabled: !on/.test(switchSlice || "")}`
+       + `｜缺省进池一处算=${/return p === null \? true : p;/.test(curOnSlice || "")}`
+       + `｜保存在飞禁点=${/if \(saving\) el\.disabled = true;/.test(switchSlice || "")}`
+       + `｜commitTarget 回潮=${stripComments(pageSrc).indexOf("commitTarget") >= 0}`);
+
+  /* ---------- V29 · 新增：取消必须真能取消（草稿制的另一半，10-04 那条律随本轮复活） ----------
+   * 草稿制下"取消"是**唯一**能丢弃用户劳动的出口，而 modal() 有三条关闭通道
+   * （按钮 / 右上角 × / 点遮罩空白）—— 同一形状在 components.js 的 confirmDialog 注释里记过一次：
+   * 只堵一条，另外两条就是"静默丢弃"。四条腿：
+   *   ① 三条通道都指向同一个 `tryClose`（✕ 用重绑、遮罩用 document 捕获阶段抢在 modal() 之前）；
+   *   ② 有脏态时第一次只**警告**（`armed = true` + 就地一条 `data-discard` 说明），不关窗；
+   *   ③ 第二次（或没有脏态）才真关，且关之前摘掉全局监听器（不许漏一条捕获在 document 上）；
+   *   ④ 任何一次编辑都把那句警告撤掉（`stage` 里 `armed = false` + 摘节点），不留过期恐吓。 */
+  const closeSlice = fnSlice("const tryClose = () => {", "\n    };");
+  check("V29", "㉙ 取消真能取消：三条关闭通道同走 tryClose + 有脏态先警告再关（两步）+ 关前摘监听 + 一改就撤警告",
+     !!closeSlice
+     && /cancelBtn\.onclick = tryClose;/.test(pageSrc)
+     && /dlg\.el\.querySelector\("\.modal-close"\)\.onclick = tryClose;/.test(pageSrc)
+     && /document\.addEventListener\("mousedown", guardBackdrop, true\);/.test(pageSrc)
+     && /if \(!n \|\| armed\) \{ detachGuard\(\); dlg\.close\(\); return; \}/.test(closeSlice)
+     && (closeSlice.match(/dlg\.close\(\);/g) || []).length === 1
+     && /data-discard/.test(closeSlice)
+     && /const detachGuard = \(\) => document\.removeEventListener\("mousedown", guardBackdrop, true\);/.test(pageSrc)
+     && /armed = false;/.test(stageSlice || "")
+     && /warn\) warn\.remove\(\);/.test(stageSlice || ""),
+     () => `tryClose 体=${closeSlice ? closeSlice.length + " 字" : "找不到"}`
+       + `｜取消钮=${/cancelBtn\.onclick = tryClose/.test(pageSrc)}`
+       + `｜× 钮=${/\.modal-close"\)\.onclick = tryClose/.test(pageSrc)}`
+       + `｜遮罩捕获=${/guardBackdrop, true\)/.test(pageSrc)}`
+       + `｜dlg.close 次数=${!!closeSlice ? (closeSlice.match(/dlg\.close\(\);/g) || []).length : -1}`
+       + `｜摘监听=${/removeEventListener\("mousedown", guardBackdrop, true\)/.test(pageSrc)}`
+       + `｜编辑撤警告=${/armed = false;/.test(stageSlice || "")}`);
 
   /* ---------- L · 反转的 M6-IX 真机断言（e2e-records/m6-accounts-assertions.json） ----------
    * 设计书 §8-2：A6 / A8 / A10 正是本版要删的结构 → **逐条反转**（不是删除）。 */
@@ -1619,15 +2063,193 @@ const MUTATIONS = [
     from: L('  el.setAttribute("role", "switch");'),
     to: L('  el.setAttribute("role", "switch");',
           '  { const d = document.createElement("span"); d.className = "dot"; el.appendChild(d); }') },
+  { id: "V21", fix: [], kills: ["V21"],
+    why: "把盘上位读回 `!== false`（后端 null = 未映射会被渲染成\"已开进池\"，"
+         + "正是 2026-10-03 用户据此追问资源池的那条假态；草稿制换了写的主人，这条读法一个字没改）",
+    from: L('      return mapHasBit(m) ? m.map_enabled === true : null;   // null = 盘上没这条 ⇒ 保存时按缺省进池'),
+    to: L('      return mapHasBit(m) ? m.map_enabled !== false : null;') },
+  { id: "V21", fix: [], kills: ["V21", "V28"],
+    why: "草稿缺省位改口「不进池」（本轮第 1 条「资源池怎么没显示」的根因写法：新行落盘即一条关着的位）",
+    from: L('      return p === null ? true : p;      // 新映射缺省进池（Q37 ② 保留，只是主人换成「保存」那一次）'),
+    to: L('      return p === null ? false : p;') },
+  { id: "V20", fix: [], kills: ["V20"],
+    why: "把「新建：」前缀装回网关模型下拉（2026-10-03 用户裁决：输出的数据都是网关模型，不区分新建/现有）",
+    from: L('    ...sorted.map((n) => ({ value: n, label: n }))];'),
+    to: L('    ...sorted.map((n) => ({ value: n, label: `新建：${n}` }))];') },
+  { id: "V22", fix: [], kills: ["V22"],
+    why: "把「AI智能匹配」的文案又做成随脏态切换（一颗钮两种语义 = 上一轮判死的那台两态机器回潮）",
+    from: L('    aiBtn.textContent = "AI智能匹配";'),
+    to: L('    aiBtn.textContent = dirtyRows().length ? "先保存再匹配" : "AI智能匹配";') },
+  { id: "V22", fix: [], kills: ["V22"],
+    why: "钮又长出显隐语义（`aiBtn.hidden` 一回潮，「什么时候能点」就又变成一门要猜的状态机）",
+    from: L('  const setMode = () => {',
+            '    aiBtn.textContent = "AI智能匹配";'),
+    to: L('  const setMode = (init) => {',
+            '    aiBtn.hidden = !!init;',
+            '    aiBtn.textContent = "AI智能匹配";') },
+  { id: "V22", fix: [], kills: ["V22"],
+    why: "「保存」的使能不再读脏态（永远可点 ⇒ 用户会对着一个什么都没改的表按保存，"
+         + "而真正没保存时它又和「已保存」长得一样 —— 使能必须读 `draft`，不读文案）",
+    from: L('      saveBtn.disabled = n === 0 || saving;'),
+    to: L('      saveBtn.disabled = saving;') },
+  { id: "V24", fix: [], kills: ["V24"],
+    // 结果回到"固化显示"：把浮层出口换成常驻槽（正是用户实拍否掉的那一块）
+    why: "结果浮层退回固化槽（`toastCard` 换成往面板里写一块 `.bulk-receipt`）",
+    from: L('  toastCard(title, html, { type: tone, ms: 3000 });'),
+    to: L('  bulkReceipt = { title, html };',
+          '  renderBulkReceipt();') },
+  { id: "V24", fix: [], kills: ["V24"],
+    // 重定锚（门自己抓的 BAD：上一版把锚指到 `components.js` 的 `setTimeout(kill, ms)`，
+    //   而本门只改**页面副本** ⇒ 命中 0 次 = 无效撤证）。改钉页面这一侧能钉的那一半：
+    //   时长是调用方传的 ⇒ 把 3000 改成 999999 = "3s 后还挂着"，等价于把固化搬到屏幕上。
+    why: "浮层不自动消失（调用方把 3000ms 改成 999999ms ⇒ 结果一直挂在屏幕上 = 固化搬到浮层）",
+    from: L('  toastCard(title, html, { type: tone, ms: 3000 });'),
+    to: L('  toastCard(title, html, { type: tone, ms: 999999 });') },
+  { id: "V24", fix: [], kills: ["V24"],
+    why: "逐号结果词退回只读 `by_reason`（`reason=\"\"` 被标成「已刷新」⇒ 浮层自己跟计数行矛盾）",
+    from: L('    if (inList(rep.success, acc)) return ["已刷新", "is-ok"];'),
+    to: L('    if (!code) return ["已刷新", "is-ok"];') },
+  { id: "V24", fix: [], kills: ["V24"],
+    why: "术语解释坐进正文（`note:` 换成 `sum:` 的一部分 ⇒ 3 秒读不完的定义变成必读）",
+    from: L('    note: "「未发起」= 熔断中 / 网络不可达 / 缺凭据（本轮未对上游发请求，上一轮的数值原样保留）"'),
+    to: L('    sumNote: "「未发起」= 熔断中 / 网络不可达 / 缺凭据（本轮未对上游发请求，上一轮的数值原样保留）"') },
+  { id: "V23", fix: [], kills: ["V23"],
+    why: "AI 这条腿回填完**顺手写盘**（正是第四次裁定要杀的那件事：机器给的结果不经人确认就进配置）",
+    from: L('      const r = await POST("/admin/api/accounts/auto-map", { product: p.id, models: empty });'),
+    to: L('      const r = await POST("/admin/api/accounts/auto-map", { product: p.id, models: empty });',
+          '      await POST("/admin/api/accounts/mappings", { product: p.id, items: [] });') },
+  { id: "V23", fix: [], kills: ["V23"],
+    why: "分析范围丢掉「屏幕上还空着」这一半（谓词恒真 ⇒ 每次点击都把已填过目标的行再烧一遍额度）",
+    from: L('        .filter(({ i }) => !curTarget(i))'),
+    to: L('        .filter(({ i }) => true)') },
+  { id: "V23", fix: [], kills: ["V23"],
+    why: "摘掉 `written !== false` 那条自查（后端哪天恢复写盘，界面不再有任何人看得见这件事）",
+    from: L('        if (r.written !== false) {'),
+    to: L('        if (false) {') },
+  { id: "V23", fix: [], kills: ["V23"],
+    why: "消耗声明改回「答案当场写入配置」（声明说的和这条腿实际做的相反 ⇒ 用户以为已经存好了）",
+    from: L('        <b>当前显示为「暂不设置」的</b>模型该挂到哪个网关模型；答案<b>只回填进下面的下拉，'),
+    to: L('        <b>还没配置过的</b>模型该挂到哪个网关模型；答案<b>当场写入配置并进资源池，') },
+  { id: "V25", fix: [], kills: ["V25"],
+    why: "「状态」列回潮（表头装回第 5 颗 th ⇒ 用户 2026-10-04 判为多此一举的那一列又站回来了）",
+    from: L('      <div class="list-row" style="${grid}">${th("模型")}${th("规则")}${th("网关模型映射")}${th("进池")}</div>'),
+    to: L('      <div class="list-row" style="${grid}">${th("模型")}${th("规则")}${th("网关模型映射")}${th("状态")}${th("进池")}</div>') },
+  { id: "V25", fix: [], kills: ["V25"],
+    why: "删列只删一半（列宽 104px 还留在网格里 ⇒ 界面出现一条谁也不住的空洞列）",
+    from: L('  const grid = "display:grid;grid-template-columns:minmax(0,1fr) 56px 208px 44px;gap:12px;align-items:center";'),
+    to: L('  const grid = "display:grid;grid-template-columns:minmax(0,1fr) 56px 208px 104px 44px;gap:12px;align-items:center";') },
+  { id: "V25", fix: [], kills: ["V25"],
+    why: "下拉不读已落库的映射（已挂 hy3 而行显示「暂不设置」⇒ 把「有映射」读成「没映射」）",
+    from: L('  return (m.mapped_to || []).find(inList) || "";'),
+    to: L('  return (m.mapped_to || []).find((n) => !!n) ? "" : "";') },
+  { id: "V25", fix: [], kills: ["V25"],
+    why: "正则建议回潮进下拉（:8300 实盘 26 行挂着一个从没写进配置的名字 = 假关联的直接病源）",
+    from: L('  return (m.mapped_to || []).find(inList) || "";'),
+    to: L('  const p = (m.mapped_to || []).find(inList);',
+          '  if (p) return p;',
+          '  const sg = m.suggest;',
+          '  return sg && sg.name && options.some((o) => o.value === sg.name) ? sg.name : "";') },
+  { id: "V25", fix: [], kills: ["V25"],
+    // 🔴 方向反转（2026-10-05 第四次裁定）：上一版这条变异是「常驻文案回潮 ⇒ 判红」，
+    //    现在这两句话是**真话且必须常驻**，于是变异反过来做 —— 把它们摘掉才判红。
+    //    条目不删、方向改，理由写在这里：判据的主人从"没有保存这一步"换成了"保存是唯一写入口"。
+    why: "草稿说明被摘掉（改了还没入库这件事没人说 ⇒ 用户带着「AI 已经配好了」离开，而盘上一条没写）",
+    from: L('    return note(s ? "已改动 · 点「保存」才入库" : "已清空 · 点「保存」才入库");'),
+    to: L('    return "";') },
+  { id: "V25", fix: [], kills: ["V25"],
+    why: "脚注改口「一改即落库、没有保存这一步」（上一轮的口径，随本轮作废 ⇒ 界面上不许留两套说法）",
+    from: L('      取不到的不展示，不编造）；目录来源见顶部。🔴 <b>这一屏的改动要点「保存」才写入配置</b>：'),
+    to: L('      取不到的不展示，不编造）；目录来源见顶部。<b>这一行一改即落库，没有「保存」这一步</b>：') },
+  { id: "V25", fix: [], kills: ["V25"],
+    why: "重绘退回按索引整格覆盖（同格的下拉与说明行会被一起吃掉 = 旧缺陷形状复活）",
+    from: L('      if (slot) slot.innerHTML = mapFootHTML(modelOf(i), i, {'),
+    to: L('      if (row.children[2]) row.children[2].innerHTML = mapFootHTML(modelOf(i), i, {') },
+  /* ---------- V26 的变异：「保存 = 唯一写入口」的每一半都要能红 ---------- */
+  { id: "V26", fix: [], kills: ["V26"],
+    why: "「删除映射」钮回潮（用户 10-04 明令去掉；解除有第二入口 = 两套真相）",
+    from: L('  if (mapHasBit(m)) return "";'),
+    to: L('  if (mapHasBit(m)) return `<button class="link-btn" data-mapdel="0">删除映射</button>`;') },
+  { id: "V26", fix: [], kills: ["V26"],
+    why: "行内采纳钮长出 POST（草稿制的形状就是「接线块里一个 POST 都没有」，破一处就整套失效）",
+    from: L('        stage(i, { target: btn.dataset.adopt });'),
+    to: L('        POST("/admin/api/accounts/mappings", { product: p.id, items: [] });',
+          '        stage(i, { target: btn.dataset.adopt });') },
+  { id: "V26", fix: [], kills: ["V26"],
+    why: "解除判据丢掉后端那个位（改成「下拉一空就发解除」⇒ 从没配置过的行也吃一次写请求）",
+    from: L('        else if (mapHasBit(m)) unbinds.push(i);'),
+    to: L('        else unbinds.push(i);') },
+  { id: "V26", fix: [], kills: ["V26"],
+    why: "整表 items 为空也发（后端对「全部 target 为空」回 400 ⇒ 一次纯解除的保存必红）",
+    from: L('        if (items.length) {'),
+    to: L('        if (true) {') },
+  { id: "V26", fix: [], kills: ["V26"],
+    why: "有失败也关窗（用户带着「保存过了」离开，而盘上那几条根本没动 = 复验 R10 抓过的同一形状）",
+    from: L('        if (lines.length) {'),
+    to: L('        if (false && lines.length) {') },
+  { id: "V27", fix: [], kills: ["V27"],
+    why: "「跟着数据翻钮」那台机器回潮（三颗钮各有主人，行内开关再翻一次状态 = 两套真相重新长回来）",
+    from: L('        stage(i, { enabled: !on });'),
+    to: L('        stage(i, { enabled: !on });',
+          '        setMode();') },
+  { id: "V27", fix: [], kills: ["V27"],
+    why: "脏态数不上那颗钮（「什么都没改」「改了 20 行没存」「AI 填了 20 行没存」在画面上长得一样）",
+    from: L('      saveBtn.textContent = n ? `保存（${n} 处未保存）` : "保存";'),
+    to: L('      saveBtn.textContent = "保存";') },
+  { id: "V27", fix: [], kills: ["V27"],
+    why: "匹配中不留可见态（顺序执行可达数十秒，界面没有任何「正在做事」的痕迹 = 用户会连点）",
+    from: L('      aiBtn.textContent = "AI 匹配中…";'),
+    to: L('      // 撤证：不设 in-flight 文案') },
+  { id: "V27", fix: [], kills: ["V23", "V27"],
+    why: "回执 `kept` 不上界面（一次空点击与一次改了 20 行的点击在界面上同形；连带 V23 那条"
+         + "「回填后把没入库说在明面上」的腿一起红 —— 两条判据读的是同一句 toast）",
+    from: L('            + (r.kept ? `；${r.kept} 行（已配置或已填值）本轮没送去分析` : ""), "ok");'),
+    to: L('            , "ok");') },
+  /* ---------- V28 的变异：行内三条腿"只改草稿"的每一半都要能红 ---------- */
+  { id: "V28", fix: [], kills: ["V28"],
+    why: "onchange 退回直接写盘（回到上一轮「行内一改即落库」，草稿制当场作废）",
+    from: L('      sel.onchange = () => stage(i, { target: String(sel.value || "") });'),
+    to: L('      sel.onchange = () => commitTarget(i, String(sel.value || ""));') },
+  { id: "V28", fix: [], kills: ["V28"],
+    why: "采纳钮按错派发（丢掉 `data-for` 行号 ⇒ 点 A 行的采纳改到 B 行）",
+    from: L('        stage(i, { target: btn.dataset.adopt });'),
+    to: L('        stage(0, { target: btn.dataset.adopt });') },
+  { id: "V28", fix: [], kills: ["V28"],
+    why: "保存在飞不禁二次点击（半程里改的东西会被上一次提交回来的回执盖掉）",
+    from: L('      if (saving) el.disabled = true;                     // 保存在飞：禁二次点击'),
+    to: L('      // 撤证：不禁二次点击') },
+  /* ---------- V29 的变异（本轮新增）：取消必须真能取消，三条关闭通道一条都不能漏 ---------- */
+  { id: "V29", fix: [], kills: ["V29"],
+    why: "右上角 × 绕过 tryClose 直接关（modal() 自带这条不经过按钮的关闭路径 ⇒ 静默丢弃用户的草稿）",
+    from: L('    dlg.el.querySelector(".modal-close").onclick = tryClose;'),
+    to: L('    dlg.el.querySelector(".modal-close").onclick = () => { detachGuard(); dlg.close(); };') },
+  { id: "V29", fix: [], kills: ["V29"],
+    why: "两步确认退成一步（有脏态也直接关 = 用户一次误点丢掉一屏编辑）",
+    from: L('      if (!n || armed) { detachGuard(); dlg.close(); return; }'),
+    to: L('      detachGuard(); dlg.close(); return;') },
+  { id: "V29", fix: [], kills: ["V29"],
+    why: "遮罩那条关闭通道不拦（点空白处 = 静默丢弃，与 × 同一条病）",
+    from: L('    document.addEventListener("mousedown", guardBackdrop, true);'),
+    to: L('    // 撤证：不拦遮罩') },
+  { id: "V29", fix: [], kills: ["V29"],
+    why: "编辑之后那句「再点一次就放弃」不撤（恐吓常驻在页面上，用户以为改不动了）",
+    from: L('      armed = false;                       // 用户还在编辑 ⇒ 那句"再点一次就放弃"作废'),
+    to: L('      // 撤证：编辑后不撤警告') },
   { id: "V6", fix: TABLE_FIX, kills: ["V6", "V4", "V7", "V10", "V14", "V14b", "V15"],
     why: "表头「额度」改名「配额」（§3 是逐字列集，改名即判红；连带：额度列按表头定位，列名一改所有读额度格的判据同时失去对象 = 如实声明，不写成单点）",
-    from: L('        <th class="num">额度</th><th class="num">操作</th>'),
-    to: L('        <th class="num">配额</th><th class="num">操作</th>') },
+    // 重定锚（2026-10-03 用户「状态列和额度列交换下位置」⇒ 表头行改写，锚跟着走；变异后果不变：
+    //   把「额度」改名「配额」，V6 逐字列集与所有按表头定位的额度判据同时失去对象）
+    from: L('        <th class="num">额度</th><th>状态</th><th class="ops-col">操作</th>'),
+    to: L('        <th class="num">配额</th><th>状态</th><th class="ops-col">操作</th>') },
   { id: "V7", fix: [], expectGreen: true, kills: ["V7"],
     why: "第四态「尚未刷新」被折进「未知」（把 BUG-2「网关还没查过」藏成「查了但拿不到」，§3 明令区分）",
     // 重定锚（2026-10-02 五档改版：「尚未刷新」那行的 title 文案扩了字，锚跟着走；变异后果不变）
-    from: L('    return `<span style="color:var(--text-faint)" title="运行态里没有额度快照：网关还没查过这个账号（BUG-2 的可见态）">尚未刷新</span>`;'),
-    to: L('    return `<span style="color:var(--text-faint)">未知</span>`;') },
+    // 重定锚（2026-10-03 额度格重做：这一档改由 quotaPlainHTML 包一层，锚跟着走；变异后果不变）
+    // 重定锚（2026-10-03 修 D4/V13/V14 红：悬停从档名 span 搬到**额度格根节点**（cellTip 第二参），
+    //    锚跟着走；变异后果不变 = 「网关还没查过」这一档被折进「查了但拿不到」）
+    from: L('    return quotaPlainHTML(`<span class="qnone">尚未刷新</span>`,',
+          '      "运行态里没有额度快照：网关还没查过这个账号（BUG-2 的可见态）");'),
+    to: L('    return quotaPlainHTML(`<span class="qnone">未知</span>`,',
+          '      "上游未给出额度");') },
   { id: "V8", fix: WORDS_FIX, kills: ["V8"],
     why: "空态文案塞进禁用词「正常」（评审 B-2「正常」是第三个谎：status 不含任何凭据有效性事实）",
     // 重定锚（2026-10-01 改版：开关后的状态文字已删）——V8 的词表扫描覆盖 DOM + 源码字面量，
@@ -1644,9 +2266,30 @@ const MUTATIONS = [
           '  if (!n) return "";'),
     to: L('  const n = 0;   // 撤证：横幅永不出现') },
 { id: "V10", fix: [], expectGreen: true, kills: ["V10"],
-    why: "摘掉本格内的就地展开明细（2026-10-02 用户指令的反面：明细又只剩悬停可见）",
-    from: L('  out.push(packsDetailHTML(a, rq, items));'),
-    to: L('  // 撤证：逐包明细不再就地展开（回到只住 tooltip 的旧形态）') },
+    // 🔴 2026-10-03 重定锚（不是删条目）：用户否掉了"展开/折叠"本身（三家参考实现都没有折叠），
+    //    `.qpacks-detail` 整块随之删除。本条要防的**病**没变——"查到了却不给用户看，只能靠悬停"——
+    //    只是新形态下它等于"多组时不逐组给量"。于是锚挪到 chips 行：摘掉它，V10 的组级判据必须红。
+    // 重定锚（2026-10-03 三次改判：先否掉折叠 ⇒ 锚挪到 chips 行；再要求明细并进主行 ⇒ 锚挪到主行；
+    //    最终裁定「合计：900 积分」⇒ 明细回到自己一行、主行改成"标签：数值"同排）。
+    //    本条要防的**病**一字未变：多组时不逐组给量 = 组级信息只剩悬停。
+    why: "多组额度不逐组给量（摘掉明细行 ⇒ 组级余量只剩悬停 title）",
+    from: L('    out.push(`<div class="qchips">${chips}`',
+          '      + (more > 0 ? `<span class="qchip qchip-more" title="${esc(all)}">+${more} 类</span>` : "")',
+          '      + `</div>`);'),
+    to: L('    // 撤证：多组时不再逐组给量') },
+{ id: "V10", fix: [], expectGreen: true, kills: ["V10"],
+    // 🔴 新判据配新变异（不删条目、也不留"永远绿"的判据）：把「标签：数值」同排改回
+    //    "左标签 + 右浮 .qval 数值" = 用户这次实拍的那一屏的旧形状，V10 必须红。
+    why: "数值右浮回潮（去掉标签的「：」并把 .qnum 包回右浮的 .qval 壳）",
+    // 🔴 变异必须**只改语法、不改结构**：上一版只写到半截 `<span class="qval">` 没闭合，
+    //    假 DOM 解析崩掉 ⇒ V10 的红来自"整行没了"（th=4 td=2）而不是来自判据本身 = 无效撤证。
+    //    现在把 push 的三行整体换形，闭合补齐 ⇒ 红只能来自「：」缺失 + `.qval` 壳回潮。
+    from: L('    out.push(`<div class="qrow"><span class="qname" title="${esc(name)}">${esc(name)}：</span>`',
+          '      + `<b class="qnum">${val}</b>`',
+          '      + (exhausted ? `<span class="qtier">已耗尽</span>` : "") + `</div>`);'),
+    to: L('    out.push(`<div class="qrow"><span class="qname" title="${esc(name)}">${esc(name)}</span>`',
+          '      + `<span class="qval"><b class="qnum">${val}</b>`',
+          '      + (exhausted ? `<span class="qtier">已耗尽</span>` : "") + `</span></div>`);') },
 { id: "V10", fix: [], expectGreen: true, kills: ["V10", "V15"],
     why: "结构化套餐余粮被静默丢弃（quotaCell 忽略 items，退回「有余量」档——Q30 调研出的「查到了但不展示」缺陷本体）",
     from: L('  const items = (Array.isArray(rq.items) ? rq.items : []).filter((it) => it && it.name);'),
@@ -1684,25 +2327,29 @@ const MUTATIONS = [
     to: L('          ${c.balance ? "" : ""}') },
   { id: "V14", fix: [], expectGreen: true, kills: ["V14", "V7", "V4"],
     why: "摘掉 `reason===\"no_plan\"` 那一支（裁决③ 的前端映射根本没做 → 无套餐行落回「未知」/结构化数字，「无套餐」档在界面上消失）",
-    // 🔴 反向自证①的同一编辑（`to` 只留注释）；`from` 含整支三行 ⇒ 逐字唯一命中
+    // 🔴 反向自证①的同一编辑（`to` 只留注释）；`from` 含整支 ⇒ 逐字唯一命中
+    // 重定锚（2026-10-03 额度格重做：这一档也走 quotaPlainHTML；变异后果不变）
+    // 重定锚（2026-10-03 修 D4/V13/V14 红：两可性原文改挂**额度格根节点**（cellTip），锚跟着走）
     from: L('  if (rq.reason === "no_plan") {',
-          '    return `<span style="color:var(--text-faint)" title="${esc(rq.detail || "上游返回空套餐列表")}">无套餐${esc(note)}</span>`;',
+          '    return quotaPlainHTML(`<span class="qnone">无套餐${esc(note)}</span>`,',
+          '      cellTip(rq, "上游返回空套餐列表"));',
           '  }'),
     to: L('  // 撤证：no_plan 支被摘（页面没有「无套餐」这一档）') },
-  { id: "V14b", fix: [], expectGreen: true, kills: ["V14b"],
+  { id: "V14b", fix: [], expectGreen: true, kills: ["V14b", "V10"],
+    // 连带如实声明（2026-10-03）：护栏一摘，`ix-null-remaining` 那行走进"有量化余量"的分支，
+    // 而它是多组行 ⇒ V10 的「多组必须在合计后逐组给量 / 明细须与合计同块」同时失去对象 = 必红。
+    // 不是判据写松了，是这一支变异本来就会连带打穿主行结构 —— 写进 kills，不留"未声明连带"。
     why: "摘掉「上游一个可用数都没给」的护栏（= 把 remaining:null 当 0 累加并按 total<=0 判「已耗尽」，§4-3 明令禁止的谎：「没给数字」≠「数字是 0」）",
-    from: L('  if (rq.plan) out.push(`<span class="badge b-gray" style="margin-bottom:4px" title="${esc("套餐：" + rq.plan)}">${esc(rq.plan)}</span>`);',
-          '  if (!nums.length) {'),
-    to: L('  if (rq.plan) out.push(`<span class="badge b-gray" style="margin-bottom:4px" title="${esc("套餐：" + rq.plan)}">${esc(rq.plan)}</span>`);',
-          '  if (false) {') },
+    // 重定锚（2026-10-03：套餐徽章按用户指令从额度格删除 ⇒ 旧锚第一行不复存在；
+    //    护栏本身换了名字 `anyRem`，语义一字未改）
+    from: L('  if (!anyRem) {'),
+    to: L('  if (false) {') },
   { id: "V15", fix: [], expectGreen: true, kills: ["V15"],
-    why: "「重置于 X」整段不渲染（§4-5 定义 = 有效包里最早的 expires_at，被摘后用户不知道额度什么时候恢复）",
-    from: L('  const isoExp = active.map((it) => it.expires_at).filter((v) => ISO_RE.test(String(v || "")))',
-          '    .sort()[0];',
-          '  if (isoExp) buckets.push(`重置于 ${esc(shortTime(isoExp).slice(5))}`);'),
-    to: L('  const isoExp = active.map((it) => it.expires_at).filter((v) => ISO_RE.test(String(v || "")))',
-          '    .sort()[0];',
-          '  if (false && isoExp) buckets.push(`重置于 ${esc(shortTime(isoExp).slice(5))}`);') },
+    // 重定锚（2026-10-03 措辞随设计前进：「重置于 X」并入 meta 行的「至 MM-DD HH:mm」，
+    //    取数仍是"有效包里最早的那个"，§4-5 定义一字未改）
+    why: "到期时刻整段不渲染（§4-5 定义 = 有效包里最早的 expires_at，被摘后用户不知道额度什么时候恢复）",
+    from: L('  if (exp) bits.push(`至 ${esc(shortTime(exp).slice(5))}`);'),
+    to: L('  if (false && exp) bits.push(`至 ${esc(shortTime(exp).slice(5))}`);') },
   { id: "V15", fix: [], expectGreen: true, kills: ["V15"],
     why: "附属标注映射表里「未发起」那一档的两个 reason（no_credentials / no_identity）同时被摘 ⇒ **同文案两行必须同时红**，否则映射表是假的（方案 §8.2 X-R5-9）",
     from: L('  no_credentials: "（未发起）",',
@@ -1710,7 +2357,7 @@ const MUTATIONS = [
     to: L('  no_credentials: "",',
           '  no_identity: "",') },
   { id: "V17", fix: [], expectGreen: true, kills: ["V17", "V15"],
-    why: "摘掉页面的 ISO 形状护栏（§4-5 后半句「仅当匹配 ^\\d{4}-\\d{2}-\\d{2} 才渲染」，谓词恒真）⇒ 上游秒级 epoch 直接进用户可见面：tooltip 印 10 位裸 epoch（V17 红）、「重置于」被 slice(5) 切成 6 位残串（V15 的「出现即合形」红）",
+    why: "摘掉页面的 ISO 形状护栏（§4-5 后半句「仅当匹配 ^\\d{4}-\\d{2}-\\d{2} 才渲染」，谓词恒真）⇒ 上游秒级 epoch 直接进用户可见面：tooltip 印 10 位裸 epoch（V17 红）、到期时刻被 slice(5) 切成 6 位残串（V15 的「出现即合形」红）",
     // 🔴 这就是 X-R5-5 说的那条绕过：`shortTime(1790956800).slice(5)` = "956800"，
     //    只扫 visibleText 的 V17 看不见 6 位残串 ⇒ 本条能红的通路是 **tooltip 里的 `失效于`**
     //    （V17 因此必须同时扫 `tipOf(cell)`，见判据段注释），残串那一半由 V15 的正形兜住。

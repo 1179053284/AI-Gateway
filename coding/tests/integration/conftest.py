@@ -103,7 +103,7 @@ def gateway_config(vendor_port: int, *, models: list[dict],
 
 
 def chat_res(keys: str = "AB", *, name: str = "test-model", **over) -> dict:
-    """chat 系统模型 + 每资源一个引用（顺序 = 优先级；厂商模型 vm-{k}）。"""
+    """chat 网关模型 + 每资源一个引用（顺序 = 优先级；供应商模型名 vm-{k}）。"""
     resources = over.pop("resources", None)
     if resources is None:
         resources = [{"resource": f"res-{k}", "model": f"vm-{k}"} for k in keys]

@@ -99,7 +99,7 @@ class RaccoonOut(FamilyOpenAIOut):
 
     def prepare_body(self, body: dict, *, vendor_model: str, cred: dict,
                      meta: dict, device: dict) -> dict:
-        """体塑造：落厂商模型名 + 思考档位方言翻译（模块头 🔴 的落地）。
+        """体塑造：落供应商模型名 + 思考档位方言翻译（模块头 🔴 的落地）。
 
         除 `thinking` 方言外**不动**任何字段（采样 / 工具 / 图片由网关 IR 层与
         `FamilyOpenAIOut` 的既有路径负责）。

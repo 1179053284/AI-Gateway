@@ -7,7 +7,7 @@
 | # | 端点 | 判据 |
 |---|---|---|
 | 1 | `GET …/{product}/catalog` | 账号选源 / 空凭据兜底 / `suggest` 四级 + null / `mapped_to` / **10 产品兜底逐条** |
-| 2 | `POST …/mappings` | 建模型 + 物化 + 追加 + 幂等 + 他处已挂 → skipped + 拒绝分支**零写盘** |
+| 2 | `POST …/mappings` | 建模型 + 物化 + 追加 + 幂等 + **改挂 = 搬条目**（2026-10-05）+ 原落点不唯一 → skipped 且**零写盘** |
 | 3 | `POST …/claim-all` | 产品过滤 / 能力位拒绝 / `details` 收集 / 全局腿按动作声明枚举 |
 
 假钩子（产品契约表 `_HOOKS` 注入）与假上游（`accounts.net.make_client` → MockTransport）
@@ -297,45 +297,89 @@ class TestMappings:
         model2 = next(m for m in saved2["models"] if m["name"] == "glm-5.3")
         assert len(model2["resources"]) == 2, "重发把映射挂了第二遍（不去重）"
 
-    async def test_skip_when_pair_is_mapped_on_another_model(self, vendor, make_gateway, client):
-        """(resource, model) 组合已在**别的**系统模型上 → 进 `skipped`（附账号与占位模型名），
-        且**整体不生效**：产品位不写、目标模型不建、一条映射都不挂。
+    async def test_repoint_moves_the_entry_instead_of_rejecting(self, vendor, make_gateway,
+                                                                client):
+        """2026-10-05 用户裁定「为什么要多保存这一步呢，好傻好蠢的设计」⇒ **改挂 = 一次动作**。
 
-        🔴 Q33 评审 R1-① 判死后的契约翻转（旧行为 = 半落地，已作废）：原先这条会
-        ① 把产品位改成新目标、② 新建一个空的目标模型，只在扇出那一步跳过 ——
-        结果是"位说 vm-z 挂在 kimi-k3、条目实际还留在 other 上"，而 other 就此静默
-        掉出 `/v1/models`，回执仍是 200。现在预检在先：要么位和条目一起改，要么一个都不动。
+        本行**原来的落点**（产品位所指；无位时 = 那唯一一个持有该 `(资源 × 供应商模型名)` 组合的
+        网关模型）不算冲突，算移动：条目本体整条搬到新目标下，产品位在同一次写盘里一起改指。
+        旧契约把这条整条拒（`skipped` + 指路"先去「网关模型管理」页把该映射移除"），界面只能
+        "先选「跳过」保存一次、再选新目标保存一次" —— 那一步多余保存的根因在**写面**，不在前端。
+        🔴 "要么位和条目一起改，要么一个都不动"没有放宽：搬的是条目**本体**（推理默认住在这条上，
+        删了重建会把它清空 —— 第八轮 B-1' 那条），且整行只 `save_config` 一次。
         """
-        gw = await make_gateway(_cfg(vendor.port, models=[{
-            "name": "other", "endpoint": "chat",
-            "resources": [{"resource": "res-Q", "model": "vm-z"}]}],
+        gw = await make_gateway(_cfg(vendor.port, models=[]))   # 起初没有任何网关模型
+        _seed("buddy", "map-s2", {"access_token": SECRET})
+        url = f"{gw.base_url}/admin/api/accounts/mappings"
+        first = (await client.post(url, json={
+            "product": "buddy", "items": [{"model": "vm-z", "target": "glm-5.3"}]})).json()
+        assert first["added"] == 1 and first["moved"] == 0, first
+        assert first["created_models"] == ["glm-5.3"]
+        rid = first["accounts"][0]["resource_id"]
+
+        # 条目级推理默认（界面在「网关模型管理」行内改的就是这一位）—— 移动必须带着它走
+        cfg = yaml.safe_load(Path(gw.config_path).read_text(encoding="utf-8"))
+        ref = next(e for m in cfg["models"] if m["name"] == "glm-5.3"
+                   for e in m["resources"] if e["resource"] == rid)
+        ref["reasoning"] = {"effort": "high"}
+        Path(gw.config_path).write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
+        assert (await client.post(f"{gw.base_url}/admin/api/config/reload")).status_code == 200
+
+        out = (await client.post(url, json={
+            "product": "buddy", "items": [{"model": "vm-z", "target": "kimi-k3"}]})).json()
+        assert out["moved"] == 1, out
+        assert out["added"] == 0 and out["already"] == 0 and out["skipped"] == []
+        assert out["created_models"] == ["kimi-k3"]           # 目标模型按既有规则就地建
+        assert out["product_models"] == [{"model": "vm-z", "target": "kimi-k3",
+                                          "enabled": True}]   # 位一起改指新目标
+        assert out["emptied_models"] == ["glm-5.3"]           # 旧模型一条不剩 ⇒ 会掉出 /v1/models
+        saved = _saved(gw)
+        moved_ref = next(m for m in saved["models"] if m["name"] == "kimi-k3")["resources"]
+        assert [(e["resource"], e["model"], e["enabled"]) for e in moved_ref] == [
+            (rid, "vm-z", True)]
+        # 🔴 搬的是本体：条目级推理默认必须跟着走，不能被"删了重建"抹平
+        assert (moved_ref[0]["reasoning"] or {}).get("effort") == "high", moved_ref
+        assert next(m for m in saved["models"] if m["name"] == "glm-5.3")["resources"] == []
+        ids = [m["id"] for m in (await client.get(
+            f"{gw.base_url}/v1/models",
+            headers={"Authorization": "Bearer gw-user"})).json()["data"]]
+        assert "kimi-k3" in ids and "glm-5.3" not in ids      # 声明侧跟着这一次移动一起变
+
+    async def test_ambiguous_landing_is_still_rejected_with_zero_write(self, vendor,
+                                                                       make_gateway, client):
+        """不变量的另一半必须仍可红：**原落点不唯一** ⇒ 写面不猜，整条拒、位不写、模型不建。
+
+        形状 = 别名（同一 `(资源 × 供应商模型名)` 同时挂在两个网关模型下 —— 跨模型别名是既有
+        设计，`schemas.py` 的唯一性校验只查**同一模型内**重复）且**没有产品位** ⇒ 界面那一行的
+        "当前挂在哪"本身就有两个答案，搬哪一侧都是替用户做决定，且会把另一侧留成孤儿
+        （这一行同时住两处 = 本写面自己宣布禁止的形状）。
+        """
+        gw = await make_gateway(_cfg(vendor.port, models=[
+            {"name": "other", "endpoint": "chat",
+             "resources": [{"resource": "res-Q", "model": "vm-z"}]},
+            {"name": "other2", "endpoint": "chat",
+             "resources": [{"resource": "res-Q", "model": "vm-z"}]}],
             extra_resources=[{
                 "id": "res-Q", "name": "账号资源", "product": "buddy",
-                "account_ref": "map-s2", "account": "map-s2", "protocol": "openai",
+                "account_ref": "map-s3", "account": "map-s3", "protocol": "openai",
                 "base_url": "http://127.0.0.1:9/v1", "api_key": ""}]))
-        _seed("buddy", "map-s2", {"token": SECRET})
+        _seed("buddy", "map-s3", {"access_token": SECRET})
 
-        r = await client.post(f"{gw.base_url}/admin/api/accounts/mappings",
-                              json={"product": "buddy",
-                                    "items": [{"model": "vm-z", "target": "kimi-k3"}]})
-        assert r.status_code == 200, r.text
-        out = r.json()
-        assert out["added"] == 0 and out["already"] == 0
-        assert out["created_models"] == [] and out["product_models"] == []   # 半落地判据
-        assert out["reload"] is True
-        assert out["accounts"] == [{"name": "map-s2", "enabled": True,
-                                    "resource_id": "res-Q"}]   # 命中既有物化行（幂等复用）
-        assert len(out["skipped"]) == 1
-        item = out["skipped"][0]
-        assert item["model"] == "vm-z" and item["target"] == "kimi-k3"
-        assert "map-s2" in item["reason"] and "other" in item["reason"]
-        assert "整体未生效" in item["reason"]                     # 回执如实说明"什么都没动"
+        out = (await client.post(f"{gw.base_url}/admin/api/accounts/mappings",
+                                 json={"product": "buddy",
+                                       "items": [{"model": "vm-z", "target": "kimi-k3"}]})).json()
+        assert out["moved"] == 0 and out["added"] == 0, out
+        assert out["product_models"] == [] and out["created_models"] == []
+        assert len(out["skipped"]) == 2, out["skipped"]      # 两个持有模型各报一条原话
+        assert {s["reason"].split("已挂在网关模型 ")[1].split("（")[0]
+                for s in out["skipped"]} == {"other", "other2"}
+        assert all("整体未生效" in s["reason"] for s in out["skipped"])
         saved = _saved(gw)
-        assert "kimi-k3" not in {m["name"] for m in saved["models"]}   # 不留下空模型
-        assert saved.get("product_models") in (None, [])               # 产品位没被改写
-        other_refs = next(m for m in saved["models"] if m["name"] == "other")["resources"]
-        assert [(e["resource"], e["model"], e["enabled"]) for e in other_refs] == [
-            ("res-Q", "vm-z", True)]                            # 旧挂载原样保留
+        assert "kimi-k3" not in {m["name"] for m in saved["models"]}
+        assert saved.get("product_models") in (None, [])
+        for name in ("other", "other2"):
+            refs = next(m for m in saved["models"] if m["name"] == name)["resources"]
+            assert [e["resource"] for e in refs] == ["res-Q"], (name, refs)
 
     async def test_refusals_leave_disk_untouched(self, vendor, make_gateway, client):
         """拒绝分支（未知产品 / 参数形态 / 目标不可追溯 / 无已启用账号）→ 400 可读原因，

@@ -1,5 +1,5 @@
 
-> 🔴 **术语读法（2026-10-04 定版）**：本文规范性正文已统一到 **厂商 = 模型生产公司 / 供应商 = 接入方（「接入模型资源」每个 Key 接入 + 「接入账号资源」每个产品账号）/ 网关模型 = 把各供应商的同一厂商模型标准化成一个名字并统一规格（旧称「系统模型」作废、同义）/ 资源 = 供应商名下一条可调用模型接入**。版本史段落（`> vN（…）`、变更表 `| v… |`）、Q## 归档条目原文与用户原话引号内**保留当时措辞**（存证不改写），其中指接入方的「厂商」一律按**供应商**读、「系统模型」按**网关模型**读；定义源 = 需求文档 PRD §2「术语与核心概念」，执行细则 = 项目规则 `mg-terminology`。🔴 另注：`resources[].vendor` 这个字段名承载的是**供应商名称**（历史命名，不改字段以免打断实盘配置），内置目录的 `vendor` 字段承载的才是**厂商**（生产公司）——同名字段两种语义，判身份看它在哪一层。
+> 🔴 **术语读法（2026-10-04 定版）**：本文规范性正文已统一到 **厂商 = 模型生产公司 / 供应商 = 接入方（「接入模型资源」每个 Key 接入 + 「接入账号资源」每个产品账号）/ 网关模型 = 把各供应商的同一厂商模型标准化成一个名字并统一规格（旧称「系统模型」作废、同义）/ 资源 = 供应商名下一条可调用模型接入**。版本史与存证类内容**保留当时措辞、不改写**（`> vN（…）`、变更表 `| v… |`、`> N. v0.x「…」→ **推翻/调整**` 原因链、`## 5.1 实施校正记录`、Q## 归档条目原文、用户原话引号内），其中指接入方的「厂商」一律按**供应商**读、「系统模型」按**网关模型**读；定义源 = 需求文档 PRD §2「术语与核心概念」，执行细则 = 项目规则 `mg-terminology`。🔴 另注：`resources[].vendor` 这个字段名承载的是**供应商名称**（历史命名，不改字段以免打断实盘配置），内置目录的 `vendor` 字段承载的才是**厂商**（生产公司）——同名字段两种语义，判身份看它在哪一层。
 <p align="right"><strong>English</strong> · <a href="./README.zh-CN.md">简体中文</a></p>
 
 <p align="center">
@@ -10,7 +10,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-171b22" alt="License: Apache-2.0">
   <img src="https://img.shields.io/badge/python-3.12%2B-171b22" alt="Python 3.12+">
-  <img src="https://img.shields.io/badge/tests-2010%2F2010-188038" alt="Tests: 2010/2010">
+  <img src="https://img.shields.io/badge/tests-1967%2F1967-188038" alt="Tests: 1967/1967">
   <img src="https://img.shields.io/badge/runtime-100%25%20local-188038" alt="100% local runtime">
 </p>
 
@@ -33,7 +33,7 @@ Point Trae, Cursor, Cherry Studio or any OpenAI-compatible client at `http://127
 | Scheduling | `x`/`y`/`m` concurrency-aware routing (see below) |
 | Failover-continue | When retries are exhausted, the same request resumes on the next available resource — tools never see the error as long as one resource works |
 | Streaming safety | 15s SSE heartbeat; pre-first-token failures switch invisibly; after partial output, received content and errors are passed through verbatim instead of being swallowed; client cancellations propagate upstream |
-| Reasoning params | Three-level merge: request-level > resource-level default > producer builtin (chat only) |
+| Reasoning params | Three-level merge: request-level > resource-level default > supplier-channel default (chat only) |
 | Web console | Overview, model resources, gateway models, dashboard, request logs, API access and settings, plus a templates page (built-in UI reference template gallery) — light / dark / system themes |
 | Plain-text data | YAML config, JSONL event streams, no database, no binary blobs |
 | Access tokens | Multiple named tokens for `/v1/*`, one per tool, individually revocable |
@@ -177,7 +177,7 @@ Supplier presets pre-fill protocol and endpoints (SenseNova ships both `api` and
 
 > **Note:** This project is under continuous development and provided for personal research use only. The feature set is still simple — it primarily targets the maintainer's own use cases. Ideas and feedback are welcome in [Issues](https://github.com/1179053284/AI-Gateway/issues).
 
-Current version: **v0.2.0** — matches `mgw --version` and `pyproject.toml`. Test suite: **2010 passed / 3 skipped**（= 本提交树收集 2013 条减 3 条 skip） as of 2026-10-04; reproduce with `.venv/bin/python -m pytest -q` (a `test_v2_readme_claims.py` guard fails if this number drifts from reality). Live-provider calls are verified for the OpenAI path; ZCode / Anthropic-path items that need real credentials remain **not yet verified**.
+Current version: **v0.2.0** — matches `mgw --version` and `pyproject.toml`. Test suite: **1967 passed / 1 skipped** as of 2026-10-04; the count is refreshed with each tree (reproduce with `.venv/bin/python -m pytest -q`; the `test_v2_readme_claims.py` guard pins it to reality). Live-provider calls are verified for the OpenAI path; ZCode / Anthropic-path items that need real credentials remain **not yet verified**.
 
 Planned next:
 

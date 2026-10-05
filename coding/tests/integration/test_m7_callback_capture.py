@@ -16,7 +16,7 @@
 落盘开关；取消 / TTL 超时丢弃暂存（全部路径都不留半成品）。文末
 「M7-E 两阶段提交：丢弃纪律」一节按"没有确认调用 ⇒ 磁盘上没有账号"成对钉死。
 
-上游一律 `httpx.MockTransport`（**不打任何厂商端点**）；监听一律 127.0.0.1 随机/18080
+上游一律 `httpx.MockTransport`（**不打任何供应商端点**）；监听一律 127.0.0.1 随机/18080
 端口，**不碰 :8300**；账号根 = `tmp_path`（conftest 的 `MG_CONFIG` 隔离 + 引擎 `root=`）。
 """
 
@@ -156,7 +156,7 @@ def lobster_callback(session, *, code: str = "CODE-1", state: str | None = "USE-
 
 
 async def browse(url: str) -> httpx.Response:
-    """充当浏览器：向那个端口发一条**真** GET（就是厂商 302 之后会发生的事）。"""
+    """充当浏览器：向那个端口发一条**真** GET（就是供应商 302 之后会发生的事）。"""
     async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
         return await client.get(url)
 
@@ -549,7 +549,7 @@ async def test_no_listener_leaks_across_many_sessions(root, monkeypatch):
 #    `tests/accounts/test_zcode.py`，这里只断言"界面拿到的那串"）；
 # ② `device_code` 型产品**声明了** `_CALLBACK` 就真有一条本机监听（引擎的派发
 #    自 M7-D 起按声明表，不按登录形态）—— 到达 → `login_callback` → `/oauth/token`
-#    → 凭据落盘，全程不打任何真实厂商端点；
+#    → 凭据落盘，全程不打任何真实供应商端点；
 # ③ 两条通道赛跑时 `store.commit_login` **恰好一次**（「flow is still mine」守卫）。
 
 ZCODE_INIT = zcode_oauth.CLI_INIT_PATH

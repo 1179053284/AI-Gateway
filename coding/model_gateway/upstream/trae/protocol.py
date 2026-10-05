@@ -1205,7 +1205,7 @@ def openai_chunk(delta: dict, *, finish_reason: str | None = None,
                  model: str = "", created: int | None = None) -> dict:
     """构造一个 OpenAI `chat.completion.chunk`（`buildOpenAIChunk`，`trae.ts:1792-1823`）。
 
-    形状与 `openai_out` 收到的厂商 chunk 逐字一致（消费方 = 既有 SSE 出口）：
+    形状与 `openai_out` 收到的供应商 chunk 逐字一致（消费方 = 既有 SSE 出口）：
     `choices[0].delta` + 可选 `finish_reason` / `usage`。
     """
     choice: dict[str, Any] = {"index": 0, "delta": delta}

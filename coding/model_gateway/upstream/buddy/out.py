@@ -14,7 +14,7 @@ UA / 兜底表）全部已在 `product.py::_PROFILE` 里参数化（`product.ts:
 | 响应 | OpenAI 形态 + 标准 SSE（含 `reasoning_content`） | `21 §2.5`：「buddy：OpenAI SSE（含 reasoning_content）」 | 复用 `OpenAIOutAdapter` 的 SSE 解析与思考字段归一化 |
 | `X-IDE-Name/Type/Version` | `attributionName` / `attributionName` / `clientVersion`（**已取证**） | `buddy-adapter.ts:1573-1576` + `product.ts:112-120`（字段语义）、`:278-279`/`:401-402`（取值） | **发**（F3 修正：原注释写"未取证"不实；缺这组头上游「使用端」显示 `-`） |
 | UA 按模型族分档 | 只取到单一 UA 形态（DSH `userAgentByModelFamily` 对 workbuddy 有分档规则，本网关未逐档取证） | `product.ts:93-99,428-433` | 发注册表 UA；登记缺口（不按模型猜分档） |
-| 请求体 | `prompt_cache_key` / `reasoning_effort` / `max_tokens` 等由 DSH 组装 | 调用链图（`research/_v1-archive/01-…机制.md`；不要引 `buddy-adapter.ts:1089-1126`——那是 `resolveCallWithInfo` 的 maxTokens/reasoning 段，与出站头无关） | 网关侧由既有 IR/参数注入负责（Q24/FR-3.16）；本族 `prepare_body` 只落厂商模型名，**不加自创字段** |
+| 请求体 | `prompt_cache_key` / `reasoning_effort` / `max_tokens` 等由 DSH 组装 | 调用链图（`research/_v1-archive/01-…机制.md`；不要引 `buddy-adapter.ts:1089-1126`——那是 `resolveCallWithInfo` 的 maxTokens/reasoning 段，与出站头无关） | 网关侧由既有 IR/参数注入负责（Q24/FR-3.16）；本族 `prepare_body` 只落供应商模型名，**不加自创字段** |
 | 非流式 | 通道**只收 SSE**：`stream:false` 实盘 4/4 回 `400 {"code":11101}` | :8300 真实两号（2026-10-04，`coding/data/usage/events-20261004.jsonl`）；同族 DSH 侧 `buddy/protocol.py:277` 亦只走 SSE | `stream_only = True` ⇒ 族基类内部走流式 + 本地聚合（`adapters/product_out.py`） |
 | 首条 system | workbuddy 要求首条必须是 `system`：否则 `400 {"code":11128,"msg":"first message is not system prompt"}`；**buddy 同形请求为 200** | :8300 真实数据（2026-10-04：11128 三次全部来自 workbuddy 两个号，buddy 零命中） | `prepare_body` 按 `profile.system_first_text` 补齐 —— 文案只在 **workbuddy 档案**里登记（用户 2026-10-04 指定），buddy 留空 ⇒ 不给没这条限制的通道凭空注入；客户端写了 system 时**内容一字不改、只挪到首位** |
 
@@ -44,7 +44,7 @@ class BuddyFamilyOut(FamilyOpenAIOut):
     #: request is currently not supported"}`（:8300 真实两号 4/4 命中，2026-10-04，
     #: 判据见 `adapters/product_out.py::FamilyOpenAIOut.stream_only`）。非流式请求由族基类
     #: 内部走流式并本地聚合 —— 客户端的 `stream:false` 是与**网关**的契约，不该变成
-    #: 客户端可见的厂商通道错。
+    #: 客户端可见的供应商通道错。
     stream_only = True
 
     def __init__(self, account: ProductAccount, profile: p.ProductProfile) -> None:
@@ -73,7 +73,7 @@ class BuddyFamilyOut(FamilyOpenAIOut):
 
     def prepare_body(self, body: dict, *, vendor_model: str, cred: dict,
                      meta: dict, device: dict) -> dict:
-        """体塑造：落厂商模型名 + **首条 system 补齐**（只对"有这条脾气"的通道生效）。
+        """体塑造：落供应商模型名 + **首条 system 补齐**（只对"有这条脾气"的通道生效）。
 
         - 取证（:8300 真实两号，2026-10-04）：workbuddy 对首条非 `system` 的请求回
           `400 {"code":11128,"msg":"first message is not system prompt"}`，而 buddy 的**同形

@@ -1,6 +1,6 @@
 """OpenAI 兼容入站端点（tech-design §4.1 / §4.5 / §6，M1 任务 3/5/8）。
 
-- GET /v1/models：全部启用系统模型（OpenAI 格式）
+- GET /v1/models：全部启用网关模型（OpenAI 格式）
 - POST /v1/chat/completions：stream true/false 全支持；延迟提交（首内容事件前
   零字节、耗尽返回非 200 JSON——绝不「先 200 再 error」）；SSE 心跳注释帧；
   中途失败 error 帧两分支（retryable 标注 / 原始错误透传）
@@ -72,7 +72,7 @@ async def list_models(request: Request):
 
 
 def _resolve_model_or_404(request: Request, model_name: str):
-    """模型解析（tech §4.2）：系统模型精确 → 枚举池别名 → 规范化；无命中 404 + 候选。
+    """模型解析（tech §4.2）：网关模型精确 → 枚举池别名 → 规范化；无命中 404 + 候选。
 
     命中 enabled=false 的禁用模型（含别名命中）→ 同样 404，但 code=model_disabled
     （FR-2.3 / Q17 / D1：不进入选路、不触达上游；禁用优先于端点类型检查）。
@@ -81,7 +81,7 @@ def _resolve_model_or_404(request: Request, model_name: str):
     model_def, candidates = resolve_request_model(model_name, runtime.config.models, runtime.enum_pool)
     if model_def is None:
         body = {"error": {
-            "message": f"模型 '{model_name}' 不存在（未定义的系统模型名，且枚举池无匹配）",
+            "message": f"模型 '{model_name}' 不存在（未定义的网关模型名，且枚举池无匹配）",
             "type": "invalid_request_error",
             "code": "model_not_found",
             "requested_model": model_name,
@@ -187,10 +187,16 @@ async def _chat_stream_response(request: Request, scheduler, ir, ctx, model_def,
     try:
         first = await gen.__anext__()
     except StopAsyncIteration:
-        # 零内容成功（罕见）：空流 + [DONE]
+        # 零内容：调度层（scheduler.stream_chat）已把「流收尾但零内容」按 502 可重试抛出，
+        # 走完重试/换号仍回空才会到这里 ⇒ 对客户端**如实回错误**，不再伪造 [DONE] 空流
+        # （S-1，2026-10-05：旧实现调用的 `_sse()` 在本模块不存在 ⇒ NameError → 未分类 500，
+        #  而事件行记 success —— test_zcode_glm_flash_failover.py 曾把这条钉成缺陷证据）。
         watcher.cancel_sync()
-        return StreamingResponse(_sse(_finish_only()), media_type="text/event-stream",
-                                 headers=_sse_headers())
+        return _openai_json_error(503, {
+            "message": "上游通道回空（未产生任何内容帧，重试与换号后仍无内容）",
+            "type": "gateway_error",
+            "code": "EMPTY_UPSTREAM_CONTENT",
+        })
     except GatewayError as e:
         watcher.cancel_sync()
         return _openai_json_error(e.status_code, e.to_openai_error())
@@ -245,12 +251,8 @@ def _sse_headers() -> dict:
             "Connection": "keep-alive"}
 
 
-def _finish_only():
-    yield "data: [DONE]\n\n"
-
-
 def _sse_error_frame(ev: dict) -> str:
-    """中途失败 error 帧：厂商原始错误不修饰 + retryable 标注（§6 两分支）。"""
+    """中途失败 error 帧：供应商原始错误不修饰 + retryable 标注（§6 两分支）。"""
     err = ev.get("error")
     if not isinstance(err, dict):
         err = {"message": str(err)}

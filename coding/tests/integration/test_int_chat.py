@@ -253,6 +253,9 @@ class TestKeyMasking:
             assert "sk-A" not in text, f"{path.name} 泄漏明文 Key"
 
     async def test_admin_config_masks_keys(self, vendor, make_gateway, client):
+        """GET 默认脱敏。🔴 S-2（2026-10-05）：脱敏形态改为**显式哨兵前缀**
+        `mgw-masked:sk-****k-1` —— 旧形态 `sk-****k-1` 与"用户手滑把掩码当新 Key 粘回"
+        同形，是审计 S-2 静默毁数据路径的一半；哨兵形态与任何合法明文都不同形。"""
         vendor.set("sk-A", Ok())
         gw = await make_gateway(gateway_config(vendor.port, models=[chat_res("A")],
                                                gateway={"access_tokens": [
@@ -260,8 +263,11 @@ class TestKeyMasking:
         resp = await client.get(f"{gw.base_url}/admin/api/config")
         assert resp.status_code == 200
         text = json.dumps(resp.json(), ensure_ascii=False)
-        assert "sk-A" not in text
-        assert "****" in text  # 脱敏形态（短 key 全掩码）
+        # 短 key（≤8 位）经 mask_key 是纯 "****" ⇒ 哨兵形态 = "mgw-masked:****"
+        assert "mgw-masked:" in text
+        # 明文绝不出现：脱敏值的明文位不含 "sk-A" 本体
+        import re
+        assert not re.search(r'"api_key":\s*"sk-A"', text)
 
 
 class TestAdminStatusAndSwitchEvents:
@@ -434,7 +440,7 @@ class TestSwitchReMergesReasoning:
 
 
 class TestModelParamsInjection:
-    """Q24：网关级模型参数注入端到端（工具传参 > 网关设置 > 厂商内置；仅 chat）。"""
+    """Q24：网关级模型参数注入端到端（工具传参 > 网关设置 > 供应商通道默认；仅 chat）。"""
 
     async def test_inject_and_request_override(self, vendor, make_gateway, client):
         vendor.set("sk-A", Ok(content="r"))
@@ -454,7 +460,7 @@ class TestModelParamsInjection:
             self, vendor, make_gateway, client):
         """🔴 两处都能配 `reasoning_effort` 时的定序（PRD FR-3.16 / Q15 为准，本轮定论）。
 
-        生效序 = **请求级 > 资源级默认 > 参数卡（网关设置）> 厂商内置**：
+        生效序 = **请求级 > 资源级默认 > 参数卡（网关设置）> 供应商通道默认**：
         资源级默认更具体（"免费资源默认 low 省额度、主力资源默认 max"），
         所以它盖过参数卡；参数卡盖不过时由 `param_shadowed` 告警说明（§21 / BUG-2 可见性）。
         """
@@ -490,7 +496,7 @@ class TestModelParamsInjection:
             await gw.stop()
 
     async def test_no_params_passthrough(self, vendor, make_gateway, client):
-        """网关未配置 params → 不注入任何键（走厂商内置默认）。"""
+        """网关未配置 params → 不注入任何键（走该供应商通道默认）。"""
         vendor.set("sk-A", Ok(content="r"))
         gw = await make_gateway(gateway_config(vendor.port, models=[chat_res("A")]))
         await _chat(client, gw, _body())
@@ -517,9 +523,10 @@ class TestSpecDefaultOutboundLeg:
     把 `scheduler.py` 的 `apply_spec_defaults` 调用点删掉仍然全绿）。
 
     这条把"出站缺省带不带规格的数"钉在**真实请求路径**上：
-    在册厂商模型的枚举目录里 `sensenova-6.8-flash-lite` 的 `max_output=65536` ⇒
+    这条资源的供应商模型名 `sensenova-6.8-flash-lite` 恰好等于厂商标准名 ⇒ 枚举目录（按
+    **厂商模型标准名** `EnumEntry.name` 索引，见 `core/model_spec.py:224`）里它的 `max_output=65536` ⇒
     调用方不给 `max_tokens` 时，出站体必须带上**该资源自己**的 65536；
-    给了就用给的（Q28 的优先级「工具传参 > 网关设置 > 规格 > 厂商内置」不得被翻案）。
+    给了就用给的（Q28 的优先级「工具传参 > 网关设置 > 规格 > 供应商通道默认」不得被翻案）。
     """
 
     async def test_vendor_spec_default_reaches_outbound_body(self, vendor, make_gateway, client):
@@ -564,11 +571,11 @@ class TestSpecDefaultOutboundLeg:
 
 
 class TestReasoningDefaultIsPerSystemModel:
-    """🔴 INT-92 · 资源级**推理默认**的键必须带系统模型维度（评审 R9-B-1'）。
+    """🔴 INT-92 · 资源级**推理默认**的键必须带网关模型维度（评审 R9-B-1'）。
 
     与本轮刚修的 `resource_specs` 是同一类缺陷，而且就在同一次装配里、红线注释的上面二十行：
-    `reasoning` 住在 `models[].resources[]` 这条条目上，同一个 `(资源, 厂商模型)` 被别名挂到
-    第二个系统模型时两边完全可以填不同默认，而旧表键只有 `(rid, vendor_model)` + 后写覆盖 ⇒
+    `reasoning` 住在 `models[].resources[]` 这条条目上，同一个 `(资源, 供应商模型名)` 被别名挂到
+    第二个网关模型时两边完全可以填不同默认，而旧表键只有 `(rid, vendor_model)` + 后写覆盖 ⇒
     顺序决定哪一份活下来，另一份整份消失（或凭空串到另一个网关名上），定向判据零红。
     """
 
@@ -633,7 +640,7 @@ class TestCapacityAwareRouting:
             len(vendor.bodies_for("sk-A")) == 0
 
     async def test_unknown_capacity_is_never_a_rejection(self, vendor, make_gateway, client):
-        """目录里查不到的厂商模型 ⇒ `max_output=None` = 不知道 ⇒ 照发，不拦、不换。"""
+        """目录里查不到的供应商模型名 ⇒ `max_output=None` = 不知道 ⇒ 照发，不拦、不换。"""
         vendor.set("sk-A", Ok(content="r"))
         cfg = gateway_config(vendor.port, models=[{
             "name": "test-model", "endpoint": "chat",

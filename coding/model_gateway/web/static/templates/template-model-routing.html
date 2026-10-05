@@ -9,7 +9,7 @@
 <body>
 <!-- ============================================================
   T-18 · 模型路由（匹配 · 选路 · 切换 · 恢复） · A 族 · v1.0
-  用途：把「入站模型名 → 系统模型 → 资源池 → 实际承接资源」的完整路由判定链
+  用途：把「入站模型名 → 网关模型 → 资源池 → 实际承接资源」的完整路由判定链
         显式化为可看/可查/就近可调的页面（需求预演，非线上功能）。
   语义全部来自现行线上机制：
     匹配 = 规范名精确 + 别名等价 + custom:/custom-local: 前缀剥离（FR-1.4 / Q25-⑦）；
@@ -17,7 +17,7 @@
     切换 = 资源级 y 先于请求级 m（y=2，m=3）（FR-3.4/3.5/3.7，Q14）/ 429 短指数退避；
     恢复 = 冷却期满按原优先级归位；全部不可用才 503 兜底（FR-3.9/3.10）。
   不含（避免越界）：「智能语义路由」（PRD §7 非目标）、「虚拟模型名 / 策略路由」（需先翻案）、
-  「厂商前缀透传」（P2 规划）—— 仅在匹配规则卡内以文字标注归属。
+  「供应商命名空间前缀透传」（P2 规划）—— 仅在匹配规则卡内以文字标注归属。
   组件规范（逐像素值）：docs/specs/frontend-spec.md
 ============================================================ -->
 <div class="app">
@@ -126,7 +126,7 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><line x1="12" x2="12" y1="5" y2="19"/><line x1="5" x2="19" y1="12" y2="12"/></svg>
             <span>添加模型映射</span>
           </button>
-          <div class="form-hint" style="margin-top:8px;">演示数据：4 个系统模型 · 4 条资源映射（3 条资源）· kimi-k3 未配置</div>
+          <div class="form-hint" style="margin-top:8px;">演示数据：4 个网关模型 · 4 条资源映射（3 条资源）· kimi-k3 未配置</div>
         </div>
       </aside>
 
@@ -140,7 +140,7 @@
           <!-- 形态预演声明 -->
           <div class="alert alert-info">
             <div class="alert-title">需求形态预演 · 非线上功能</div>
-            <div>本页演示数据：<span class="mono">4 个系统模型 / 3 条资源 / 4 条资源映射</span>。页面表达的语义全部来自现行线上机制——匹配（规范名 + 别名 + 前缀剥离）· 选路（并发溢出生效集 · 在途最少者）· 切换（y 先判定 · 重试后换资源续跑）· 恢复（冷却归位 · 全挂才 503）；不含智能语义路由 / 策略路由 / 未匹配透传等未定项。</div>
+            <div>本页演示数据：<span class="mono">4 个网关模型 / 3 条资源 / 4 条资源映射</span>。页面表达的语义全部来自现行线上机制——匹配（规范名 + 别名 + 前缀剥离）· 选路（并发溢出生效集 · 在途最少者）· 切换（y 先判定 · 重试后换资源续跑）· 恢复（冷却归位 · 全挂才 503）；不含智能语义路由 / 策略路由 / 未匹配透传等未定项。</div>
           </div>
 
           <!-- 演示状态切换器（驱动链路 / 顺位 / 事件联动） -->
@@ -182,7 +182,7 @@ var RES = {
   "res-c4e80f92": { name: "GLM 开放平台 / 主账号", vendor: "智谱 GLM" }
 };
 
-/* ---------- 系统模型（实体口径；统计为今日数据） ---------- */
+/* ---------- 网关模型（实体口径；统计为今日数据） ---------- */
 var MODELS = {
   "deepseek-v4-pro": {
     endpoint: "chat", group: "编程", alias: [],
@@ -331,7 +331,7 @@ function chainCard(m, state) {
 
   var chain = chainBlock('① 入站', '命中变量', '<span class="mono">model: "' + m + '"</span>', 'custom: / custom-local: 前缀由网关剥离')
     + SCHEV
-    + chainBlock('② 匹配', '系统模型', '<span class="mono">' + m + '</span>', alias)
+    + chainBlock('② 匹配', '网关模型', '<span class="mono">' + m + '</span>', alias)
     + SCHEV
     + chainBlock('③ 选路', '生效集', selVal, selSub)
     + SCHEV
@@ -370,7 +370,7 @@ function poolCard(m, state) {
     + '<div class="card-head inset"><span class="card-title">资源顺位（顺序 = 优先级）</span>'
     + '<span class="value">生效集 top-' + Math.min(GLOBAL.x, r.pool.length) + ' · y=' + GLOBAL.y + ' 判定 · 失败切换按序补位</span></div>'
     + '<div class="table-wrap"><table class="tbl"><thead><tr>'
-    + '<th class="num">顺位</th><th>资源</th><th>厂商</th><th>状态</th><th class="num">在途</th>'
+    + '<th class="num">顺位</th><th>资源</th><th>供应商</th><th>状态</th><th class="num">在途</th>'
     + '<th class="num">连续失败</th><th class="num">冷却剩余</th><th>最近错误</th><th class="num">今日切换</th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table></div>'
     + '<div style="display:flex; align-items:center; gap:12px; padding:12px 16px; border-top:1px solid var(--border);">'
@@ -434,10 +434,10 @@ function rulesCard(m) {
   var r = MODELS[m];
   var rows = [
     ['规范名', '<span class="mono">' + m + '</span>（入站 model 字段经前缀剥离后精确匹配）'],
-    ['别名', r.alias.length ? r.alias.map(function (a) { return '<span class="mono">' + a + '</span>'; }).join(" · ") + '（等价命中同一系统模型）' : '无（可登记兼容别名，命中后同路由）'],
+    ['别名', r.alias.length ? r.alias.map(function (a) { return '<span class="mono">' + a + '</span>'; }).join(" · ") + '（等价命中同一网关模型）' : '无（可登记兼容别名，命中后同路由）'],
     ['前缀剥离', '<span class="mono">custom:</span> / <span class="mono">custom-local:</span> 由网关剥除后再匹配（兼容下游工具的自定义命名）'],
     ['禁用模型', '返回 404 <span class="mono">model_disabled</span>：不触达上游、不计资源失败（含别名命中）'],
-    ['未命中', '直接 404（标准 error 格式）——厂商前缀透传路由为 P2 规划，本预演未含']
+    ['未命中', '直接 404（标准 error 格式）——供应商命名空间前缀透传路由为 P2 规划，本预演未含']
   ].map(function (x, i) {
     return '<div style="display:flex; gap:12px; padding:10px 0;'
       + (i > 0 ? ' border-top:1px solid var(--border);' : '') + '">'
@@ -456,7 +456,7 @@ function emptyBoard(m) {
     + '<div class="alert-title">该模型未配置任何资源映射</div>'
     + '<div>已从 <span class="mono">/v1/models</span> 与 <span class="mono">mgw setup</span> 隐藏，调用将返回 <span class="mono">503</span>（配置告警机制，线上现行）。</div>'
     + '</div>'
-    + '<div class="empty" style="font-weight:600;">到「接入模型资源」页选中要承接的资源，在「模型列表」里添加映射指向该系统模型<br>'
+    + '<div class="empty" style="font-weight:600;">到「接入模型资源」页选中要承接的资源，在「模型列表」里添加映射指向该网关模型<br>'
     + '<button class="btn btn-sm" style="margin-top:12px;" onclick="showToast(\'（演示）已跳转「接入模型资源」页的映射配置入口\')">前往配置映射（演示）</button></div>';
 }
 

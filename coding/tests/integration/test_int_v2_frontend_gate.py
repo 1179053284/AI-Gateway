@@ -88,14 +88,15 @@ def node() -> str:
 
 
 def test_frontend_assertions_all_pass(tmp_path, node):
-    """128 条前端断言全绿（IX-4/S-18 徽章四态人话判据 + S-19 冷却口径 C12~C14
+    """131 条前端断言全绿（IX-4/S-18 徽章四态人话判据 + S-19 冷却口径 C12~C14
     + 第七轮 C15/C16 + 第八/九轮 K0~K9 整页装配可达性（含可见性清洗与端点分派）
     + 第十一轮 Z1/Z2/Z3 门自测（可见性语义 / 派生出的 Node 全局集 / 门没被抛错打瞎）
     + 第十二轮 Z4 样式表派生自测 / Z5 realm 桥封死 / C18 冷却到期那一支
     + J3 指路↔控件归属派生 + 红点行为段 I0~I9
     + S-46 第一批：`api.js`/`components.js` 共享行为真跑 L0~L20 + L21（✕/遮罩也要给答复，S-61）
-    + S-46 第二批：两个正式页面真跑 M0~M17（apiaccess.js 的 D3 启停/编辑/增删/密文/眼睛/复制
-      + settings.js 的脏态徽章⇔保存使能同源、二段保存、400 失败支、参数绑定、维护区）
+    + S-46 第二批：两个正式页面真跑 M0~M18（apiaccess.js 的 D3 启停/编辑/增删/密文/眼睛/复制
+      + settings.js 的脏态徽章⇔保存使能同源、二段保存、400 失败支、参数绑定、维护区、参数行结构）
+    + 2026-10-03 系统设置两卡参数行：H3 定宽 / H4 死类已删 / M18 逐行一对一
     + 页名↔导航交叉核对 J1/J2）。"""
     payload = _overview_payload(tmp_path)
     r = _run([node, str(SCRIPT), str(payload)])
@@ -108,15 +109,15 @@ def test_frontend_assertions_all_pass(tmp_path, node):
     # 🔴 下限必须钉在**当前真实条数**上，不是"很久以前的条数"：留 85 这种旧下限等于允许
     #    门悄悄缩水 24 条而一声不响。删判据应当立刻红，要留就一起改这个数字并说明理由。
     count = int(r.stdout.rsplit("实测 ", 1)[1].split(" 项")[0])
-    assert count >= 128, f"断言总数只剩 {count} 条（门被删窄也要能红）"
+    assert count >= 131, f"断言总数只剩 {count} 条（门被删窄也要能红）"
 
 
 def test_frontend_assertions_can_actually_go_red(tmp_path, node):
-    """🔴 变异自证：184 个源码变异都必须让指定断言变红，且无断言未被覆盖。"""
+    """🔴 变异自证：187 个源码变异都必须让指定断言变红，且无断言未被覆盖。"""
     payload = _overview_payload(tmp_path)
     r = _run([node, str(SCRIPT), str(payload), "--mutation"])
     assert r.returncode == 0, f"{r.stdout}\n{r.stderr}"
     assert "未被任何变异覆盖的断言" not in r.stdout, r.stdout
     left, total = r.stdout.rsplit("可红 ", 1)[1].split("；")[0].split("/")
     assert int(left) == int(total), f"只有 {left}/{total} 个变异能打破绿态"
-    assert int(total) >= 184, f"变异表缩水到 {total} 条（每条判据都得配一个能打红的变异）"
+    assert int(total) >= 187, f"变异表缩水到 {total} 条（每条判据都得配一个能打红的变异）"

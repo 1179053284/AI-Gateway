@@ -1,9 +1,9 @@
-"""厂商预设注册表（tech-design §4.7；PRD FR-1.2，UT-26）。
+"""供应商预设注册表（tech-design §4.7；PRD FR-1.2，UT-26）。
 
 模块级常量清单（明文数据，非 UI 分支）：接入向导预设下拉的数据源，
 由 GET /admin/api/presets 返回（admin 层，M2）。
 
-扩展原则：新增厂商或 Plan 类型 = 仅加一条预设数据（必要时新增协议适配器），
+扩展原则：新增供应商或 Plan 类型 = 仅加一条预设数据（必要时新增协议适配器），
 接入向导与 UI 框架零改动（tech-design §4.7）；billing 为可扩展枚举，
 空/未知口径经 display_billing 优雅降级显示「—」。
 """
@@ -56,7 +56,7 @@ def get_preset(preset_id: str) -> dict | None:
 
 
 def preset_name(preset_id: str) -> str | None:
-    """预设显示名（事件/统计的「按厂商」维度口径）：未设置或未知 → None（调用方降级 'custom'）。"""
+    """预设显示名（事件/统计的「按供应商」维度口径）：未设置或未知 → None（调用方降级 'custom'）。"""
     p = get_preset(preset_id)
     return p["name"] if p else None
 

@@ -209,7 +209,7 @@
                   <table class="tbl">
                     <thead>
                       <tr>
-                        <th>产品</th><th>账号 / 备注</th><th>绑定系统模型</th><th>访问密钥</th>
+                        <th>产品</th><th>账号 / 备注</th><th>绑定网关模型</th><th>访问密钥</th>
                         <th>状态</th><th>分组</th><th>租约占用</th><th class="num">操作</th>
                       </tr>
                     </thead>
@@ -704,7 +704,7 @@
             <div data-when="noresult" hidden>
               <div class="empty">
                 <div style="font-size:13px; font-weight:800; color:var(--text-soft)">没有符合条件的账号</div>
-                <div style="margin-top:8px; font-size:12px; font-weight:500; color:var(--text-faint); line-height:1.6">试试重置筛选，或换个关键词（可按产品 / 账号 / 系统模型过滤）。</div>
+                <div style="margin-top:8px; font-size:12px; font-weight:500; color:var(--text-faint); line-height:1.6">试试重置筛选，或换个关键词（可按产品 / 账号 / 网关模型过滤）。</div>
                 <div style="margin-top:12px"><button class="btn" onclick="resetFilter()">重置筛选</button></div>
               </div>
             </div>
@@ -764,7 +764,7 @@
         <div class="alert-title">影响面</div>
         <div id="break-impact">—</div>
       </div>
-      <div class="form-hint">断开后该账号立即退出调度池，其下系统模型不再可调用；账号记录保留，可重新绑定。</div>
+      <div class="form-hint">断开后该账号立即退出调度池，其下网关模型不再可调用；账号记录保留，可重新绑定。</div>
     </div>
     <div class="modal-foot">
       <button class="btn" onclick="closeBreak()">取消</button>
@@ -920,7 +920,7 @@ function askBreak(account, models) {
   pendingAccount = account;
   pendingModels = models;
   document.getElementById("break-impact").textContent =
-    "账号 " + account + " 将立即退出调度池，其下 " + models + " 个系统模型不可调用；" +
+    "账号 " + account + " 将立即退出调度池，其下 " + models + " 个网关模型不可调用；" +
     "正在途中的请求会被中断并返回 503。";
   document.getElementById("break-mask").classList.remove("hidden");
 }

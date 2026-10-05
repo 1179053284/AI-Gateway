@@ -451,7 +451,7 @@ async def test_list_models_merges_two_endpoints_in_evidence_order(monkeypatch):
     assert by_id["cline-free/gemini-3.8-flash"].image_input is True
     assert by_id["zzz/paid-1"].context_window is None
     assert by_id["zzz/paid-1"].image_input is None and by_id["zzz/paid-1"].tool_call is None
-    assert by_id["zzz/paid-1"].vendor == ""                              # 厂商展示名取不到 → 留空
+    assert by_id["zzz/paid-1"].vendor == ""                              # 厂商（生产公司）取不到 → 留空
     # 思考档位 = 产品级统一表（远端不下发）
     assert by_id["zzz/paid-1"].effort_levels == ("none", "low", "medium", "high", "max")
     # 两端点都打了；`/models` 需认证 → 必须带前缀令牌

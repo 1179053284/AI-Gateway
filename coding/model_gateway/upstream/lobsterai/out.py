@@ -60,7 +60,7 @@ class LobsteraiOut(FamilyOpenAIOut):
 
     def prepare_body(self, body: dict, *, vendor_model: str, cred: dict,
                      meta: dict, device: dict) -> dict:
-        """体塑造：只落厂商模型名 + **强制 `stream:true`**（取证见模块头）。
+        """体塑造：只落供应商模型名 + **强制 `stream:true`**（取证见模块头）。
 
         其余字段（采样 / 思考 / 工具）由网关 IR 层按既有口径注入，本层不重复不做删改。
         """

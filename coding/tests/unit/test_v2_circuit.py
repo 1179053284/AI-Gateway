@@ -97,7 +97,7 @@ class _FakeRuntime:
             "resources": [{"id": rid, "name": rid, "account": acct,
                            "base_url": "http://127.0.0.1:9/v1", "api_key": "sk"}
                           for rid, acct in resources.items()],
-            # 注册表按 (资源, 厂商模型) 建索引 —— 没有模型映射就没有 ResourceState，
+            # 注册表按 (资源, 供应商模型名) 建索引 —— 没有模型映射就没有 ResourceState，
             # bench 也就无从落点（这是 `apply_to_resource` 的遍历口径，不是笔误）
             "models": [{"name": "m", "endpoint": "chat", "resources": [
                 {"resource": rid, "model": f"vm-{rid}"} for rid in resources]}]})
@@ -398,7 +398,7 @@ class _RealMgrRuntime:
                            "access_mode": "api",
                            "base_url": "http://127.0.0.1:9/v1", "api_key": "sk"}
                           for rid, acct in resources.items()],
-            # 注册表按 (资源, 厂商模型) 建索引 —— 没有模型映射就没有 ResourceState，
+            # 注册表按 (资源, 供应商模型名) 建索引 —— 没有模型映射就没有 ResourceState，
             # bench 也就无从落点（这是 `apply_to_resource` 的遍历口径，不是笔误）
             "models": [{"name": "m", "endpoint": "chat", "resources": [
                 {"resource": rid, "model": f"vm-{rid}"} for rid in resources]}]})
@@ -656,7 +656,7 @@ def __init__(self, resources: dict[str, str]):
                            "access_mode": "api",
                            "base_url": "http://127.0.0.1:9/v1", "api_key": "sk"}
                           for rid, acct in resources.items()],
-            # 注册表按 (资源, 厂商模型) 建索引 —— 没有模型映射就没有 ResourceState，
+            # 注册表按 (资源, 供应商模型名) 建索引 —— 没有模型映射就没有 ResourceState，
             # bench 也就无从落点（这是 `apply_to_resource` 的遍历口径，不是笔误）
             "models": [{"name": "m", "endpoint": "chat", "resources": [
                 {"resource": rid, "model": f"vm-{rid}"} for rid in resources]}]})

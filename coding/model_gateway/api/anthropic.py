@@ -126,7 +126,7 @@ def anthropic_to_openai(body: dict) -> tuple[dict, ReasoningSpec | None]:
 
     out["messages"] = messages
     if body.get("stream"):
-        out["stream"] = True  # 出站体必须显式带 stream（厂商按 body 判定；E2E 实测：
+        out["stream"] = True  # 出站体必须显式带 stream（供应商按 body 判定；E2E 实测：
         # 缺失时商汤返回非流式 JSON，chat_stream 的 SSE 解析零事件 → 空流）
     if body.get("max_tokens") is not None:
         out["max_tokens"] = body["max_tokens"]

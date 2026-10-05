@@ -2,10 +2,10 @@
 
 ## 为什么要有这一层（调研轮实测，不是推测）
 
-- 厂商侧（按量 Key）的规格住在**枚举池** `EnumEntry`；账号侧的规格住在各产品 `list_models`
+- Key 接入侧（按量 Key）的规格住在**枚举池** `EnumEntry`；账号侧的规格住在各产品 `list_models`
   钩子的返回值里，**不落库、不进运行时** —— 唯一消费者是管理端弹窗，每次现调、零缓存。
-- 于是 `/v1/models` 的 `maxInputTokens/maxOutputTokens` 与能力位**只按系统模型名查枚举池**
-  （`core/capabilities.py`），产品规格完全不参与对外声明：同一个系统模型挂着
+- 于是 `/v1/models` 的 `maxInputTokens/maxOutputTokens` 与能力位**只按网关模型名查枚举池**
+  （`core/capabilities.py`），产品规格完全不参与对外声明：同一个网关模型挂着
   buddy(1M/64K) 与 sensenova(262K/65K) 时，对外只能印一份数，另一份被抹平。
 - 用户 2026-10-02 定的标准：**输入与输出上下文默认走"最大输入 / 最大输出"，固定最大标准**，
   并要求这套标准同时兼容两类接入。本模块就是这个"取数 + 合并"的唯一出口。
@@ -33,7 +33,7 @@
   账号侧来源**逐号取**（按号缓存优先、产品级兜底）⇒ 只有按号目录时也能声明出数，
   不再一律 `null`（R5-F-1 的第三条后果）。这一份**带开关判据**（关着的映射不许顶上限）。
 - **出站缺省**：读**这条资源自己**那份（`Runtime.resource_specs[(rid, vendor_model)]`
-  = `resource_spec()`，🔴 不带开关也不带系统模型维度，评审 R8-B-1），
+  = `resource_spec()`，🔴 不带开关也不带网关模型维度，评审 R8-B-1），
   缺省 `max_tokens` 用**这个号**的数，不再拿同产品别号的上限压给它
   （R5-F-1 的第二条后果 = 真实上游 400；判据 INT-80 第二腿专门造出"两资源两份不同的数"，
   否则改成池内最大照样绿 —— 评审 R9-OUTBODY）。
@@ -67,7 +67,7 @@ CANONICAL_EFFORT = ("minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 
 @dataclass(frozen=True)
 class ModelSpec:
-    """一个**系统模型**在网关侧的合并规格（对外声明与出站默认的唯一来源）。
+    """一个**网关模型**在网关侧的合并规格（对外声明与出站默认的唯一来源）。
 
     三态纪律：`None` = 不知道（没有任何来源说过这件事）；`False`/`0` = 厂商明说不支持。
     两者绝不混写 —— 把"不知道"印成 0，工具会以为自己拿到了数。
@@ -103,7 +103,7 @@ def _any_true(values: Iterable[Any]) -> bool | None:
     那个"没说话"的号若有此能力就对外被**误承诺成不支持**（`supportsToolCall !== true`
     会让工具直接删掉请求里的 `tools`，实测见 §12 头）。
     反过来全 False 才是有据的否：所有开过口的来源都说了"不行"。
-    ⚠️ 厂商侧的"开过口"**含枚举目录的默认值**（评审 R8-报备 R-6，实测 `enums/matcher.py`：
+    ⚠️ Key 接入侧的"开过口"**含枚举目录的默认值**（评审 R8-报备 R-6，实测 `enums/matcher.py`：
     `tool_call` 默认 True、`image_input`/`reasoning` 默认 False 且是**非空 bool**）⇒
     用户扩展目录里没写这两个字段时，这里会当成"明说不支持"。这是 §12.3 **成文的目录默认值**，
     不是本轮三态改判要修的形状（改成三态 = 改 §12 字段契约，台账 §7.7 已登记待裁决）；
@@ -205,7 +205,7 @@ def product_spec(product: str, vendor_model: str, *, root=None, cache: dict | No
 def _entry_source(res: Any, vendor_model: str, pools: Any, *,
                   cache_root=None, cache: dict | None = None,
                   reader: "CatalogReader | None" = None) -> dict[str, Any] | None:
-    """一条 `(资源, 厂商模型)` 的规格来源 —— **不含任何开关判断**（两类接入各查各的）。
+    """一条 `(资源, 供应商模型名)` 的规格来源 —— **不含任何开关判断**（两类接入各查各的）。
 
     抽出来只有一份实现，是因为"这条资源装得了多大"与"这条映射现在进不进池"
     是**两个正交事实**：判据 `mapping_enabled` 管后者（进池/声明/规格上限的合并），
@@ -221,10 +221,10 @@ def _entry_source(res: Any, vendor_model: str, pools: Any, *,
                             account=str(getattr(res, "account_ref", "") or ""))
     if pools is None:
         return None
-    # 🔴 枚举池按**厂商模型 id** 索引（`EnumPool.get`），而规格描述的是"我们实际发给
-    #    上游的那条模型" ⇒ 必须用 `entry.model` 取，不能用系统模型名。
-    #    先前写的是 `pools.get(model.name)`：只有当系统模型名恰好等于厂商模型 id 时才成立
-    #    （本网关多数映射确实同名），一旦改挂/别名（如系统模型 `test-model` →
+    # 🔴 枚举池按**厂商模型标准名**索引（`EnumPool.get` 的键 = `EnumEntry.name`），而规格描述的是"我们实际发给
+    #    上游的那条模型" ⇒ 必须用 `entry.model` 取，不能用网关模型名。
+    #    先前写的是 `pools.get(model.name)`：只有当网关模型名恰好等于厂商模型标准名时才成立
+    #    （本网关多数映射确实同名），一旦改挂/别名（如网关模型 `test-model` →
     #    厂商 `sensenova-6.8-flash-lite`）就取不到 ⇒ 出站缺省与对外声明双双静默失去规格。
     #    这条是评审 R2-③「单元已测、接线未测」在真机上打出来的实测缺口。
     e = pools.get(vendor_model)
@@ -240,9 +240,9 @@ def sources_for_entries(config: Any, model: Any, entries: Any, pools: Any = None
                         cache_root=None, cache: dict | None = None,
                         reader: "CatalogReader | None" = None
                         ) -> list[dict[str, Any]]:
-    """若干映射条目各自的规格来源（厂商侧查枚举池，账号侧查**注入的**目录缓存读函数；**零网络**）。
+    """若干映射条目各自的规格来源（Key 接入侧查枚举池，账号侧查**注入的**目录缓存读函数；**零网络**）。
 
-    这一份**带开关判据**（`mapping_enabled` + 号启用位）：它服务的是"这个系统模型对外承诺多大"，
+    这一份**带开关判据**（`mapping_enabled` + 号启用位）：它服务的是"这个网关模型对外承诺多大"，
     关着的映射不该把自己的大窗口"顶上去"。资源级那份请用 `resource_spec()`（不带开关）。
     """
     out: list[dict[str, Any]] = []
@@ -264,7 +264,7 @@ def sources_for_entries(config: Any, model: Any, entries: Any, pools: Any = None
 def sources_for_model(config: Any, model: Any, pools: Any = None, *, cache_root=None,
                       cache: dict | None = None,
                       reader: "CatalogReader | None" = None) -> list[dict[str, Any]]:
-    """一个系统模型的全部**生效映射**各自的规格来源。"""
+    """一个网关模型的全部**生效映射**各自的规格来源。"""
     return sources_for_entries(config, model, getattr(model, "resources", None) or [],
                                pools, cache_root=cache_root, cache=cache, reader=reader)
 
@@ -272,11 +272,11 @@ def sources_for_model(config: Any, model: Any, pools: Any = None, *, cache_root=
 def resolve(config: Any, model: Any, pools: Any = None, *, cache_root=None,
             cache: dict | None = None,
             reader: "CatalogReader | None" = None) -> ModelSpec:
-    """合并出一个系统模型的网关级规格；一份来源都没有时返回 `sources=0` 的空壳。
+    """合并出一个网关模型的网关级规格；一份来源都没有时返回 `sources=0` 的空壳。
 
     🔴 这一份只用于**对外声明**（"这个模型最高能到多大" = 池内最大）。
     出站默认与承载校验必须用 `resource_spec()`（实际选中**那条资源自己**的那一份，不带开关维度），
-    否则会把窗口小的号打到 400（Q33 评审 R1-⑤ 判死；R8-B-1 又判死"带了系统模型维度"那一版）。
+    否则会把窗口小的号打到 400（Q33 评审 R1-⑤ 判死；R8-B-1 又判死"带了网关模型维度"那一版）。
     """
     return merge_specs(sources_for_model(config, model, pools, cache_root=cache_root,
                                           cache=cache, reader=reader))
@@ -285,13 +285,13 @@ def resolve(config: Any, model: Any, pools: Any = None, *, cache_root=None,
 def resource_spec(resource: Any, vendor_model: str, pools: Any = None, *,
                   cache_root=None, cache: dict | None = None,
                   reader: "CatalogReader | None" = None) -> ModelSpec:
-    """这条 `(资源 × 厂商模型)` **自己**的规格 —— 出站缺省注入与承载判据都按这份走。
+    """这条 `(资源 × 供应商模型名)` **自己**的规格 —— 出站缺省注入与承载判据都按这份走。
 
-    🔴 **不带开关、也不带系统模型维度**（评审 R8-B-1 判死的原因，实测红证见
+    🔴 **不带开关、也不带网关模型维度**（评审 R8-B-1 判死的原因，实测红证见
     `test_q33_two_level_switch_api.py::TestPerAccountSpecWiring::test_another_system_model_switch_cannot_erase_this_resources_spec`）：
-    `Runtime.resource_specs` 的键是 `(rid, vendor_model)`，而值若由"**某个系统模型**的映射
-    是否生效"算出来，那么同一组合被**别名**挂到第二个系统模型上（`schemas.py` 的去重明确
-    只在同一系统模型内、跨模型别名是既有设计，UT-84 还专门留了反证腿）而那一头关着时，
+    `Runtime.resource_specs` 的键是 `(rid, vendor_model)`，而值若由"**某个网关模型**的映射
+    是否生效"算出来，那么同一组合被**别名**挂到第二个网关模型上（`schemas.py` 的去重明确
+    只在同一网关模型内、跨模型别名是既有设计，UT-84 还专门留了反证腿）而那一头关着时，
     空壳会**覆盖**掉生效那一份 ⇒ 承载判据不再拦、缺省注入也不再注，方向是 fail-open
     （= 我们主动给小上限的号发超限请求，真实上游 400），而且**红不红取决于配置里的书写顺序**。
     "进不进池"由 `mapping_enabled` 在 `sources_for_entries` / `resources.rebuild` 那侧决定，

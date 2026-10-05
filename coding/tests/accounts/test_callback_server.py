@@ -1,7 +1,7 @@
 """`accounts/callback_server.py` 单测（BD4：本机回跳接收端）。
 
 🔴 判据面 = 「**真实 HTTP 到达**」，不是"函数返回什么"：每个用例外都有一条
-   打到实际端口的真连接（`httpx` 走 loopback 套接字，不出本机、不打厂商）。
+   打到实际端口的真连接（`httpx` 走 loopback 套接字，不出本机、不打供应商）。
    这条通道此前的盲点正是"手工造一条 URL 直接喂 `login_callback`"（
    `test_trae.py::…` / `test_lobsterai.py::…` 的老形态）—— 它测不出"没人监听"，
    于是"回跳地址构造出来了但打了就 connection refused"能一路全绿 shipping。
@@ -212,7 +212,7 @@ async def test_nested_path_under_the_registered_one_is_served():
 
 
 async def test_options_preflight_answers_cors_without_consuming_the_session():
-    """厂商页面的 CORS 预检：204 + 允许头，**不**跑 handler、**不**落定。"""
+    """供应商页面的 CORS 预检：204 + 允许头，**不**跑 handler、**不**落定。"""
     recorder = Recorder()
     listener = _listener(recorder, secret="S-1", secret_key="state")
     try:

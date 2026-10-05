@@ -55,7 +55,7 @@ class TestProviderAccountDimensions:
     async def test_int_47_event_fields_and_stats_buckets(self, vendor, make_gateway, client):
         vendor.set("sk-A", Ok(content="hello"))
         cfg = gateway_config(vendor.port, models=[chat_res("AB")], gateway=TOKENS)
-        # 资源 A 挂厂商预设与账号备注（provider → 预设名「商汤按量 API」；account → acc1）
+        # 资源 A 挂供应商预设与账号备注（provider → 预设名「商汤按量 API」；account → acc1）
         cfg["resources"][0]["preset"] = "sensenova-api"
         cfg["resources"][0]["account"] = "acc1"
         gw = await make_gateway(cfg)
@@ -104,7 +104,7 @@ class TestProviderAccountDimensions:
 
 
 class TestVendorCustomName:
-    """INT-50：厂商名称自定义（Q20-①，resources[].vendor）。
+    """INT-50：供应商名称自定义（Q20-①，resources[].vendor）。
 
     - vendor 自由输入；round-trip 保存不丢失；
     - 事件 provider / 统计 by_provider 优先取 vendor（压过 preset 预设展示名）。
@@ -113,22 +113,22 @@ class TestVendorCustomName:
     async def test_int_50_vendor_custom_wins_over_preset(self, vendor, make_gateway, client):
         vendor.set("sk-A", Ok(content="hello"))
         cfg = gateway_config(vendor.port, models=[chat_res("A")], gateway=TOKENS)
-        cfg["resources"][0]["preset"] = "sensenova-api"  # 预设存在，但自定义厂商名应优先
-        cfg["resources"][0]["vendor"] = "我的厂商"
+        cfg["resources"][0]["preset"] = "sensenova-api"  # 预设存在，但自定义供应商名应优先
+        cfg["resources"][0]["vendor"] = "我的供应商"
         gw = await make_gateway(cfg)
 
-        # ① 事件 provider = 自定义厂商名（压过预设「商汤按量 API」）
+        # ① 事件 provider = 自定义供应商名（压过预设「商汤按量 API」）
         resp = await client.post(
             f"{gw.base_url}/v1/chat/completions",
             json={"model": "test-model", "messages": [{"role": "user", "content": "hi"}]},
             headers={"Authorization": "Bearer gw-user"})
         assert resp.status_code == 200
         await gw.drain_events()
-        assert gw.read_events()[0]["provider"] == "我的厂商"
+        assert gw.read_events()[0]["provider"] == "我的供应商"
 
-        # ② stats by_provider = 自定义厂商名
+        # ② stats by_provider = 自定义供应商名
         data = (await client.get(f"{gw.base_url}/admin/api/stats?days=1")).json()
-        assert set(data["by_provider"]) == {"我的厂商"}
+        assert set(data["by_provider"]) == {"我的供应商"}
 
     async def test_int_50_vendor_roundtrip_through_config(self, vendor, make_gateway, client):
         """PUT 保存 vendor 字段不丢失（前端表单落 resources[].vendor）。"""
@@ -239,7 +239,7 @@ class TestAdminConfigAutogen:
         gw = await make_gateway(gateway_config(vendor.port, models=[chat_res("A")],
                                                gateway=TOKENS))
 
-        # UI 形态的保存：新资源（占位 id）+ 新系统模型（映射引用占位 id）
+        # UI 形态的保存：新资源（占位 id）+ 新网关模型（映射引用占位 id）
         cfg = (await client.get(f"{gw.base_url}/admin/api/config")).json()
         cfg["resources"].append({"id": "@new-1", "name": "新资源", "preset": "sensenova-api",
                                  "access_mode": "api", "protocol": "openai",

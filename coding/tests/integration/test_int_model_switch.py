@@ -1,6 +1,6 @@
 """INT-39/40/41：模型启用开关集成测试（PRD FR-2.3 / Q17 / D1；tech-design §4.2·§4.7）。
 
-- INT-39：GET /v1/models 仅返回 enabled=true 的系统模型（禁用模型与其枚举池别名
+- INT-39：GET /v1/models 仅返回 enabled=true 的网关模型（禁用模型与其枚举池别名
   均不出现）；重新启用后恢复返回
 - INT-40：对禁用模型（直名 + 别名命中）POST /v1/chat/completions、
   /v1/images/generations、/v1/messages → 一致 404 + code=model_disabled

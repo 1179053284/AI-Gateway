@@ -156,7 +156,7 @@ async def test_raccoon_nonstream_end_to_end(make_gateway, client):
     assert req.headers["accept"] == "text/event-stream"     # raccoon-adapter.ts:415
     assert CONFIG_KEY not in json.dumps(dict(req.headers))  # 配置 Key 绝不外发（铁律 1）
     payload = json.loads(req.content)
-    assert payload["model"] == VENDOR_MODEL                 # 映射里的厂商模型名
+    assert payload["model"] == VENDOR_MODEL                 # 映射里的供应商模型名
     assert "extra_body" not in payload                      # 未指定思考档 → 不发该字段
 
     await gw.drain_events()

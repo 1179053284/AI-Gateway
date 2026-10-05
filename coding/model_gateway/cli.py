@@ -34,7 +34,7 @@ def _build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--config", default=None, help="配置文件路径（缺省 data/config.yaml）")
 
     # —— setup（§12.4 路径 A）——
-    st = sub.add_parser("setup", help="把网关系统模型写成工具可读的 models.json（文件下发）")
+    st = sub.add_parser("setup", help="把网关模型写成工具可读的 models.json（文件下发）")
     st.add_argument("tool", help="目标工具标识（workbuddy / workbuddy-ai）")
     st.add_argument("--yes", "-y", action="store_true", help="跳过路径确认（非交互场景必填）")
     st.add_argument("--dry-run", action="store_true", help="只打印将写入的内容与目标路径，不落盘")

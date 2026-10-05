@@ -125,7 +125,7 @@ def test_settle_never_goes_negative():
 # ---------- 🔴 S-1：粒度必须是"一把凭据一个桶" ----------
 
 def test_two_mappings_of_one_credential_share_a_single_quota_pool():
-    """🔴 判据本体（上一版在此超发）：同 rid 两个厂商模型，余量 1 → 只放行 1 个。
+    """🔴 判据本体（上一版在此超发）：同 rid 两个供应商模型名，余量 1 → 只放行 1 个。
 
     额度是**账号/凭据**侧的，一个资源可以同时映射多个模型；
     每个 `(rid, vendor_model)` 状态各记一份余量 = 有 N 个映射就能放行 N 个。
@@ -363,7 +363,7 @@ def test_inflight_reservations_gate_admission_even_with_a_stale_large_snapshot()
 # ---------- 🔴 走**真实 rebuild()** 的接线判据（验收 eng-④：手工搭 registry 证不到那行）----------
 
 def _cfg_with_two_models_on_one_resource():
-    """一个资源被两个系统模型引用（两个厂商模型映射）—— 额度属于**资源**，不属于映射。"""
+    """一个资源被两个网关模型引用（两个供应商模型名映射）—— 额度属于**资源**，不属于映射。"""
     from model_gateway.config.schemas import AppConfig
 
     return AppConfig.model_validate({

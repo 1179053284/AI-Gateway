@@ -67,8 +67,18 @@ def degrade_effort(effort: str, supported: list[str] | None) -> str:
         return effort  # 含规范外档位，原样透传（开放可扩展）
 
     key = effort.strip().lower()
-    # 规范化档位序号（规范外档位视为"高于 max"）
-    idx = LEVELS.index(key) if key in LEVELS else len(LEVELS)
+    # 🔴 关闭档没有"强度"可言 ⇒ 不参与就近升降（向上取最近会把"关推理"的请求升成厂商最高档）。
+    #    它在厂商表里该写成哪个词（`none`/`disabled`），由调度层按**那张表自己在册的**关闭词归一。
+    if is_closed(effort) and effort not in sup:
+        return effort
+    # 🔴 规范外档位**原样透传**（§13.1 开放可扩展）。旧写法把它当成"高于 max"取 `len(LEVELS)`
+    #    当下标 ⇒ `LEVELS[idx]` IndexError（实测 `degrade_effort("none", ["low","high"])` 直接抛），
+    #    且"向上取最近"那一支会把**关闭推理**的请求升成厂商表里的最高档（A3-P0：客户端发
+    #    `reasoning_effort:"off"` ⇒ 出站 `thinking:enabled + reasoning_effort:high`）。
+    #    七档序排不进这个词 ⇒ 没有任何"向下就近"的依据，不许拿升降当依据。
+    if key not in LEVELS:
+        return effort
+    idx = LEVELS.index(key)
     # 向下就近：从 idx 往下找第一个受支持的规范档
     for i in range(idx, -1, -1):
         if LEVELS[i] in sup:

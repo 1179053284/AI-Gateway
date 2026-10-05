@@ -31,7 +31,7 @@ def _write(tmp_path: Path, data: dict) -> Path:
 
 
 def _minimal_cfg() -> dict:
-    """最小合法配置（含一个厂商资源 + 一个系统模型资源引用）。"""
+    """最小合法配置（含一个供应商资源 + 一个网关模型资源引用）。"""
     return {
         "resources": [
             {
@@ -115,7 +115,7 @@ class TestCrossReferences:
         assert "models[].name 重复" in "; ".join(e.value.errors)
 
     def test_resource_requires_api_key(self, tmp_path):
-        """资源 = 厂商 + Key：api_key 必填（空值拒绝）。
+        """资源 = 供应商 + Key：api_key 必填（空值拒绝）。
 
         M6-5a 起该约束由**模型级**校验器给出（`product` 为空时必须非空，§22.5-2），
         所以报错位置是 `resources.0`（不再是字段路径 `resources.0.api_key`）——
@@ -307,7 +307,7 @@ def test_product_round_trips_through_dump():
 
 
 def test_product_is_independent_from_account_and_preset():
-    """三者语义不同，不得互相推断：preset=接入商 / account=备注 / product=账号体系归属。"""
+    """三者语义不同，不得互相推断：preset=供应商 / account=备注 / product=账号体系归属。"""
     from model_gateway.config.schemas import AppConfig
 
     cfg = AppConfig.model_validate({
@@ -317,3 +317,53 @@ def test_product_is_independent_from_account_and_preset():
         "models": []})
     r = cfg.resources[0]
     assert (r.preset, r.account, r.product) == ("sensenova-tokenplan", "主号", "zcode")
+
+
+class TestMaskedKeySentinel:
+    """S-2（2026-10-05 架构审计）：GET 脱敏改显式哨兵 + PUT fail-closed 还原。
+
+    旧形态 `sk-aa****1111` 是 `mask_key` 的不动点（`mask_key(掩码) == 掩码`）⇒ 另一页签
+    拿旧快照拨开关会把掩码串逐字当新 Key 落盘、返回 ok —— 静默毁数据。哨兵形态与任何
+    合法明文都不同形，还原只认哨兵。
+    """
+
+    def _body(self, api_key: str) -> dict:
+        return {"resources": [{"id": "r1", "base_url": "http://127.0.0.1:9/v1",
+                               "api_key": api_key}], "models": []}
+
+    def test_sentinel_never_collides_with_plain_or_masked_form(self):
+        from model_gateway.api.admin import _mask_key_sentinel
+        from model_gateway.stats.events import mask_key
+
+        for key in ("sk-aaaaaaaa1111", "short", "tok-value-xyz", "mg-abc"):
+            s = _mask_key_sentinel(key)
+            assert s.startswith("mgw-masked:")
+            assert s != key and s != mask_key(key), "哨兵必须与明文/旧掩码都不同形"
+            assert "mgw-masked:" not in key
+
+    def test_unmask_restores_sentinel_and_keeps_user_input_literal(self):
+        from model_gateway.api.admin import _mask_key_sentinel, _unmask_resources
+        from model_gateway.config.schemas import AppConfig
+
+        cur = AppConfig.model_validate(self._body("sk-aaaaaaaa1111"))
+        body = self._body(_mask_key_sentinel("sk-aaaaaaaa1111"))   # 界面原样传回哨兵
+        _unmask_resources(body, cur)
+        assert body["resources"][0]["api_key"] == "sk-aaaaaaaa1111"  # 还原明文
+
+        stale = self._body("sk-old-old-old-999")                   # 用户真改了 Key
+        _unmask_resources(stale, cur)
+        assert stale["resources"][0]["api_key"] == "sk-old-old-old-999"  # 按字面保存
+
+    def test_legacy_masked_form_is_no_longer_a_restore_trigger(self):
+        """🔴 关键回归：旧掩码形态 `sk-aa****1111` 现在**不再**被当成"没改过"——
+        它会被逐字落盘吗？不会：它不属于哨兵，但它是用户在请求里**显式给出的值**；
+        fail-closed 的含义是"网关不再猜"，防的是**网关自己生成**的 GET 形态被误存。
+        这里钉的是：旧掩码传入时不会被还原成任何明文（认不出就按字面）。"""
+        from model_gateway.api.admin import _unmask_resources
+        from model_gateway.config.schemas import AppConfig
+
+        cur = AppConfig.model_validate(self._body("sk-aaaaaaaa1111"))
+        legacy = self._body("sk-****1111")
+        _unmask_resources(legacy, cur)
+        assert legacy["resources"][0]["api_key"] == "sk-****1111"  # 不猜 → 字面
+        assert legacy["resources"][0]["api_key"] != "sk-aaaaaaaa1111"
