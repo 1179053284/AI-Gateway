@@ -814,3 +814,20 @@ def test_registry_base_url_is_taken_from_dsh_evidence():
     """
     assert registry.get("raccoon").base_url == f"{C.API_BASE}{C.LLM_PREFIX}"
     assert registry.get("raccoon").base_url.endswith("/api/web/llm/v2")
+
+
+def test_parse_envelope_reads_numeric_string_codes():
+    """R2a-F-2（2026-10-06 第三轮对账修）：`{"code":"200003"}`（字符串）必须读成
+    200003 ⇒ product.refresh 的 NotRefreshable 正常触发。旧实现读到 0 ⇒ 既不触发
+    NotRefreshable、`envelope.ok` 反为真 ⇒ 坏号被判成功。"""
+    from model_gateway.upstream.raccoon.const import CODE_SESSION_EXPIRED
+    from model_gateway.upstream.raccoon.protocol import parse_envelope
+
+    env = parse_envelope({"code": "200003", "message": "expired"}, 200)
+    assert env.code == CODE_SESSION_EXPIRED and not env.ok
+    env2 = parse_envelope({"code": 200003}, 200)
+    assert env2.code == CODE_SESSION_EXPIRED and not env2.ok   # 数值形状不变
+    env3 = parse_envelope({"code": "abc"}, 200)
+    assert env3.code == 0 and env3.ok                          # 非数字字符串维持不猜
+    env4 = parse_envelope({"code": "401"}, 401)
+    assert env4.code == 401                                    # 状态兜底形状不变

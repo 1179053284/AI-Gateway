@@ -611,3 +611,18 @@ async def test_quota_structured_items_and_plan(monkeypatch):
     assert snapshot.items[0]["active"] is True
     assert snapshot.items[1]["active"] is False
     assert snapshot.items[1]["expires_at"] == ""
+
+
+def test_code_of_reads_numeric_string_codes():
+    """R2a-F-2（2026-10-06 第三轮对账修）：同族后端存在以**数字字符串**下发业务码的
+    网关形状（trae/protocol.py:84 一手实证）⇒ `code_of` 必须按数字读。旧实现只认
+    int/float ⇒ `{"code":"401"}` 读成 0（CODE_OK）⇒ hooks 探活把失效号判 valid=True。"""
+    from model_gateway.upstream.buddy.protocol import code_of
+
+    assert code_of({"code": "401"}) == 401      # 字符串失效码 → 401（触发失效分支）
+    assert code_of({"code": "9074"}) == 9074    # trae 实证的风控码形状
+    assert code_of({"code": 401}) == 401        # 数值原样
+    assert code_of({"code": "abc"}) == 0        # 非数字字符串不猜 → 0
+    assert code_of({"code": None}) == 0         # 缺失 → 0（既有口径）
+    assert code_of({"code": True}) == 0         # bool 是 int 子类，必须排除
+    assert code_of("not-a-dict") == 0

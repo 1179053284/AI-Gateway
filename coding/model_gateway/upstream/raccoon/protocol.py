@@ -57,8 +57,18 @@ def parse_envelope(payload: object, status: int = 0) -> Envelope:
     """解析业务信封（非对象载荷 → 全空信封；`code` 走状态兜底）。"""
     record = payload if isinstance(payload, dict) else {}
     raw_code = record.get("code")
-    code = raw_code if isinstance(raw_code, int) and not isinstance(raw_code, bool) \
-        else (status if status >= 400 else 0)
+    # 🔴 R2a-F-2（2026-10-06 第三轮对账修）：数字字符串按数字读（同族实证见
+    # trae/protocol.py:84）——`{"code":"200003"}`（字符串）旧读法会落到 0 ⇒
+    # `product.py:162` 的 NotRefreshable 恒不触发、`envelope.ok` 反为真 ⇒
+    # 坏号被判成功。布尔排除；非数字字符串维持「状态兜底」不猜。
+    if isinstance(raw_code, bool):
+        code = status if status >= 400 else 0
+    elif isinstance(raw_code, (int, float)):
+        code = raw_code
+    elif isinstance(raw_code, str) and re.fullmatch(r"-?\d+", raw_code.strip()):
+        code = int(raw_code.strip())
+    else:
+        code = status if status >= 400 else 0
     message = record.get("message") if isinstance(record.get("message"), str) else ""
     details = record.get("details") if isinstance(record.get("details"), str) else ""
     data = record.get("data") if isinstance(record.get("data"), dict) else None

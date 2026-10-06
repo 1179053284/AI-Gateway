@@ -17,6 +17,8 @@
 
 from __future__ import annotations
 
+import math
+
 import base64
 import hashlib
 import json
@@ -55,7 +57,10 @@ def read_num(source: Any, *keys: str) -> float | None:
         if isinstance(value, bool):
             continue
         if isinstance(value, (int, float)):
-            return float(value)
+            # R2a-F-1（2026-10-06）：JSON 的 NaN/Infinity 字面量 json.loads 会照收
+            # （Python 默认允许）⇒ float('nan') 可达；下游 int(nan) 抛未捕获
+            # ValueError ⇒ 在读入口过滤（finite 才放行）。
+            return float(value) if math.isfinite(value) else None
         if isinstance(value, str) and re.fullmatch(r"-?\d+(\.\d+)?", value.strip()):
             return float(value.strip())
     return None
@@ -633,7 +638,11 @@ def jwt_expires_at_ms(token: str) -> int | None:
     if not isinstance(claims, dict):
         return None
     exp = claims.get("exp")
-    if isinstance(exp, bool) or not isinstance(exp, (int, float)):
+    # 🔴 R2a-F-1（2026-10-06 第三轮全量对账补）：NaN/Inf ⇒ None——`int(nan*1000)`
+    #    抛未捕获 ValueError（实证 `int(float('nan'))` = ValueError），与 raccoon
+    #    :169 / buddy `_epoch_ms` 同一防护；上一轮「trae 形状不同不受影响」的
+    #    说法经实证推翻。
+    if isinstance(exp, bool) or not isinstance(exp, (int, float)) or not math.isfinite(exp):
         return None
     return int(exp * 1000)
 

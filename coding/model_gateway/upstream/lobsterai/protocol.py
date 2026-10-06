@@ -68,7 +68,9 @@ def read_num(source: dict, key: str) -> float | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        return float(value)
+        # R2a-F-1（2026-10-06）：NaN/Infinity 在读入口过滤（同 trae read_num）——
+        # json.loads 会照收 NaN/Infinity 字面量，下游 int(nan) 抛未捕获 ValueError
+        return float(value) if math.isfinite(value) else None
     if isinstance(value, str) and re.fullmatch(r"-?\d+(\.\d+)?", value.strip()):
         return float(value)
     return None

@@ -868,3 +868,16 @@ def test_jwt_exp_fallback_and_readers():
     assert protocol.read_code({"code": "9074"}) == 9074
     assert protocol.read_code({"code": 12}) == 12
     assert protocol.read_code({}) == 0
+
+
+def test_read_num_filters_nan_and_inf():
+    """R2a-F-1（2026-10-06 第三轮对账）：json.loads 会照收 NaN/Infinity 字面量
+    （Python 默认允许）⇒ 读入口必须过滤，否则下游 int(nan) 抛未捕获 ValueError
+    （trae/protocol.py:608 实证抛点）。"""
+    from model_gateway.upstream.trae.protocol import read_num
+
+    assert read_num({"k": float("nan")}, "k") is None
+    assert read_num({"k": float("inf")}, "k") is None
+    assert read_num({"k": 300}, "k") == 300.0          # 正常值不变
+    assert read_num({"k": "300"}, "k") == 300.0        # 字符串形状不变
+    assert read_num({"k": "abc"}, "k") is None         # 非数字不猜

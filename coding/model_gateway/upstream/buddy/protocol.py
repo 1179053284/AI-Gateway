@@ -376,11 +376,27 @@ def read_number(source: object, key: str) -> float:
 
 
 def code_of(body: object) -> int:
-    """取响应体业务码（非数值 → 0，与 DSH `responseCode` 同口径，`buddy-oauth.ts:79-83`）。"""
+    """取响应体业务码（非数值 → 0，与 DSH `responseCode` 同口径，`buddy-oauth.ts:79-83`）。
+
+    🔴 R2a-F-2（2026-10-06 第三轮对账修）：**数字字符串**要按数字读——同族后端存在
+    以字符串下发业务码的网关形状（trae/protocol.py:84 一手实证：「后端在部分网关上
+    以字符串 `"9074"` 返回，只认数字会把它误读成 `0` = 成功」）。旧实现只认
+    int/float ⇒ `{"code":"401"}`（字符串）会被读成 0（CODE_OK），探活把已失效的号
+    判成 valid=True 继续派活（hooks.py:244 分支恒不成立而 :247 反成立）。
+    布尔仍排除（bool 是 int 子类）；非数字字符串仍归 0（不猜）。
+    """
     if not isinstance(body, dict):
         return 0
     value = body.get("code")
-    return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if re.fullmatch(r"-?\d+", stripped):
+            return int(stripped)
+    return 0
 
 
 def message_of(body: object) -> str:

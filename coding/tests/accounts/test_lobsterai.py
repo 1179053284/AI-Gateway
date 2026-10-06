@@ -756,3 +756,12 @@ def test_meta_reflects_registry_backfill():
     assert info.base_url == const.API_BASE
     assert info.device.fields == ("uuid",)
     assert info.login == "local_callback" and info.models_source == "remote"
+
+
+def test_read_num_filters_nan_and_inf():
+    """R2a-F-1（2026-10-06 第三轮对账）：读入口过滤 NaN/Infinity（同 trae read_num）。"""
+    from model_gateway.upstream.lobsterai.protocol import read_num
+
+    assert read_num({"k": float("nan")}, "k") is None
+    assert read_num({"k": float("inf")}, "k") is None
+    assert read_num({"k": 300}, "k") == 300.0
