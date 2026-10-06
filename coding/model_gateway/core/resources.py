@@ -142,11 +142,13 @@ class ResourceState:
 
     __slots__ = ("rid", "vendor_model", "label", "vendor", "account", "status", "C",
                  "cooldown_until", "last_error", "in_flight", "enabled",
-                 "access_mode", "system_models", "quota", "src_fp", "circuit_held")
+                 "access_mode", "system_models", "quota", "src_fp", "circuit_held",
+                 "concurrency_cap")
 
     def __init__(self, rid: str, vendor_model: str, *, label: str, vendor: str,
                  account: str, access_mode: str, enabled: bool,
-                 quota: QuotaPool | None = None, src_fp: str = ""):
+                 quota: QuotaPool | None = None, src_fp: str = "",
+                 concurrency_cap: int = 0):
         self.rid = rid  # 资源 id（config.resources[].id）
         self.vendor_model = vendor_model  # 供应商模型名（来自模型资源引用）
         self.label = label  # 显示名（资源备注或 id）
@@ -166,6 +168,9 @@ class ResourceState:
         #: 用户改了凭据 / 重新登录 / 改绑账号 = 一条新的连接身份 → 运行态必须清零
         #: （见 `rebuild`；B-2：产品资源的凭据在账号目录，必须进这份指纹）
         self.src_fp = src_fp
+        #: 🔴 单资源并发上限（2026-10-06 生产评估）：0 = 不限；>0 时 in_flight 达上限
+        #:    的号在选路时**跳过**（号级背压，与冷却/容量拒同族），满载不是错误。
+        self.concurrency_cap = concurrency_cap
         #: 这条冷却是不是**全局风控熔断**按住我的（2026-09-29 用户裁决「读时重判」）。
         #: 🔴 它不是"第三种状态"，只是 `cooldown` 的**成因来源**标记，且随冷却所有权一起变：
         #: 谁取得所有权（`bench()` 返回 True）谁声明成因 —— 额度耗尽 / 429 退避写的冷却
@@ -478,9 +483,11 @@ class ResourceManager:
                                           access_mode=r.access_mode,
                                           enabled=r.enabled,
                                           quota=self._pool_for(ref.resource),
-                                          src_fp=fp)
+                                          src_fp=fp,
+                                          concurrency_cap=r.concurrency_cap)
                     self.registry[rid] = state
                 else:  # 状态保留（C/冷却/in_flight），仅刷新可变属性
+                    state.concurrency_cap = r.concurrency_cap
                     state.label = display_label(r)
                     state.vendor = vendor_label(r.preset, r.vendor, r.name, r.id)
                     state.account = r.account
@@ -630,6 +637,12 @@ class ResourceManager:
         order = sorted(range(len(targets)), key=lambda i: targets[i].in_flight)
         for i in order:
             best = targets[i]
+            # 🔴 单资源并发上限（2026-10-06 生产评估）：cap>0 且在途已满 ⇒ 跳过换下一个。
+            #    语义 = **号级背压**（不是排队不是拒绝）：保护单号不被 33~1000 并发打爆
+            #    （实测无此闸时 300 并发下单号堆 99 在途，真实产品上游会风控）。
+            #    全体满载 ⇒ return None → 终局 503（与「无可用资源」同形，error 带已尝试摘要）。
+            if best.concurrency_cap and best.in_flight >= best.concurrency_cap:
+                continue
             if self.reserve_quota(best):
                 best.in_flight += 1
                 # 🔴 这里**不推进游标**（推进在 `release` 的排空时刻）：选中即推进等于

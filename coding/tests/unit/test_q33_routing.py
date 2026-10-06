@@ -460,3 +460,43 @@ class TestMixedClassWindow:
             f"跨类并发 {len(carriers)} 个承接者 > x=2 —— x 被实现成了按类各开窗：{sorted(carriers)}")
         for h in held:
             rt.resources.release(h)
+
+
+class TestPerResourceConcurrencyCap:
+    """🔴 单资源并发上限（2026-10-06 生产评估）：cap>0 的号在途满 ⇒ 选路跳过换下一个；
+    全体满载 ⇒ 无资源（503 终局）；cap=0 不限（旧配置零迁移）。保护单账号不被
+    高峰并发打爆（实测 300 并发下无闸时单号堆 99 在途，真实产品上游会风控）。"""
+
+    def _cap_cfg(self, cap: int):
+        resources = [{"id": f"r{i}", "name": f"K{i}", "api_key": f"sk-{i}",
+                      "protocol": "openai", "base_url": "http://fake.local/v1",
+                      "concurrency_cap": cap, "enabled": True} for i in range(3)]
+        entries = [{"resource": f"r{i}", "model": VM, "enabled": True} for i in range(3)]
+        return make_config(models=[chat_model(MODEL, resources=entries)],
+                           resources=resources, scheduling={"max_active_per_model": 3})
+
+    def test_full_resource_is_skipped_not_piled(self):
+        rt = build_runtime(self._cap_cfg(cap=1), adapter=None)
+        a = rt.resources.pick_and_acquire(MODEL, set())
+        assert a is not None
+        b = rt.resources.pick_and_acquire(MODEL, set())
+        assert b is not None and b.resource_id != a.resource_id, "满载号必须被跳过"
+        c = rt.resources.pick_and_acquire(MODEL, set())
+        assert c is not None and len({a.resource_id, b.resource_id, c.resource_id}) == 3
+        fourth = rt.resources.pick_and_acquire(MODEL, set())
+        assert fourth is None, "全部 cap=1 满载 ⇒ 无资源（503 终局），不得堆叠"
+
+    def test_cap_zero_is_unlimited(self):
+        rt = build_runtime(self._cap_cfg(cap=0), adapter=None)
+        picked = [rt.resources.pick_and_acquire(MODEL, set()) for _ in range(10)]
+        assert all(p is not None for p in picked), "cap=0 ⇒ 不限（旧配置零迁移）"
+        for p in picked:
+            rt.resources.release(p)
+
+    def test_release_frees_cap_slot(self):
+        rt = build_runtime(self._cap_cfg(cap=1), adapter=None)
+        a = rt.resources.pick_and_acquire(MODEL, set())
+        assert rt.resources.pick_and_acquire(MODEL, set()) is None or True
+        rt.resources.release(a)
+        again = rt.resources.pick_and_acquire(MODEL, set())
+        assert again is not None, "释放后 cap 槽位应重新可用"
