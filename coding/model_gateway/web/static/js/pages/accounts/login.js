@@ -4,11 +4,11 @@
  * 依赖注入面（主文件传入的共享符号）经顶部 import 显式声明——
  * 拼装门（verify_accounts_ui.mjs）按「主文件 → 子模块」顺序拼接真源码即可。
  */
-import { GET, POST, esc } from "../api.js";
+import { GET, POST, esc } from "../../api.js";
 
 /** 向导会话状态（模块级；**只有 stopWizard() 置空**，§4-2）——随本子模块搬入。 */
 let wizard = null;
-import { modal, confirmDialog, toast, copyText } from "../components.js";
+import { modal, confirmDialog, toast, copyText } from "../../components.js";
 import {
   COPY, KIND_TEXT, LINK, PHONE, POLLABLE, POLL_MAX_FAILS, POLL_MS, TICK_MS,
   WINDOW_KINDS, kindHint, refreshAfter,

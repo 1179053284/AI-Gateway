@@ -1,7 +1,7 @@
 /** 模型映射弹窗 + 批量签到/领取子模块（D-1/D-4 拆分第二步，2026-10-06）——从 accounts.js 物理移出。
  * 共享状态经 accounts/state.js（live binding 读 + setXxx 写）。 */
-import { GET, POST, esc } from "../api.js";
-import { modal, confirmDialog, toast, toastCard, copyText, initSplitResize } from "../components.js";
+import { GET, POST, esc } from "../../api.js";
+import { modal, confirmDialog, toast, toastCard, copyText, initSplitResize } from "../../components.js";
 import { view, selected, panelEl, setSelected, setPanelEl } from "./state.js";
 
 /* ---------- 模型映射（产品内部模型 → 网关模型）与批量签到 / 领取 ----------
@@ -32,7 +32,7 @@ import { view, selected, panelEl, setSelected, setPanelEl } from "./state.js";
  *   这条裁定作废上一轮的「行内一改即落库」；它同时也把 10-04 那两条常驻说明
  *   （「未落库 · …才写入」「保存后解除关联」）**请了回来** —— 上一轮删它们不是因为话错，
  *   而是因为那一步不存在了；现在这一步重新存在，话就重新是真话。 */
-async function openModelMap(root, p) {
+export async function openModelMap(root, p) {
   if (!p) return;
   const body = document.createElement("div");
   body.innerHTML = `<div class="loading">正在读取模型目录…</div>`;
@@ -431,7 +431,7 @@ async function openModelMap(root, p) {
  *       · 映射了什么 = 「网关模型映射」下拉的**当前值**（`pickTarget` 已改为先读已落库的 `mapped_to`）；
  *       · 进不进池   = 那颗开关本身的位置；
  *       · 没落库而正则有一条够格的建议 = 下拉下面那一行的「建议挂到 X · 采纳」（`mapFootHTML`）。 */
-function mapBodyHTML(cat, options, p) {
+export function mapBodyHTML(cat, options, p) {
   const models = cat.models || [];
   const src = cat.source || {};
   /* 列宽一次定死（红线：同一列表行几何必须统一）。2026-10-04 去掉状态列那一档宽度 ⇒ 省下的
@@ -531,7 +531,7 @@ function mapFootHTML(m, i, st) {
 }
 
 /** 目录字段辅助段（拼在模型 ID 后；只列上游明确给出的事实，None/缺省一律不展示）。 */
-function modelFactsHTML(m) {
+export function modelFactsHTML(m) {
   const facts = [
     m.context_window != null ? `上下文 ${fmtTok(m.context_window)}` : "",
     m.max_output != null ? `输出 ${fmtTok(m.max_output)}` : "",
@@ -629,7 +629,7 @@ const optionHTML = (options, cur) => options.map((o) =>
 
 /** 批量签到 / 领取（卡头「一键领取」与子侧栏「一键签到」共用）：
  *  `payload.product = null` = 全部支持签到的产品（谁参与由后端按能力位判，前端不筛）。 */
-async function batchClaim(btn, payload) {
+export async function batchClaim(btn, payload) {
   if (!btn || btn.disabled) return;
   const label = btn.innerHTML;
   btn.disabled = true;
@@ -649,7 +649,7 @@ async function batchClaim(btn, payload) {
 /** 批量续期（2026-10-01 用户裁决：产品维度批量续期，窗口 = 5h 内失效）：
  *  `POST /admin/api/accounts/{product}/refresh-due`（缺省窗口由后端 `BATCH_RENEW_WITHIN_S` 定）。
  *  回执只说"动了谁"：续期 / 失败 / 失效时间未知（不猜、不续）三类分开列。 */
-async function batchRenew(btn, p) {
+export async function batchRenew(btn, p) {
   if (!btn || btn.disabled || !p) return;
   const label = btn.innerHTML;
   btn.disabled = true;

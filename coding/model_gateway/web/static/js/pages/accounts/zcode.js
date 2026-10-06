@@ -1,7 +1,7 @@
 /** ZCode 导入账号 + 小店购买子模块（D-1/D-4 拆分第二步，2026-10-06）——从 accounts.js 物理移出。
  * 共享状态经 accounts/state.js（live binding 读 + setXxx 写）。 */
-import { GET, POST, esc } from "../api.js";
-import { modal, confirmDialog, toast, toastCard, copyText, initSplitResize } from "../components.js";
+import { GET, POST, esc } from "../../api.js";
+import { modal, confirmDialog, toast, toastCard, copyText, initSplitResize } from "../../components.js";
 import { rootEl } from "./state.js";
 
 /* ---------- ZCode 专属：导入账号与购买账号（YouYu Shop）----------
@@ -23,16 +23,16 @@ import { rootEl } from "./state.js";
  *     失败/超时出表、已到账保留以便回来再导）—— 凭据内容一个字节都不进浏览器存储；
  *   · 一切失败展示**响应里的原因**（api.js 的统一错误提取），不写裸「失败」。
  */
-const Z_PRODUCT = "zcode";               // 两颗入口的唯一门控（只有 ZCode 有本机工具与一元小店）
+export const Z_PRODUCT = "zcode";               // 两颗入口的唯一门控（只有 ZCode 有本机工具与一元小店）
 const ZSHOP_STORE = "mgw.zshop.orders";
 const ZSHOP_STORE_MAX = 5;
 const ZSHOP_POLL_MS = 2500;
-let zshop = null;                        // 购买账号弹窗会话 —— **只有 stopZShop() 置空**
+export let zshop = null;                        // 购买账号弹窗会话 —— **只有 stopZShop() 置空**
 
 /* ---------- 导入账号（ZCode 专属） ---------- */
 
 /** 导入账号弹窗：打开即读 `import/sources`（本机两工具的账号目录），三段式（粘贴 JSON / 本机工具 / 选文件）。 */
-async function openZImport(root) {
+export async function openZImport(root) {
   const body = document.createElement("div");
   body.innerHTML = `<div class="loading">正在读取本机 ZCode 工具的账号…</div>`;
   const foot = document.createElement("div");
@@ -287,7 +287,7 @@ function zBlankOrder(orderId, token) {
 }
 
 /** 购买账号弹窗：分段 tab 两页（照 ZCode Panel）——商品 tab 默认 + 我的订单 tab（台账恢复，pending 继续轮询）。 */
-function openZShop(root) {                          // root 仅为调用点签名一致；落点统一走 repaintPanel(rootEl)
+export function openZShop(root) {                          // root 仅为调用点签名一致；落点统一走 repaintPanel(rootEl)
   stopZShop();                                     // 单实例：开新窗先收干净旧窗（timer 一并清）
   const st = { body: null, m: null, timer: null, tab: "items",
     orders: readZOrders().map((o) => {

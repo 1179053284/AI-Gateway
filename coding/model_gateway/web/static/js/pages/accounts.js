@@ -87,7 +87,9 @@ import { batchClaim, batchRenew, mapBodyHTML, modelFactsHTML, openModelMap } fro
 import { Z_PRODUCT, openZImport, openZShop, zshop } from "./accounts/zcode.js";
 
 // D-1/D-4 拆分第一步：登录向导子模块（其依赖的主文件符号在下方 export 区）。
-import { openWizard, stopWizard, settle, openLoginWindow, paintFooter } from "./accounts/login.js";
+import {
+  openWizard, stopWizard, settle, openLoginWindow, paintFooter, switchEl,
+} from "./accounts/login.js";
 
 
 /* ---------- 图标（Lucide 0.555.0，14×14 sw2；全站同契约） ---------- */
