@@ -1099,6 +1099,10 @@ def create_app(config_path: Path | None = None, *,
 
     # 鉴权中间件（纯 ASGI；持 runtime 引用取最新令牌）
     app.add_middleware(AuthMiddleware, runtime_provider=lambda: app.state.runtime)
+    # 🔴 S-5 完整版（2026-10-06）：管理面局域网收口——host 非回环时对非回环客户端
+    #    关掉 `?reveal=1` / 管理写方法 / `resources/test`（gateway.lan_admin_open=true 显式放开）
+    from model_gateway.api.auth import AdminLanGuard
+    app.add_middleware(AdminLanGuard, runtime_provider=lambda: app.state.runtime)
     # 静态 UI no-cache（Q19-①：防浏览器缓存旧界面）
     app.add_middleware(_StaticNoCacheMiddleware)
 

@@ -20,6 +20,8 @@
 
 gateway:
   host: 127.0.0.1                  # 默认只回环（安全默认）；要局域网访问必须显式改成 0.0.0.0
+  # lan_admin_open: false          # host 开放到 0.0.0.0 时：敏感管理面（reveal=1 / 管理写端点 /
+  #                                # resources/test）对非回环客户端 403；确认同网段可信才改 true
   port: 8300
   max_concurrent_requests: 0       # 网关整体并发上限；0 = 不限（超限 429 + Retry-After）
   attempt_timeout_seconds: 60     # 单次上游尝试超时（终审由 120 调小）

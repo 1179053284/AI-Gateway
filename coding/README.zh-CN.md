@@ -68,7 +68,8 @@ cp config.example.yaml data/config.yaml
 python -m model_gateway.main
 ```
 
-Web 控制台地址：`http://127.0.0.1:8300`。在**API 接入**页创建访问令牌（或沿用样例），然后：
+> **网络范围（S-5）。** 网关默认只绑 `127.0.0.1`（配置 `gateway.host`）。要让局域网设备访问，把 `host` 显式改成 `0.0.0.0`——此时敏感管理面（`?reveal=1`、管理写端点、`resources/test`）对**非回环客户端**一律 403，除非再显式设 `gateway.lan_admin_open: true`。配置文件是严格校验的：未知键与更高 `schema_version` 会**报错拒绝**，不再静默忽略。
+
 
 ```bash
 curl http://127.0.0.1:8300/v1/chat/completions \

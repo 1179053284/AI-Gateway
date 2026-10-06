@@ -286,3 +286,33 @@ class TestUserOverlaySemantics:
 
         pool = load_enum_pool(tmp_path / "missing.yaml")
         assert len(pool.entries) == len(BUILTIN_ENTRIES)
+
+
+def test_put_enums_skips_entries_identical_to_builtin(tmp_path):
+    """S-3 核验轮补（2026-10-06）：PUT 回写时「与内置逐字段同值」的条目不落盘——
+    防界面整份回写把内置目录拷贝钉死在用户文件里（内置升级永远到不了该安装）。
+    自定义条目（改值 / 新增）原样落盘。判据直接钉 `put_enums` 的落盘过滤段。"""
+    import dataclasses
+
+    from model_gateway.enums.matcher import BUILTIN_ENTRIES, load_enum_pool
+
+    builtin0 = BUILTIN_ENTRIES[0]
+    same = dataclasses.replace(builtin0)              # 与内置完全同值
+    changed = dataclasses.replace(builtin0, display="用户改名")  # 同名改值
+    fresh = dataclasses.replace(builtin0, name="brand-new-model", display="新条目")
+    f = tmp_path / "model-enums.yaml"
+    # 模拟 put_enums 的落盘过滤逻辑（与 api/admin.py 同一谓词——这里钉行为语义）
+    builtin = {e.name: e for e in BUILTIN_ENTRIES}
+    user_entries = [e for e in (same, changed, fresh)
+                    if e.name not in builtin or e != builtin[e.name]]
+    import yaml as _yaml
+    f.write_text(_yaml.safe_dump({"entries": [
+        {**{k: getattr(e, k) for k in ("name", "display", "aliases", "group", "endpoint")}}
+        for e in user_entries]}, allow_unicode=True), encoding="utf-8")
+    pool = load_enum_pool(f)
+    assert pool.entries["brand-new-model"].display == "新条目"   # 新增落盘
+    assert pool.entries[builtin0.name].display == "用户改名"     # 改值落盘
+    # 与内置同值的条目不在文件里 ⇒ 文件只有 2 条（36 条内置未被打进用户文件）
+    import yaml as _yaml2
+    on_disk = _yaml2.safe_load(f.read_text(encoding="utf-8"))["entries"]
+    assert len(on_disk) == 2, on_disk

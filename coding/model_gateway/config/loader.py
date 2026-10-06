@@ -44,6 +44,18 @@ def load_config(path: Path | str | None = None) -> AppConfig:
     if not isinstance(raw, dict):
         raise ConfigError([f"{path}: 配置根节点必须是映射（mapping），实际为 {type(raw).__name__}"])
 
+    # 🔴 R7-K4（2026-10-06）：版本位守卫——**比本程序新的 schema 版本**明确拒绝，
+    #    不允许"半懂"地读下去（旧程序读新配置 = 未知键已由 forbid 报错，这里补版本维度）。
+    #    旧文件缺键 ⇒ AppConfig.schema_version 默认 1，零迁移。
+    declared = raw.get("schema_version", 1)
+    if not isinstance(declared, int) or isinstance(declared, bool) or declared < 1:
+        raise ConfigError([f"{path}: schema_version 必须是 ≥1 的整数，实际为 {declared!r}"])
+    if declared > AppConfig.model_fields["schema_version"].default:
+        raise ConfigError([
+            f"{path}: 配置 schema 版本 {declared} 高于本程序支持的版本 "
+            f"{AppConfig.model_fields['schema_version'].default}——请升级 model-gateway "
+            f"后再使用这份配置（拒绝半懂地读取，防止静默走缺省）"])
+
     try:
         return AppConfig.model_validate(raw)
     except ValidationError as e:

@@ -90,3 +90,72 @@ class AuthMiddleware:
                         (b"content-length", str(len(body)).encode())],
         })
         await send({"type": "http.response.body", "body": body})
+
+
+def _client_is_loopback(scope) -> bool:
+    """客户端（不是监听地址）是否回环：S-5 完整版的判定基元。"""
+    client = scope.get("client")
+    host = client[0] if client else ""
+    return host in ("127.0.0.1", "::1", "localhost", "")
+
+class AdminLanGuard:
+    """🔴 S-5 完整版（2026-10-06 架构审计核验轮）：管理面**局域网收口**。
+
+    免鉴权是按「自用本地系统」裁定的（本模块头部原话）；`host` 显式开放到
+    `0.0.0.0` 时这个前提对同网段设备不再成立 ⇒ 三类**敏感管理面**对非回环
+    客户端 403（判定书 §4-1 原话「开关内把 reveal/写面/resources/test 收口」）：
+      1. `?reveal=1`（接入密钥明文出口——S-5 的核心暴露物）；
+      2. `/admin/api/*` 的写方法（POST/PUT/DELETE——含 PUT config 全量覆盖写面）；
+      3. `POST /admin/api/resources/test`（会拿用户 Key 真实出站探测）。
+    `gateway.lan_admin_open: true` 是显式逃生门（打开 = 声明同网段设备可信）；
+    回环客户端零变化；GET（不 reveal）照常放行——局域网只读视图无密钥泄露面。
+    纯 ASGI、不引 BaseHTTPMiddleware（同 AuthMiddleware 的取消传播理由）。
+    """
+
+    _WRITE_METHODS = frozenset({"POST", "PUT", "DELETE", "PATCH"})
+
+    def __init__(self, app, runtime_provider):
+        self.app = app
+        self._runtime = runtime_provider
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope.get("path", "").startswith("/admin/"):
+            # 🔴 守卫自身必须防弹：runtime 缺失 / config 读不动（BD3a 判据钉的形状，
+            #    test_m7_backend_preconditions 实测抓到）都不许冒穿成 500——
+            #    降级 = 不收口，放行给下游（视图有自己的 fail-closed 兜底）。
+            try:
+                runtime = self._runtime()
+                gw = getattr(runtime.config, "gateway", None)
+                denied = self._should_deny(scope, gw)
+            except Exception:  # noqa: BLE001 — 守卫永不对正常流量加害
+                denied = False
+            if denied:
+                body = json.dumps(
+                    {"detail": "管理面仅限本机（回环）访问：host 已开放到非回环地址；"
+                               "要从局域网设备管理请把 gateway.lan_admin_open 设为 true"},
+                    ensure_ascii=False).encode("utf-8")
+                await send({
+                    "type": "http.response.start", "status": 403,
+                    "headers": [(b"content-type", b"application/json"),
+                                (b"content-length", str(len(body)).encode())],
+                })
+                await send({"type": "http.response.body", "body": body})
+                return
+        await self.app(scope, receive, send)
+
+    @staticmethod
+    def _should_deny(scope, gw) -> bool:
+        """True = 本请求必须 403。gw 不可用（None / 抛错）一律不拦（见 __call__ 的 try）。"""
+        if gw is None or gw.lan_admin_open:
+            return False
+        # 🔴 括号不可省：`a or b in c` 会被解析成 `a or (b in c)`——host 为真值时
+        #    整个表达式返回 host 本身（truthy）⇒ 守卫永不触发（核验轮实测抓到）。
+        host_is_loopback = ((getattr(gw, "host", "") or "")
+                            in ("127.0.0.1", "::1", "localhost", ""))
+        if host_is_loopback or _client_is_loopback(scope):
+            return False  # 回环监听 or 回环客户端：零变化
+        sensitive = (
+            ("reveal=1" in scope.get("query_string", b"").decode("latin-1"))
+            or scope.get("method", "GET") in AdminLanGuard._WRITE_METHODS
+            or scope.get("path", "") == "/admin/api/resources/test")
+        return sensitive

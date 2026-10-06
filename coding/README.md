@@ -82,6 +82,8 @@ curl http://127.0.0.1:8300/v1/chat/completions \
 
 To connect a tool, set its OpenAI-compatible base URL to `http://127.0.0.1:8300/v1` and use the access token as the API key. On macOS you can also start the gateway by double-clicking `启动网关.command`.
 
+> **Network scope.** The gateway binds to `127.0.0.1` by default (config `gateway.host`). To serve LAN devices set `host: 0.0.0.0` — sensitive admin surfaces (`?reveal=1`, admin write endpoints, `resources/test`) then answer **403 to non-loopback clients** unless you also set `gateway.lan_admin_open: true`. Config files are validated strictly: unknown keys and a future `schema_version` are rejected with a clear error instead of being silently ignored.
+
 ## CLI (`mgw`)
 
 Installing with `pip install -e .` also installs a `mgw` command. If `mgw` is not on your `PATH`, use the equivalent `python -m model_gateway.cli …` form.

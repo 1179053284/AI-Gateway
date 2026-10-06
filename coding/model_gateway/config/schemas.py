@@ -23,6 +23,11 @@ ErrorClass = Literal["RETRYABLE", "BAD_REQUEST", "AUTH", "NOT_FOUND", "QUOTA", "
 
 
 class Quotas(BaseModel):
+    # 🔴 R7-K4 / S-4 后续（2026-10-06）：键名打错**即报错**，不再静默走缺省
+    #  （「无报错的失败」形状——审计实录 Qoder proxy 键被静默忽略过）。
+    #  GET 回传的只读派生键由 PUT 入口剥离（api/admin.py::_strip_derived_keys）。
+    model_config = {"extra": "forbid"}
+
     """令牌配额（P1 预留：M1 读入保留、不校验上限，M3 启用语义）。"""
 
     daily_requests: int = 0
@@ -31,6 +36,11 @@ class Quotas(BaseModel):
 
 
 class AccessToken(BaseModel):
+    # 🔴 R7-K4 / S-4 后续（2026-10-06）：键名打错**即报错**，不再静默走缺省
+    #  （「无报错的失败」形状——审计实录 Qoder proxy 键被静默忽略过）。
+    #  GET 回传的只读派生键由 PUT 入口剥离（api/admin.py::_strip_derived_keys）。
+    model_config = {"extra": "forbid"}
+
     """网关接入密钥：工具端 Bearer 凭据（API 接入页管理，多密钥区分不同工具，Q18-④）。
 
     id/value 由系统自动生成（tok_ / mg- 前缀）；name 为用途标注（如 Trae / Cursor）。
@@ -44,6 +54,11 @@ class AccessToken(BaseModel):
 
 
 class ZcodeUpstreamConfig(BaseModel):
+    # 🔴 R7-K4 / S-4 后续（2026-10-06）：键名打错**即报错**，不再静默走缺省
+    #  （「无报错的失败」形状——审计实录 Qoder proxy 键被静默忽略过）。
+    #  GET 回传的只读派生键由 PUT 入口剥离（api/admin.py::_strip_derived_keys）。
+    model_config = {"extra": "forbid"}
+
     """ZCode 上游配置（v2.0 §16.5 / §17）。
 
     ⚠️ 为什么单独建这个模型：验收发现 `mgw zcode claim` 的失败提示让用户配
@@ -83,6 +98,11 @@ class ZcodeUpstreamConfig(BaseModel):
 
 
 class GatewayConfig(BaseModel):
+    # 🔴 R7-K4 / S-4 后续（2026-10-06）：键名打错**即报错**，不再静默走缺省
+    #  （「无报错的失败」形状——审计实录 Qoder proxy 键被静默忽略过）。
+    #  GET 回传的只读派生键由 PUT 入口剥离（api/admin.py::_strip_derived_keys）。
+    model_config = {"extra": "forbid"}
+
     # 🔴 默认只回环（S-5 收口，2026-10-05 用户批准）：`/admin/` 免鉴权 + `get_config`
     #    默认出 `access_tokens[].value` 明文，都是按「自用本地系统」裁定的（api/auth.py）；
     #    旧默认 `0.0.0.0` 让这个前提对同网段设备不成立 ⇒ 任一设备可读走全部接入密钥并
@@ -96,6 +116,12 @@ class GatewayConfig(BaseModel):
     heartbeat_seconds: int = Field(default=15, ge=1)  # SSE 心跳注释帧间隔
     retention_days: int = Field(default=7, ge=1)  # 事件流水保留天数
     access_tokens: list[AccessToken] = Field(default_factory=list)
+    # 🔴 S-5 完整版（2026-10-06）：`host` 显式写成非回环（局域网开放）时，管理面的
+    #    免鉴权前提（api/auth.py「自用本地系统」）对同网段设备不再成立 ⇒ 非**回环客户端**
+    #    打 `?reveal=1` / 管理写方法 / `resources/test` 一律 403（api/auth.py::AdminLanGuard）。
+    #    只有确需从局域网设备管理网关时才显式打开——打开即声明"同网段设备可信"。
+    lan_admin_open: bool = Field(default=False)
+
     # ZCode 上游配置（v2.0 §16.5）：`gateway.zcode.proxy` 等
     zcode: ZcodeUpstreamConfig = Field(default_factory=ZcodeUpstreamConfig)
 
@@ -111,6 +137,11 @@ class GatewayConfig(BaseModel):
 
 
 class SchedulingConfig(BaseModel):
+    # 🔴 R7-K4 / S-4 后续（2026-10-06）：键名打错**即报错**，不再静默走缺省
+    #  （「无报错的失败」形状——审计实录 Qoder proxy 键被静默忽略过）。
+    #  GET 回传的只读派生键由 PUT 入口剥离（api/admin.py::_strip_derived_keys）。
+    model_config = {"extra": "forbid"}
+
     """调度参数：x/y/m 全局唯一（Q18-③：不随模型分化，一套机制管控所有模型）。
 
     语义见 tech-design §5（Q13/Q14 定论）。
@@ -137,10 +168,16 @@ class ErrorRule(BaseModel):
     type: str = ""
     error_class: ErrorClass = Field(alias="class")
 
-    model_config = {"populate_by_name": True}
+    # 🔴 R7-K4（2026-10-06）：forbid 见各类同注；populate_by_name 保留（别名兼容）。
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
 
 class ReasoningDefault(BaseModel):
+    # 🔴 R7-K4 / S-4 后续（2026-10-06）：键名打错**即报错**，不再静默走缺省
+    #  （「无报错的失败」形状——审计实录 Qoder proxy 键被静默忽略过）。
+    #  GET 回传的只读派生键由 PUT 入口剥离（api/admin.py::_strip_derived_keys）。
+    model_config = {"extra": "forbid"}
+
     """资源级推理默认（Q15 / FR-3.16）：请求级指定 > 资源级默认 > 不注入（该供应商通道默认）。
 
     enabled/effort 均可选；effort 为 opaque 字符串透传（如 low/high/max），不做枚举强校验。
@@ -152,6 +189,11 @@ class ReasoningDefault(BaseModel):
 
 
 class Resource(BaseModel):
+    # 🔴 R7-K4 / S-4 后续（2026-10-06）：键名打错**即报错**，不再静默走缺省
+    #  （「无报错的失败」形状——审计实录 Qoder proxy 键被静默忽略过）。
+    #  GET 回传的只读派生键由 PUT 入口剥离（api/admin.py::_strip_derived_keys）。
+    model_config = {"extra": "forbid"}
+
     """资源 = 供应商 + 账号 + Key（调度与计费最小单元，Q18-② / Q20-③）。
 
     - id：系统自动生成（res_ 前缀），用户无需关心；
@@ -211,6 +253,11 @@ class Resource(BaseModel):
 
 
 class ModelResource(BaseModel):
+    # 🔴 R7-K4 / S-4 后续（2026-10-06）：键名打错**即报错**，不再静默走缺省
+    #  （「无报错的失败」形状——审计实录 Qoder proxy 键被静默忽略过）。
+    #  GET 回传的只读派生键由 PUT 入口剥离（api/admin.py::_strip_derived_keys）。
+    model_config = {"extra": "forbid"}
+
     """网关模型资源引用：resource（资源 id）+ 供应商模型名 + 资源级推理默认 + **映射级开关**。
 
     🔴 `enabled` 是**这条映射**参不参与调度，与 `Resource.enabled`（那颗资源开关）是两把位：
@@ -229,6 +276,11 @@ class ModelResource(BaseModel):
 
 
 class ProductModelMapping(BaseModel):
+    # 🔴 R7-K4 / S-4 后续（2026-10-06）：键名打错**即报错**，不再静默走缺省
+    #  （「无报错的失败」形状——审计实录 Qoder proxy 键被静默忽略过）。
+    #  GET 回传的只读派生键由 PUT 入口剥离（api/admin.py::_strip_derived_keys）。
+    model_config = {"extra": "forbid"}
+
     """**产品维度**的模型映射位（Q33-①）：某产品的某供应商模型名 → 哪个网关模型，以及是否进池。
 
     🔴 为什么需要它（而不是继续用 `ModelResource.enabled` 当产品开关）：
@@ -274,6 +326,11 @@ PARAM_RANGES: dict[str, tuple[float, float]] = {
 
 
 class SystemModel(BaseModel):
+    # 🔴 R7-K4 / S-4 后续（2026-10-06）：键名打错**即报错**，不再静默走缺省
+    #  （「无报错的失败」形状——审计实录 Qoder proxy 键被静默忽略过）。
+    #  GET 回传的只读派生键由 PUT 入口剥离（api/admin.py::_strip_derived_keys）。
+    model_config = {"extra": "forbid"}
+
     """网关模型：网关对外统一模型名 + 资源池（有序 = 优先级）。
 
     调度参数（x/y/m/超时/冷却）全局唯一（Q18-③），不在模型级覆盖。
@@ -323,6 +380,11 @@ class SystemModel(BaseModel):
 
 
 class Pricing(BaseModel):
+    # 🔴 R7-K4 / S-4 后续（2026-10-06）：键名打错**即报错**，不再静默走缺省
+    #  （「无报错的失败」形状——审计实录 Qoder proxy 键被静默忽略过）。
+    #  GET 回传的只读派生键由 PUT 入口剥离（api/admin.py::_strip_derived_keys）。
+    model_config = {"extra": "forbid"}
+
     """成本估算（双口径，P1 预留）：api 模式 token 单价/图像按张；plan 模式积分系数。"""
 
     provider: str = Field(min_length=1)  # 供应商标识（预设 id 或资源备注）
@@ -335,7 +397,17 @@ class Pricing(BaseModel):
 
 
 class AppConfig(BaseModel):
+    # 🔴 R7-K4 / S-4 后续（2026-10-06）：键名打错**即报错**，不再静默走缺省
+    #  （「无报错的失败」形状——审计实录 Qoder proxy 键被静默忽略过）。
+    #  GET 回传的只读派生键由 PUT 入口剥离（api/admin.py::_strip_derived_keys）。
+    model_config = {"extra": "forbid"}
+
     """根配置：config.yaml 全量模型。"""
+
+    #: 🔴 R7-K4 / S-4 后续（2026-10-06）：配置 schema 版本。当前 1；旧文件缺此键 ⇒ 按 1 读。
+    #: 将来做破坏性变更时升版本 + 在 loader 里写「读旧版 → 迁移/拒绝」的分支——
+    #: 那时才有迁移的真实形状，现在只先把**版本位**立起来（不再是无版本裸 YAML）。
+    schema_version: int = Field(default=1, ge=1)
 
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     scheduling: SchedulingConfig = Field(default_factory=SchedulingConfig)

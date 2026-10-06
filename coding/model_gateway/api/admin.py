@@ -587,6 +587,24 @@ async def zcode_bench(request: Request):
 
 # ---------- 配置读写 ----------
 
+#: GET 响应里的**只读派生键**（按宿主对象分组）：界面整份 PUT 回传时必须在校验前剥掉——
+#: 配置类已 `extra="forbid"`（R7-K4，2026-10-06），不剥 = 界面每一次保存都 400。
+DERIVED_KEYS_IN_RESOURCES = ("mapping_enabled",)      # models[].resources[] 条目上
+DERIVED_KEYS_IN_MODELS = ("spec",)                    # models[] 网关模型上
+
+
+def _strip_derived_keys(body: dict) -> None:
+    """剥掉 GET 回传里的只读派生键（就地改写；forbid 落地的配套，S-4 后续轮）。"""
+    for m in body.get("models", []) or []:
+        if isinstance(m, dict):
+            for k in DERIVED_KEYS_IN_MODELS:
+                m.pop(k, None)
+            for e in m.get("resources", []) or []:
+                if isinstance(e, dict):
+                    for k in DERIVED_KEYS_IN_RESOURCES:
+                        e.pop(k, None)
+
+
 def _autogen_ids(body: dict) -> None:
     """系统自动生成 ID / 密钥值（Q18-②/④：用户无需输入，保存时服务端补齐）。
 
@@ -727,6 +745,7 @@ async def put_config(request: Request):
         nonlocal errors  # 闭包内重新绑定（errors = [...]）必须声明，否则 UnboundLocalError → 500
         with runtime._reload_lock:  # noqa: SLF001 — 同进程装配侧唯一写面互斥点
             try:
+                _strip_derived_keys(body)  # 派生位剥离（forbid 配套）必须在校验前
                 _autogen_ids(body)
                 # 锁内读当前配置还原哨兵：读与写同一临界区，杜绝"还原的是上一代"竞争
                 _unmask_resources(body, runtime.config)
@@ -805,7 +824,8 @@ async def get_enums(request: Request):
 
 @router.put("/admin/api/enums")
 async def put_enums(request: Request):
-    """保存枚举池（全量替换）→ 写 model-enums.yaml → 重载生效。"""
+    """保存枚举池（S-3 增量语义：文件 = **用户覆写/新增层**，与内置同值的条目不落盘）
+    → 写 model-enums.yaml → 重载生效。"""
     runtime = request.app.state.runtime
     path = _enums_path(request)
     body = await request.json()
@@ -855,11 +875,22 @@ async def put_enums(request: Request):
         return JSONResponse(status_code=400, content={
             "status": "rejected", "errors": [f"枚举池条目不合法：{e}"]})
     path.parent.mkdir(parents=True, exist_ok=True)
-    _dump_enums(entries, path)
+    # 🔴 S-3 增量语义下的落盘收缩（2026-10-06 核验轮补）：`load_enum_pool` 已改为
+    # 「内置打底 + 文件覆写」⇒ 文件里不需要保存**与内置完全同值**的条目——
+    # 界面把 GET（含内置目录）整份 PUT 回来时，同值条目落盘只会造成两个害处：
+    # ① 文件膨胀到与内置目录等大；② 内置目录后续升级（取证回填/改默认值）会被
+    # 用户文件里的旧拷贝**永久钉死**（覆写优先级高于内置）。按"与内置逐字段同值
+    # 则不落盘"过滤，用户真正的自定义（改名/改别名/改档案/新增条目）原样保留。
+    builtin = {e.name: e for e in BUILTIN_ENTRIES}
+    user_entries = [e for e in entries
+                    if e.name not in builtin or e != builtin[e.name]]
+    _dump_enums(user_entries, path)
     ok, errors = await runtime.reload_from_file()
     if not ok:
         return JSONResponse(status_code=400, content={"status": "rejected", "errors": errors})
-    return {"status": "ok", "message": "枚举池已保存并生效"}
+    skipped = len(entries) - len(user_entries)
+    return {"status": "ok", "message": "枚举池已保存并生效"
+            + (f"（{skipped} 条与内置目录相同，未写入文件）" if skipped else "")}
 
 
 # ---------- 供应商预设 ----------

@@ -367,3 +367,44 @@ class TestMaskedKeySentinel:
         _unmask_resources(legacy, cur)
         assert legacy["resources"][0]["api_key"] == "sk-****1111"  # 不猜 → 字面
         assert legacy["resources"][0]["api_key"] != "sk-aaaaaaaa1111"
+
+
+class TestSchemaVersionAndForbid:
+    """R7-K4 / S-4 后续（2026-10-06）：配置面两道保险——① 键名打错即报错（forbid），
+    ② schema 版本位（拒绝半懂地读未来格式）。都钉「无报错的失败」这一形状的封口。"""
+
+    def test_unknown_top_level_key_is_rejected(self, tmp_path):
+        f = tmp_path / "config.yaml"
+        f.write_text(yaml.safe_dump({"gatewy": {"host": "127.0.0.1"}}), encoding="utf-8")
+        with pytest.raises(ConfigError) as ei:
+            load_config(f)
+        assert "gatewy" in str(ei.value.errors), ei.value.errors
+
+    def test_unknown_nested_key_is_rejected(self, tmp_path):
+        f = tmp_path / "config.yaml"
+        f.write_text(yaml.safe_dump(
+            {"gateway": {"host": "127.0.0.1", "quota_net_typo": False}}), encoding="utf-8")
+        with pytest.raises(ConfigError) as ei:
+            load_config(f)
+        assert "quota_net_typo" in str(ei.value.errors), ei.value.errors
+
+    def test_missing_version_defaults_to_1(self, tmp_path):
+        f = tmp_path / "config.yaml"
+        f.write_text(yaml.safe_dump({"gateway": {"host": "127.0.0.1"}}), encoding="utf-8")
+        cfg = load_config(f)
+        assert cfg.schema_version == 1
+
+    def test_future_version_is_rejected_loudly(self, tmp_path):
+        f = tmp_path / "config.yaml"
+        f.write_text(yaml.safe_dump({"schema_version": 99}), encoding="utf-8")
+        with pytest.raises(ConfigError) as ei:
+            load_config(f)
+        assert "99" in str(ei.value.errors), ei.value.errors
+
+    def test_version_survives_save_roundtrip(self, tmp_path):
+        f = tmp_path / "config.yaml"
+        f.write_text(yaml.safe_dump({"schema_version": 1, "gateway": {"host": "127.0.0.1"}}),
+                     encoding="utf-8")
+        cfg = load_config(f)
+        save_config(cfg, f)
+        assert load_config(f).schema_version == 1
