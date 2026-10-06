@@ -639,3 +639,23 @@ def test_same_credentials_do_not_reset_the_terminal_state(tmp_path):
     assert ok, errors
     assert st.status == "disabled", "连接身份没变却清掉了 401 判死 —— 反向红"
     asyncio.run(rt.aclose())
+
+
+def test_fingerprint_flag_only_reaches_anthropic_key_adapter(monkeypatch):
+    """D-5（2026-10-06 核验轮）：装配点 fingerprint 开关必须**只**作用于 anthropic
+    协议的按 Key 资源——zcode 产品资源走 build_product_adapter 自建出站（开关本就
+    不适用），openai 资源同理。旧条件 `protocol == "anthropic"` 的泛化在 main.py
+    已收窄为 `product == "zcode"`；本条钉分发点的形状：开关不改写 openai 路径。"""
+    import httpx
+
+    from model_gateway.adapters import build_adapter
+    from model_gateway.adapters.anthropic_out import AnthropicOutAdapter
+
+    a = build_adapter("anthropic", "http://127.0.0.1:9", fingerprint=True)
+    assert isinstance(a, AnthropicOutAdapter)
+    assert a.fingerprint is True          # zcode 形状：开关到达
+
+    b = build_adapter("openai", "http://127.0.0.1:9", fingerprint=True)
+    assert isinstance(b, httpx.AsyncClient) or type(b).__name__ == "OpenAIOutAdapter"
+    assert not isinstance(b, AnthropicOutAdapter)   # openai 不吃这个开关
+    assert getattr(b, "fingerprint", None) in (None, False)

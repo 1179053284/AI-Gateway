@@ -81,6 +81,15 @@ fi
 
 # ② 未运行 → 后台守护拉起（nohup 脱离会话；关窗/注销均不影响；日志统一落 data/gateway.log）
 mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null
+# 🔴 D-6（2026-10-06 架构审计）：日志无轮转 ⇒ gateway.log 106MB 实测（无上限追加）。
+#   启动时轮转：>32MB 就改名 .1（旧的 .1→.2、.2→.3，.3 删除）——保留最近 3 份，
+#   新日志从当前文件继续；LOG_OFFSET 仍读追加前的真实大小（「本次启动新增」语义不变）。
+if [ -f "$LOG_FILE" ] && [ "$(wc -c < "$LOG_FILE" | tr -d ' ')" -gt 33554432 ]; then
+    [ -f "$LOG_FILE.2" ] && mv -f "$LOG_FILE.2" "$LOG_FILE.3" 2>/dev/null
+    [ -f "$LOG_FILE.1" ] && mv -f "$LOG_FILE.1" "$LOG_FILE.2" 2>/dev/null
+    mv -f "$LOG_FILE" "$LOG_FILE.1"
+    printf '已轮转 gateway.log（>32MB）→ gateway.log.1\n'
+fi
 LOG_OFFSET=0
 [ -f "$LOG_FILE" ] && LOG_OFFSET="$(wc -c < "$LOG_FILE" | tr -d ' ')"
 printf '网关未在运行，正在后台启动（日志：%s）…\n' "$LOG_FILE"

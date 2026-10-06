@@ -20,6 +20,8 @@
 
 from __future__ import annotations
 
+import math
+
 import base64
 import hashlib
 import json
@@ -355,7 +357,8 @@ def jwt_exp_ms(token: str) -> int | None:
     except (ValueError, UnicodeDecodeError):
         return None
     exp = payload.get("exp") if isinstance(payload, dict) else None
-    if isinstance(exp, (int, float)) and not isinstance(exp, bool):
+    # R2a-F-1（2026-10-06）：NaN/Inf ⇒ None，与 raccoon 同防护（int(nan) 抛未捕获 ValueError）
+    if isinstance(exp, (int, float)) and not isinstance(exp, bool) and math.isfinite(exp):
         return int(exp) * 1000
     return None
 

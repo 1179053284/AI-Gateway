@@ -1522,7 +1522,11 @@ async function openModelMap(root, p) {
             if (i < 0) return;
             const m = modelOf(i);
             m.mapped_to = [b.target];
-            m.map_enabled = b.enabled !== false;
+            // D-3（2026-10-06 判定书裁定「仍该改」）：三态位只认 `=== true`——
+            // 后端 `product_models[].enabled` 是 strict bool，但沿用 `!== false`
+            // 的两态读法会把 null/undefined 折成「开着」，与同文件 :1300 建立的律
+            // （null 不是开着）自相矛盾，是下一轮的误读源。
+            m.map_enabled = b.enabled === true;
             draft.delete(i);                       // 盘上现在就是这一格画的样子 ⇒ 草稿交还给真相
             repaintState(i);
             mountSwitch(i);

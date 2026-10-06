@@ -507,8 +507,13 @@ class Runtime:
                     needs_base64=enum_pool.needs_base64_image,
                     # TLS 指纹（§17）：由 `gateway.zcode.fingerprint` 驱动；
                     # 开启但 curl_cffi 不可用时在下面告警（不静默失败）
+                    # 🔴 D-5（2026-10-06 核验轮）：收窄到 `product=="zcode"`——旧条件
+                    #    `protocol=="anthropic"` 让**任何** anthropic 协议资源（别家供应商
+                    #    的 API Key 接入）也被当成 zcode 特例对待（换 curl_cffi 客户端 +
+                    #    JWT 形状鉴权头）。指纹是 zcode 域的 WAF 前提，不是 anthropic
+                    #    协议的属性；装配点只把开关递给真正需要的资源。
                     fingerprint=bool(getattr(getattr(config.gateway, "zcode", None),
-                                             "fingerprint", False)) and r.protocol == "anthropic",
+                                             "fingerprint", False)) and r.product == "zcode",
                     product=r.product, account_ref=r.account_ref)
             except Exception as e:  # noqa: BLE001 — 🔴 B-1（M6-6 Fix-γ）
                 # **任何**构造失败都按资源降级，不得冒穿（原先只捕 `NotImplementedError`，

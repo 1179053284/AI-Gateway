@@ -425,15 +425,22 @@ def base64_urlsafe_decode(text: str) -> str:
     return base64.urlsafe_b64decode(text.encode("ascii")).decode("utf-8", "replace")
 
 
+def _epoch_ms(seconds: int | float) -> int | None:
+    """秒 → 毫秒；NaN/Inf ⇒ None（R2a-F-1，2026-10-06）：上游发来的 claim 可能是
+    `{"exp": 1e999}`（json 解析成 inf）这类形状，`int(nan/inf)` 会抛未捕获
+    ValueError——raccoon 同位有 `math.isfinite` 拦（:169），这里补齐同一防护。"""
+    import math
+    return int(seconds) * 1000 if isinstance(seconds, (int, float)) and math.isfinite(seconds) else None
+
+
 def jwt_expires_at_ms(token: str) -> int | None:
     """JWT `exp`（秒）→ 毫秒（`buddy.ts:180-190`）。"""
-    value = jwt_claim(token, "exp")
-    return int(value) * 1000 if isinstance(value, (int, float)) else None
+    return _epoch_ms(jwt_claim(token, "exp"))
+
 
 def jwt_issued_at_ms(token: str) -> int | None:
     """JWT `iat`（秒）→ 毫秒（`buddy.ts:302-312`）——相对过期时间的换算基准。"""
-    value = jwt_claim(token, "iat")
-    return int(value) * 1000 if isinstance(value, (int, float)) else None
+    return _epoch_ms(jwt_claim(token, "iat"))
 
 
 def jwt_nickname(token: str) -> str:
