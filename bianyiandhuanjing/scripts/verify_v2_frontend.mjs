@@ -1390,9 +1390,9 @@ async function runChecks(root, overviewPath) {
     check("I6", "点击 = 确认（POST ack）且立即隐藏红点",
       () => runDot({ unread: 2, click: true }).then(({ calls, nodes }) =>
         calls.POST.includes("/admin/api/ops/ack") && nodes["ops-dot"].hidden === true));
-    check("I7", "点击后给出去看明细与重跑的真实指路",
+    check("I7", "点击后 toast 说清后续（自动重试 + 手动补签指路）",
       () => runDot({ unread: 2, click: true }).then(({ calls }) =>
-        calls.toast.some((t) => t.includes("ops-results") && t.includes("python -m model_gateway.cli"))));
+        calls.toast.some((t) => t.includes("自动重试") && t.includes("手动补签"))));
     check("I8", "红点元素不存在时静默跳过（首屏未就绪不得抛错）",
       () => runDot({ unread: 1, withDot: false }).then(({ calls }) => calls.GET.length === 0));
     // 🔴 "只有点击才确认"才是真判据：只测"点击会 POST"的话，加载即 POST 也能全绿
@@ -1400,12 +1400,16 @@ async function runChecks(root, overviewPath) {
       () => runDot({ unread: 3 }).then(({ calls }) => calls.POST.length === 0));
   }
 
-  /* ---------- G · 红点文案与指路 ---------- */
-  check("G1", "toast 把副作用说成「重跑」而不是「查看详情」",
-    !/claim`?\s*查看/.test(mainSrc) && /重跑用 mgw zcode claim/.test(mainSrc));
-  check("G2", "指到已落盘的逐条原因（ops-results jsonl）",
-    mainSrc.includes("ops-results-*.jsonl"));
-  check("G3", "给出未装 mgw 时的等价命令", mainSrc.includes("python -m model_gateway.cli zcode claim"));
+  /* ---------- G · 红点文案与指路（🔴 2026-10-06 人话化：判据跟着文案前进——
+   *  旧判据钉的是"指路 CLI 命令与日志文件路径"（对用户是黑话）；人话化后钉
+   *  "说清后果 + 界面内出口"，不许把文件路径与命令行塞回给用户） ---------- */
+  check("G1", "红点文案用「自动签到失败」人话（不再写内部术语「运营失败」）",
+    mainSrc.includes("自动签到失败") && !mainSrc.includes("运营失败"));
+  check("G2", "toast 说清后续：下一轮自动重试 + 可手动补签（🔴 扫字符串字面量，注释里的词不算——变异可红的前提）",
+    (() => { const lits = [...mainSrc.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1]).join("\n");
+      return lits.includes("自动重试签到") && lits.includes("手动补签"); })());
+  check("G3", "toast 不再指路文件路径与命令行（人话纪律）",
+    !mainSrc.includes("ops-results") && !mainSrc.includes("model_gateway.cli"));
 
   /* ---------- H · 样式（base.css）---------- */
   const cssSrc = read("css");
@@ -3195,7 +3199,7 @@ const MUTATIONS = [
     //    （`web/static/js/main.js:117`），于是命中数归 0、`--mutation` 里这一条报「锚点已过期」，
     //    连带 `test_int_v2_frontend_gate.py::test_frontend_assertions_can_actually_go_red` 判红。
     //    语义不变：把文案赋值整段摘掉，只剩"隐藏位不变"，I1 必须红。
-    from: "        if (n > 0) { dotText.textContent = `运营失败 ${n}`; dot.hidden = false; }",
+    from: "        if (n > 0) { dotText.textContent = `自动签到失败 ${n}`; dot.hidden = false; }",
     to: "        if (n > 0) { dot.hidden = false; }", kills: ["I1"] },
   { why: "轮询打错端点", file: "main", from: 'await GET("/admin/api/status")',
     to: 'await GET("/admin/api/stat")', kills: ["I3"] },
@@ -3232,12 +3236,16 @@ const MUTATIONS = [
     from: '  const dot = document.getElementById("ops-dot");',
     to: '  const dot = document.getElementById("ops-dot");\n  if (dot) POST("/admin/api/ops/ack");',
     kills: ["I9"] },
-  { why: "toast 把重新领取说成查看详情", file: "main", from: "重跑用 mgw zcode claim",
-    to: "claim 查看", kills: ["G1"] },
-  { why: "指路不再指向落盘的明细文件", file: "main",
-    from: "逐条原因见 data/usage/ops-results-*.jsonl", to: "逐条原因见界面", kills: ["G2"] },
-  { why: "未装 mgw 时只给 mgw 命令", file: "main",
-    from: "未安装则 python -m model_gateway.cli zcode claim", to: "重跑", kills: ["G3"] },
+  // 🔴 G1~G3 判据随人话化重定锚（2026-10-06）：旧锚（CLI 命令/文件路径）已从页面移除，
+  //    变异改为打新人话文案的对应位。
+  { why: "红点文案退回内部术语「运营失败」（限定字符串行：注释里的历史说明不算）", file: "main",
+    from: "if (n > 0) { dotText.textContent = `自动签到失败 ${n}`; dot.hidden = false; }",
+    to: "if (n > 0) { dotText.textContent = `运营失败 ${n}`; dot.hidden = false; }", kills: ["G1"] },
+  { why: "toast 丢掉后续说明（自动重试/手动补签）—— 锚两段拼接整体（G2 要求两段说明同时在，只打一段打不红）", file: "main",
+    from: 'toast("已确认。失败的账号会在下一轮自动重试签到；"\n            + "也可在「接入账号资源」页手动补签，失败原因见各账号的状态备注。");',
+    to: 'toast("已确认。");', kills: ["G2"] },
+  { why: "toast 把文件路径塞回给用户（人话纪律回潮）", file: "main",
+    from: "也可在「接入账号资源」页手动补签", to: "见 data/usage/ops-results-*.jsonl", kills: ["G3"] },
   { why: "红点样式类改名", file: "css", from: ".ops-dot {", to: ".opsdot {", kills: ["H1", "H2"] },
   { why: "🔴 令牌打空回潮（把 `.t-close:hover` 的底色改回**从来不存在**的 `--surface-2`）",
     file: "css", from: ".t-close:hover { background: var(--surface-muted); color: var(--text); }",

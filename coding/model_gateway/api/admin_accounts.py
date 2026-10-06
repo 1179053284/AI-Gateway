@@ -354,16 +354,16 @@ def cron_enabled_of(account: str) -> bool:
     try:
         product = ops_runner.product_of_account(account)
     except Exception as e:  # noqa: BLE001 — 归属判据读不动 = 不知道，不据此发起运营
-        logger.warning("运营跳过（启用位不可判）：账号归属推导失败 %r（%s: %s）",
+        logger.warning("自动签到跳过（账号状态不可判）：账号归属推导失败 %r（%s: %s）",
                        account, type(e).__name__, e)
         return False
     if not product:
-        logger.warning("运营跳过（启用位不可判）：认不出账号 %r 归属的产品", account)
+        logger.warning("自动签到跳过（账号状态不可判）：认不出账号 %r 归属的产品", account)
         return False
     try:
         return _account_enabled(product, account)
     except Exception as e:  # noqa: BLE001 — 同上：读不动不得当成"可动作"
-        logger.warning("运营跳过（启用位不可判）：%s/%s 的 meta 读取失败（%s: %s）",
+        logger.warning("自动签到跳过（账号状态不可判）：%s/%s 的状态读取失败（%s: %s）",
                        product, account, type(e).__name__, e)
         return False
 
@@ -933,10 +933,10 @@ def _single_category(report: OpReport, account: str, *, enabled: bool = True) ->
         return "success", ""
     if account in report.skipped or report.no_participants:
         if not enabled:
-            return "inactive", ("账号已停用（enabled=false）：运营执行跳过停用账号（§22.6）；"
-                                "续期不受该位影响")
-        return "inactive", ("账号级互斥未取得：另一入口（CLI / 定时任务）正在对该账号执行，"
-                            "本次未发起（§16.4 双层互斥，不并发双领）")
+            return "inactive", ("账号已停用：自动签到不会为它执行；"
+                                "额度续期不受影响")
+        return "inactive", ("该账号正在被另一处执行（手动或定时任务），"
+                            "本轮未重复发起，避免同一账号并发双领")
     return "inactive", ""
 
 

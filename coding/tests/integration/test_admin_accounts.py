@@ -581,7 +581,7 @@ class TestClaimFourCategories:
             r = await _post(client, gw, "/admin/api/accounts/buddy/acc-l1/claim")
             assert r.status_code == 200, r.text
             body = r.json()
-            assert body["category"] == "inactive" and "互斥" in body["detail"]
+            assert body["category"] == "inactive" and "另一处执行" in body["detail"]
             assert "停用" not in body["detail"]          # 不得把锁跳过谎报成停用
             assert body["report"]["skipped"] == ["acc-l1"]
             assert called == []                          # 未发起 = 没打产品钩子

@@ -100,7 +100,7 @@ applyTheme();
 window.__MG_BOOTED = true;  // 模块图装载成功标记（index.html 兜底守护探测）
 route();
 
-/* ---------- 运营失败红点（v2.0 §21 / §16.6） ----------
+/* ---------- 自动签到失败红点（v2.0 §21 / §16.6） ----------
  * 有未读 failed 时在顶栏状态区显示红点。数据源 `/admin/api/status`（复用既有轻量端点，
  * **不新建轮询端点、不新建页面**）；点击给出去哪里看（CLI）。
  * 只在页面可见时轮询，隐藏时跳过（省电、不打扰）。 */
@@ -114,7 +114,7 @@ route();
       const s = await GET("/admin/api/status");
       const n = Number(s.ops_failed_unread || 0);
       if (dot && dotText) {
-        if (n > 0) { dotText.textContent = `运营失败 ${n}`; dot.hidden = false; }
+        if (n > 0) { dotText.textContent = `自动签到失败 ${n}`; dot.hidden = false; }
         else { dot.hidden = true; }
       }
       /* 实例身份：非默认数据根 ⇒ 每页顶部一条自证横幅（文案后端单源，前端只显示）。 */
@@ -134,11 +134,10 @@ route();
         await POST("/admin/api/ops/ack");
       } catch { /* 网关离线忽略 */ }
       dot.hidden = true;
-      // 🔴 文案必须与副作用一致：`mgw zcode claim` 是**再跑一次领取**，不是"查看"。
-      //    历史明细在 `data/usage/ops-results-<日期>.jsonl`；未装 mgw 时用
-      //    `python -m model_gateway.cli`（验收 M-5：原指路会 command not found）
-      toast("已确认运营失败。逐条原因见 data/usage/ops-results-*.jsonl；"
-            + "重跑用 mgw zcode claim（未安装则 python -m model_gateway.cli zcode claim）");
+      // 🔴 文案说清后果与出口：失败会在下一轮自动重试；手动补签在「接入账号资源」页。
+      //    （2026-10-06 人话化：不再把日志文件路径与 CLI 命令塞给用户。）
+      toast("已确认。失败的账号会在下一轮自动重试签到；"
+            + "也可在「接入账号资源」页手动补签，失败原因见各账号的状态备注。");
     });
     poll();
     setInterval(poll, 5000);

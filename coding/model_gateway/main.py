@@ -281,7 +281,7 @@ def _outbound_premise_gap(r) -> str | None:
             if zcode_out.CAPTCHA_PROVIDER is None:
                 return "zcode 验证码未注入"
     except Exception as e:  # noqa: BLE001 — 判据读不动 = 不知道；不据此隐藏（见 ResourceRegistry）
-        logger.warning("出站前提判据不可用（按'无缺口'处理）：%s：%s", prod, e)
+        logger.warning("出站前提检查不可用（按'无缺口'处理）：%s：%s", prod, e)
         return None
     return None
 
@@ -616,7 +616,7 @@ class Runtime:
             from model_gateway.accounts.materialize import credential_fingerprint
             return credential_fingerprint(prod, (account_ref or "").strip())
         except Exception as e:  # noqa: BLE001 — 判据降级，装配照常（§22.8-6）
-            logger.warning("账号凭据指纹读取失败（连接身份判据降级为空串）：%s/%s：%s",
+            logger.warning("账号凭据指纹读取失败（连接身份标识降级为空串）：%s/%s：%s",
                            prod, account_ref, e)
             return ""
 
