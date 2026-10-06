@@ -593,8 +593,26 @@ DERIVED_KEYS_IN_RESOURCES = ("mapping_enabled",)      # models[].resources[] 条
 DERIVED_KEYS_IN_MODELS = ("spec",)                    # models[] 网关模型上
 
 
+def _extract_client_version(body: dict) -> int | None:
+    """取界面回传的配置代次并从体里剥掉（S-2 收尾，2026-10-06）。
+
+    - 缺失 = 旧客户端/脚本 ⇒ `None`，不做乐观锁校验（兼容零变化）；
+    - 非法形状（bool/负数/非 int）⇒ `-1`（必不匹配，宁可拒绝也不盲覆盖）。
+    """
+    value = body.pop("version", None)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return -1
+    return value
+
+
 def _strip_derived_keys(body: dict) -> None:
-    """剥掉 GET 回传里的只读派生键（就地改写；forbid 落地的配套，S-4 后续轮）。"""
+    """剥掉 GET 回传里的只读派生键（就地改写；forbid 落地的配套，S-4 后续轮）。
+
+    根对象的 `version` 已由 `_extract_client_version` 在校验前取走（乐观锁），
+    这里只管嵌套在 models/resources 上的派生位。
+    """
     for m in body.get("models", []) or []:
         if isinstance(m, dict):
             for k in DERIVED_KEYS_IN_MODELS:
@@ -691,6 +709,10 @@ async def get_config(request: Request, reveal: int = Query(default=0)):
         if sp is not None:
             m_dump["spec"] = {"max_input": sp.max_input, "max_output": sp.max_output,
                               "stale": bool(sp.from_stale_cache), "sources": int(sp.sources)}
+    # 🔴 S-2 收尾（2026-10-06）：配置代次。界面整份 PUT 时原样带回 ⇒ 服务端不匹配
+    # 回 409（另一页签已改过 = 本页快照过期，必须重取而不是盲覆盖）。派生键，由
+    # `_strip_derived_keys` 在 PUT 校验前剥离（forbid 不误伤）。
+    data["version"] = int(getattr(runtime, "config_version", 0))
     return data
 
 
@@ -740,11 +762,25 @@ async def put_config(request: Request):
         return JSONResponse(status_code=400, content={"status": "rejected",
                                                       "errors": ["请求体须为配置对象"]})
     errors: list[str] = []
+    stale = {"hit": False}  # 乐观锁不匹配（409）标志：与校验失败/写失败区分状态码
 
     def _validate_and_save() -> bool:
         nonlocal errors  # 闭包内重新绑定（errors = [...]）必须声明，否则 UnboundLocalError → 500
         with runtime._reload_lock:  # noqa: SLF001 — 同进程装配侧唯一写面互斥点
             try:
+                # 🔴 S-2 收尾（2026-10-06）：乐观锁在**锁内**先判——界面带的代次 ≠
+                #    当前代次 ⇒ 本请求基于旧快照，整份覆盖会把别的页签/端已写入的
+                #    字段静默还原（R1-F-5）。409 + 当前代次，让界面重取后再保存；
+                #    不带 version 的旧客户端/脚本走 None ⇒ 兼容零变化。
+                client_version = _extract_client_version(body)
+                current_version = int(getattr(runtime, "config_version", 0))
+                if client_version is not None and client_version != current_version:
+                    stale["hit"] = True
+                    errors = [
+                        f"配置已被其它页面/端修改（本页快照版本 {client_version}，"
+                        f"当前版本 {current_version}）。请刷新页面后重试——"
+                        f"直接覆盖会丢失期间的全部改动。"]
+                    return False
                 _strip_derived_keys(body)  # 派生位剥离（forbid 配套）必须在校验前
                 _autogen_ids(body)
                 # 锁内读当前配置还原哨兵：读与写同一临界区，杜绝"还原的是上一代"竞争
@@ -767,6 +803,11 @@ async def put_config(request: Request):
             return True
 
     if not await asyncio.get_running_loop().run_in_executor(None, _validate_and_save):
+        if stale["hit"]:
+            return JSONResponse(
+                status_code=409,
+                content={"status": "conflict", "errors": errors,
+                         "current_version": int(getattr(runtime, "config_version", 0))})
         return JSONResponse(status_code=(500 if any(w in " ".join(errors) for w in ("写入失败", "OSError"))
                                          else 400),
                             content={"status": "rejected", "errors": errors})

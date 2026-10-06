@@ -28,9 +28,9 @@
  *   （1~5 钉草稿腿 `mountSwitch` / `stage`，6~10 钉 AI 腿 `runAiMatch`，
  *    11~15 钉唯一写入口 `saveAll`，16~18 钉取消腿 `tryClose` 与三条关闭通道）
  */
-import { readFileSync, writeFileSync, mkdtempSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -269,8 +269,10 @@ function runChecks(src, sw, st, ai, save, close) {
         && /r\.emptied_models/.test(save),
         `reload 支=${(save.match(/if \(r\.reload === false\) \{/g) || []).length} 处（需 2）`);
     add("D7", "本地态只在后端确认写入之后才改，且按回执逐行回显（`m.mapped_to = [b.target]`）",
-        /m\.mapped_to = \[b\.target\];/.test(save) && /m\.map_enabled = b\.enabled !== false;/.test(save),
-        (save.match(/m\.mapped_to = \[b\.target\];[^\n]*/)?.[0] ?? "(没按回执回显)").slice(0, 60));
+        // 🔴 判据随 D-3 前进（2026-10-06）：三态位只认 `=== true`（旧 `!== false` 两态读法
+        //    已按判定书裁定改掉），本条跟着钉新形状。
+        /m\.mapped_to = \[b\.target\];/.test(save) && /m\.map_enabled = b\.enabled === true;/.test(save),
+        (save.match(/m\.map_enabled = b\.enabled[^\n]*/)?.[0] ?? "(没按回执回显)").slice(0, 60));
     add("D8", "保存成功后重绘本页（`repaintPanel`）—— 弹窗外那一屏不许还挂着旧态",
         /await repaintPanel\(root\);/.test(save),
         (save.match(/repaintPanel[^\n]*/)?.[0] ?? "(没重绘)").slice(0, 60));
@@ -315,7 +317,13 @@ function main() {
       console.log("变异编号须为 1~22（1~5 草稿腿 / 6~10 AI 腿 / 11~15 保存腿 / 16~18 取消腿 / 19~22 本轮新判据的反例）");
       process.exit(2);
     }
-    const src = readFileSync(PAGE, "utf8");
+    // D-1/D-4 拆分（2026-10-06）：映射弹窗函数体在 accounts/mapping.js——
+    // 文本判据跟实现走：主文件 + 子目录全部 .js 拼接后切片。
+    const src = [
+      readFileSync(PAGE, "utf8"),
+      ...readdirSync(join(dirname(PAGE), "accounts")).filter((f) => f.endsWith(".js")).sort()
+          .map((f) => readFileSync(join(dirname(PAGE), "accounts", f), "utf8")),
+    ].join("\n");
     // 可选 `slice`：把锚点的命中计数与替换**限定在某个函数体内**（同形回执分支的唯一可靠区分手段）
     const SLICE_MARKERS = {
       mountSwitch: "const mountSwitch = (i) => {",
@@ -352,7 +360,15 @@ function main() {
     target = mutated;
     console.log(`变异 #${key}：${spec.desc}（范围=${scope}，写入 ${mutated}）`);
   }
-  const src = readFileSync(target, "utf8");
+  const src = [
+    readFileSync(target, "utf8"),
+    // D-1/D-4 拆分（2026-10-06）：映射弹窗函数体在 accounts/mapping.js——
+    // 判据切片跟实现走（主文件 + 子目录全部 .js 拼接后再切片）。
+    ...existsSync(join(dirname(target), "accounts"))
+        ? readdirSync(join(dirname(target), "accounts")).filter((f) => f.endsWith(".js")).sort()
+            .map((f) => readFileSync(join(dirname(target), "accounts", f), "utf8"))
+        : [],
+  ].join("\n");
   const checks = runChecks(src, sliceSwitch(src), sliceStage(src), sliceAi(src),
                  sliceSave(src), sliceClose(src));
   const failed = checks.filter((c) => !c.ok);

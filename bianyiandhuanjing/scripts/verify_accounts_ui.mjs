@@ -61,7 +61,7 @@
  *     fixture 算好送进 realm），realm 调页面函数算出缩写串回传 `qfmt`；页面若删掉那个函数，
  *     V10' 直接报「realm 取不到 fmtQuotaNum」而不是悄悄换算法。此项属**门改动**须入台账。
  */
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -412,13 +412,17 @@ globalThis.__drive = async (payloadJson) => {
 `;
 
 /** 渲染一轮：fresh realm（页面源码 + api.js + components.js 的**真源码**）+ 一份 fixture。 */
-async function renderRun(pageSrc, payloads) {
+async function renderRun(pageSrc, extraParts, payloads) {
   const ctx = vm.createContext({});
   const program = [
     FAKE_DOM,
     toModuleBody(readFileSync(DEPS.api, "utf-8")),
     toModuleBody(readFileSync(DEPS.components, "utf-8")),
     toModuleBody(pageSrc),
+    // D-1/D-4 拆分（2026-10-06）：accounts/ 子模块按「主文件 → 子模块」追加——
+    // toModuleBody 已剥 import/export ⇒ 同一 realm 顺序执行（子模块引用的主文件
+    // 顶层符号在拼接序里已就位）。
+    ...extraParts.map((f) => toModuleBody(readFileSync(f, "utf-8"))),
     DRIVER,
   ].join("\n");
   new vm.Script(program, { filename: "accounts-ui-realm" }).runInContext(ctx);
@@ -669,7 +673,8 @@ function quotaProbes(selected) {
   return probes;
 }
 
-async function buildRuns(fixtures, pageSrc) {
+async function buildRuns(fixtures, pageSrc, extraParts) {
+  const fullSrc = pageSrc + extraParts.map((f) => readFileSync(f, "utf-8")).join("\n");
   const runs = [];
   for (const fx of fixtures) {
     const n = fx.view.products.length;
@@ -680,7 +685,7 @@ async function buildRuns(fixtures, pageSrc) {
       const selected = products[0];
       const kinds = [selected.login, ...(selected.login_alt || [])];
       const probes = quotaProbes(selected);
-      const out = await renderRun(pageSrc, {
+      const out = await renderRun(pageSrc, extraParts, {
         view, caps: fx.caps, loginStart: loginStart(selected, kinds[0]), probes,
       });
       const qfmt = {};
@@ -727,9 +732,20 @@ async function runChecks() {
   };
 
   const pageSrc = readFileSync(PAGE_FILE, "utf-8");
+  // 子模块目录（accounts.js 拆分后）：pages/accounts/ 下全部 .js，state.js 排最前
+  //（拼装序与文本判据序都依赖它）。
+  const pagePartsDir = PAGE_FILE.replace(/[^/\\]+$/, "") + "accounts/";
+  const extraParts = existsSync(pagePartsDir)
+    ? readdirSync(pagePartsDir).filter((f) => f.endsWith(".js") && pagePartsDir + f !== PAGE_FILE)
+        .sort((a, b) => (a === "state.js" ? -1 : b === "state.js" ? 1 : a.localeCompare(b)))
+        .map((f) => pagePartsDir + f)
+    : [];
+  // 🔴 文本级判据的源码 = 主文件 + 全部子模块拼接（拆分后函数体分散在多文件，
+  //    判据找的是「函数体形状」不是「文件位置」——跟实现走，不许删判据）。
+  const pageSrcAll = pageSrc + extraParts.map((f) => readFileSync(f, "utf-8")).join("\n");
   const fixtures = loadFixtures(errors);
   if (errors.length) return { checks, errors, runs: [] };
-  const runs = decorateRuns(await buildRuns(fixtures, pageSrc));
+  const runs = decorateRuns(await buildRuns(fixtures, pageSrc, extraParts));
   const allNodes = () => runs.flatMap((r) => [...r.pageNodes, ...r.wizardNodes]);
   const pageNodes = () => runs.flatMap((r) => r.pageNodes);
 
@@ -1126,7 +1142,7 @@ async function runChecks() {
   for (const r of runs) {
     for (const n of sel(r.pageNodes, "[data-mop]")) modalOpsBad.push(`${r.fixture}: 面板里出现 [data-mop] 动作 @ ${pathOf(n)}`);
   }
-  if (pageSrc.indexOf("mapAccountsHTML") >= 0) {
+  if (pageSrcAll.indexOf("mapAccountsHTML") >= 0) {
     modalOpsBad.push("页面源码仍留有 mapAccountsHTML（弹窗内账号操作区必须整体移除）");
   }
   check("V12", "⑫ 弹窗零账号级动作：页面无 [data-mop]、源码无 mapAccountsHTML（续期只在行内）",
@@ -1409,7 +1425,7 @@ async function runChecks() {
     }
   }
   // 源码字符串字面量扫描（注释剥干净后）：覆盖「渲染不到但用户一点就看见」的文案（如向导各段）
-  for (const lit of stringLiterals(pageSrc)) {
+  for (const lit of stringLiterals(pageSrcAll)) {
     for (const w of BANNED) {
       if (lit.indexOf(w) >= 0) hits.push(`源码字符串字面量含禁用词「${w}」：${cut(lit, 40)}`);
     }
@@ -1463,10 +1479,10 @@ async function runChecks() {
    * ② `label` 与 `value` 同源；③ 必须经过排序（名称族自然序 + 族内能力降序 ⇒ 没有 `.sort(` 就是回潮）。
    * 🔴 只截函数体：函数**上方**的注释允许写「新建」（那记的是这条裁决的来由，不是用户可见面）。 */
   const toFn = (() => {
-    const i = pageSrc.indexOf("function targetOptions(");
+    const i = pageSrcAll.indexOf("function targetOptions(");
     if (i < 0) return null;
-    const j = pageSrc.indexOf("\n}", i);
-    return j < 0 ? null : pageSrc.slice(i, j + 2);
+    const j = pageSrcAll.indexOf("\n}", i);
+    return j < 0 ? null : pageSrcAll.slice(i, j + 2);
   })();
   check("V20", "⑳ 网关模型下拉平铺一张清单：不出现「新建」前缀、label 与 value 同源、且经过排序",
     !!toFn && toFn.indexOf("新建") < 0 && /label:\s*n\b/.test(toFn) && toFn.indexOf(".sort(") >= 0,
@@ -1486,10 +1502,10 @@ async function runChecks() {
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/^\s*\/\/.*$/gm, "");
   const fnSlice = (start, end) => {
-    const i = pageSrc.indexOf(start);
+    const i = pageSrcAll.indexOf(start);
     if (i < 0) return null;
-    const j = pageSrc.indexOf(end, i);
-    return j < 0 ? null : pageSrc.slice(i, j + end.length);
+    const j = pageSrcAll.indexOf(end, i);
+    return j < 0 ? null : pageSrcAll.slice(i, j + end.length);
   };
   /* 🔴 草稿制（2026-10-05 第四次裁定）之后这一条**判据不换、只换主人**：
      旧对象是 `mapOn.set(i, m.map_enabled === true)`（前端那份"落库后的真实态"），
@@ -1501,13 +1517,13 @@ async function runChecks() {
   const curOnSlice = fnSlice("const curEnabled = (i) => {", "\n    };");
   check("V21", "㉑ 进池位只认后端那个三态位：`=== true` 才算开（null 不得当成开）+ 草稿缺省只经这一个出口算",
     !!persistedSlice && /m\.map_enabled === true/.test(persistedSlice)
-      && pageSrc.indexOf("map_enabled !== false") < 0
+      && pageSrcAll.indexOf("map_enabled !== false") < 0
       && !!curOnSlice && /return p === null \? true : p;/.test(curOnSlice)
-      && stripComments(pageSrc).indexOf("mapOn.get(i)") < 0,
+      && stripComments(pageSrcAll).indexOf("mapOn.get(i)") < 0,
     () => `persistedEnabled 体=${persistedSlice ? persistedSlice.length + " 字" : "找不到"}`
       + `｜curEnabled 体=${curOnSlice ? "有" : "找不到"}`
-      + `｜残留「!== false」写法=${pageSrc.indexOf("map_enabled !== false") >= 0}`
-      + `｜旧 mapOn 回潮=${stripComments(pageSrc).indexOf("mapOn.get(i)") >= 0}`);
+      + `｜残留「!== false」写法=${pageSrcAll.indexOf("map_enabled !== false") >= 0}`
+      + `｜旧 mapOn 回潮=${stripComments(pageSrcAll).indexOf("mapOn.get(i)") >= 0}`);
 
   /* ---------- V22/V23 · 脚部三颗钮 +「AI智能匹配」这条腿（2026-10-05 第三、四次裁定） ----------
    * 需求演进（写在这里免得下轮又猜哪句作废）：
@@ -1535,26 +1551,26 @@ async function runChecks() {
   check("V22", "㉒ 脚部恰三颗钮、**一钮只有一态**：取消 / AI智能匹配（常驻）/ 保存（primary，读脏态使能）"
      + " + 两态机器（`okBtn` / `hidden` / `initialized`）零回潮 + AI 钮使能只看有没有落点",
      !!footHtmlSlice && (footHtmlSlice.match(/<button /g) || []).length === 3
-     && /const \[cancelBtn, aiBtn, saveBtn\] = \[\.\.\.foot\.querySelectorAll\("button"\)\];/.test(pageSrc)
-     && /<button class="btn btn-primary" data-map="save" disabled>保存<\/button>/.test(pageSrc)
-     && /<button class="btn" data-map="ai" disabled>AI智能匹配<\/button>/.test(pageSrc)
-     && /aiBtn\.textContent = "AI智能匹配";/.test(pageSrc)
-     && stripComments(pageSrc).indexOf("okBtn") < 0
-     && !/Btn\.hidden/.test(stripComments(pageSrc))   // 三颗钮任何一颗长显隐都红（不认旧变量名）
-     && stripComments(pageSrc).indexOf("initialized") < 0
-     && /aiBtn\.disabled = !\(catalog && \(catalog\.accounts \|\| \[\]\)\.length\)/.test(pageSrc)
+     && /const \[cancelBtn, aiBtn, saveBtn\] = \[\.\.\.foot\.querySelectorAll\("button"\)\];/.test(pageSrcAll)
+     && /<button class="btn btn-primary" data-map="save" disabled>保存<\/button>/.test(pageSrcAll)
+     && /<button class="btn" data-map="ai" disabled>AI智能匹配<\/button>/.test(pageSrcAll)
+     && /aiBtn\.textContent = "AI智能匹配";/.test(pageSrcAll)
+     && stripComments(pageSrcAll).indexOf("okBtn") < 0
+     && !/Btn\.hidden/.test(stripComments(pageSrcAll))   // 三颗钮任何一颗长显隐都红（不认旧变量名）
+     && stripComments(pageSrcAll).indexOf("initialized") < 0
+     && /aiBtn\.disabled = !\(catalog && \(catalog\.accounts \|\| \[\]\)\.length\)/.test(pageSrcAll)
      // 「保存」的使能读的是**脏态数**，不是文案、不是"有没有点过 AI"
-     && /saveBtn\.disabled = n === 0 \|\| saving;/.test(pageSrc)
+     && /saveBtn\.disabled = n === 0 \|\| saving;/.test(pageSrcAll)
      && !!aiSlice && !!saveSlice,
      () => `脚部钮数=${!!footHtmlSlice ? (footHtmlSlice.match(/<button /g) || []).length : -1}`
-       + `｜三颗引用=${/const \[cancelBtn, aiBtn, saveBtn\]/.test(pageSrc)}`
-       + `｜primary=保存=${/<button class="btn btn-primary" data-map="save" disabled>保存/.test(pageSrc)}`
-       + `｜AI 文案固定=${/aiBtn\.textContent = "AI智能匹配";/.test(pageSrc)}`
-       + `｜okBtn 回潮=${stripComments(pageSrc).indexOf("okBtn") >= 0}`
-       + `｜任一钮长显隐=${/Btn\.hidden/.test(stripComments(pageSrc))}`
-       + `｜initialized 回潮=${stripComments(pageSrc).indexOf("initialized") >= 0}`
-       + `｜AI 看落点=${/aiBtn\.disabled = !\(catalog && \(catalog\.accounts/.test(pageSrc)}`
-       + `｜保存看脏态=${/saveBtn\.disabled = n === 0 \|\| saving;/.test(pageSrc)}`
+       + `｜三颗引用=${/const \[cancelBtn, aiBtn, saveBtn\]/.test(pageSrcAll)}`
+       + `｜primary=保存=${/<button class="btn btn-primary" data-map="save" disabled>保存/.test(pageSrcAll)}`
+       + `｜AI 文案固定=${/aiBtn\.textContent = "AI智能匹配";/.test(pageSrcAll)}`
+       + `｜okBtn 回潮=${stripComments(pageSrcAll).indexOf("okBtn") >= 0}`
+       + `｜任一钮长显隐=${/Btn\.hidden/.test(stripComments(pageSrcAll))}`
+       + `｜initialized 回潮=${stripComments(pageSrcAll).indexOf("initialized") >= 0}`
+       + `｜AI 看落点=${/aiBtn\.disabled = !\(catalog && \(catalog\.accounts/.test(pageSrcAll)}`
+       + `｜保存看脏态=${/saveBtn\.disabled = n === 0 \|\| saving;/.test(pageSrcAll)}`
        + `｜runAiMatch 体=${aiSlice ? aiSlice.length + " 字" : "找不到"}`
        + `｜saveAll 体=${saveSlice ? saveSlice.length + " 字" : "找不到"}`);
 
@@ -1613,33 +1629,33 @@ async function runChecks() {
   };
   const leftovers = ["bulkReceipt =", "renderBulkReceipt", "clearBulkReceipt",
                      "bulkReceiptHTML", "ac-receipt", "bulk-receipt"]
-    .filter((k) => pageSrc.indexOf(k) >= 0);
+    .filter((k) => pageSrcAll.indexOf(k) >= 0);
   check("V24", "㉔ 批量结果只走结果浮层：出口唯一（三条腿都经 `showBulkReceipt`→`toastCard`）"
      + " + 固化槽零残留（模块级文本/槽/回填/清理/样式）+ 3s 自动消失 + × 手动关闭"
      + " + 术语解释走悬停不坐正文",
-     /function showBulkReceipt\(/.test(pageSrc)
-     && /toastCard\(title, html, \{ type: tone, ms: 3000 \}\);/.test(pageSrc)
+     /function showBulkReceipt\(/.test(pageSrcAll)
+     && /toastCard\(title, html, \{ type: tone, ms: 3000 \}\);/.test(pageSrcAll)
      && Object.values(receiptBodies).every((b) => !!b && b.indexOf("showBulkReceipt(") >= 0)
      && leftovers.length === 0
      && cssPlain.indexOf(".bulk-receipt") < 0
      && /export function toastCard\(title, html, \{ type = "", ms = 3000 \} = \{\}\)/.test(compSrc)
      && /class="t-close" type="button" aria-label="关闭提示"/.test(compSrc)
      && /setTimeout\(kill, ms\);/.test(compSrc)
-     && /note: "「未发起」=/.test(pageSrc)
+     && /note: "「未发起」=/.test(pageSrcAll)
      && /\.t-sum \{[^}]*cursor: help/.test(cssSrc)
      // 第五条腿（:8300 实盘抓出来的自我矛盾）：逐号那一行的词必须读**权威分桶**
      // （`report.failed/success/inactive`），不许再用 `reason || "已刷新"` ——
      // 后端 `reason=""` 是一格多义（既给 success 也给"查了但没给数值"的 inactive），
      // 旧写法让同一张浮层上面写「未发起 2 个」、下面两行写「已刷新」。
-     && /inList\(rep\.failed, acc\)/.test(pageSrc)
-     && /inList\(rep\.success, acc\)/.test(pageSrc)
-     && stripComments(pageSrc).indexOf('reason || "已刷新"') < 0,
+     && /inList\(rep\.failed, acc\)/.test(pageSrcAll)
+     && /inList\(rep\.success, acc\)/.test(pageSrcAll)
+     && stripComments(pageSrcAll).indexOf('reason || "已刷新"') < 0,
      () => Object.entries(receiptBodies).map(([k, v]) => `${k}=${v ? "有" : "找不到"}`).join(" ")
        + `｜固化残留=${leftovers.length ? leftovers.join(" ") : "无"}`
        + `｜css 留类=${cssPlain.indexOf(".bulk-receipt") >= 0}`
        + `｜浮层=${/export function toastCard\(/.test(compSrc)}｜3s=${/ms = 3000/.test(compSrc)}`
-       + `｜出口=${/toastCard\(title, html, \{ type: tone, ms: 3000 \}\);/.test(pageSrc)}`
-       + `｜关闭钮=${/aria-label="关闭提示"/.test(compSrc)}｜解释挂悬停=${/note: "「未发起」=/.test(pageSrc)}`);
+       + `｜出口=${/toastCard\(title, html, \{ type: tone, ms: 3000 \}\);/.test(pageSrcAll)}`
+       + `｜关闭钮=${/aria-label="关闭提示"/.test(compSrc)}｜解释挂悬停=${/note: "「未发起」=/.test(pageSrcAll)}`);
 
   /* ---------- V25 · 「状态」列删除（10-04）+ 草稿说明常驻（10-05 第四次裁定，**方向反转**） ----------
    * 删列那条不变：那一列同时说三件事，各格已有主人（下拉 = 挂哪、开关 = 进不进池）。
@@ -1660,7 +1676,7 @@ async function runChecks() {
      && thCount === 4 && (bodySlice || "").indexOf('th("状态")') < 0
      && (bodySlice || "").indexOf("104px") < 0
      && (bodySlice || "").indexOf('badge b-gray">未映射') < 0
-     && pageSrc.indexOf("已映射 · 进池") < 0
+     && pageSrcAll.indexOf("已映射 · 进池") < 0
      && /return \(m\.mapped_to \|\| \[\]\)\.find\(inList\) \|\| "";/.test(pickSlice)
      && pickSlice.indexOf("suggest") < 0
      && /confidence >= 0\.7/.test(sugSlice)
@@ -1674,7 +1690,7 @@ async function runChecks() {
      && /点「保存」才写入配置/.test(stripComments(bodySlice || "")),
      () => `表头 th 数=${thCount}｜含状态列=${(bodySlice || "").indexOf('th("状态")') >= 0}`
        + `｜104px 残留=${(bodySlice || "").indexOf("104px") >= 0}`
-       + `｜徽章回潮=${(bodySlice || "").indexOf('badge b-gray">未映射') >= 0 || pageSrc.indexOf("已映射 · 进池") >= 0}`
+       + `｜徽章回潮=${(bodySlice || "").indexOf('badge b-gray">未映射') >= 0 || pageSrcAll.indexOf("已映射 · 进池") >= 0}`
        + `｜下拉只读落库=${!!pickSlice && /return \(m\.mapped_to \|\| \[\]\)\.find\(inList\) \|\| "";/.test(pickSlice)}`
        + `｜建议混进下拉(红)=${!!pickSlice && pickSlice.indexOf("suggest") >= 0}`
        + `｜建议出口=${!!sugSlice}｜采纳钮=${/data-adopt/.test(footSlice || "")}`
@@ -1695,7 +1711,7 @@ async function runChecks() {
    *   ④ 删除入口（旧的「删除映射」钮族）零残留：解除只有一个入口 = 改回「暂不设置」。 */
   const delGhosts = ["data-mapdel", "data-del-yes", "data-del-no", "askRemove",
                      "removeMapping", "wireRemove", "const delBtn"]
-    .filter((k) => pageSrc.indexOf(k) >= 0);
+    .filter((k) => pageSrcAll.indexOf(k) >= 0);
   const stageSlice = fnSlice("const stage = (i, patch) => {", "\n    };");
   const postInWiring = !!wiringSlice ? (wiringSlice.match(/POST\(/g) || []).length : -1;
   check("V26", "㉖ 保存 = 唯一写入口：行内接线块零 POST + saveAll 两条腿各恰一处（mappings 一次 / 逐行 remove）"
@@ -1734,14 +1750,14 @@ async function runChecks() {
      !!switchSlice && !!dirtySlice && !!aiSlice && !!saveSlice
      && switchSlice.indexOf("setMode(") < 0
      && wiringSlice.indexOf("setMode(") < 0
-     && /保存（\$\{n\} 处未保存）/.test(pageSrc)
+     && /保存（\$\{n\} 处未保存）/.test(pageSrcAll)
      && /已配置的 \$\{r\.kept\}|\$\{r\.kept\} 行/.test(aiSlice)
      && /aiBtn\.textContent = "AI 匹配中…";/.test(aiSlice)
      && (aiSlice.match(/setMode\(\);/g) || []).length >= 1
-     && /dirtyRows\(\)\.length/.test(pageSrc),
+     && /dirtyRows\(\)\.length/.test(pageSrcAll),
      () => `开关体内 setMode=${switchSlice.indexOf("setMode(") >= 0}`
        + `｜接线块 setMode=${wiringSlice.indexOf("setMode(") >= 0}`
-       + `｜脏态计数上钮=${/保存（\$\{n\} 处未保存）/.test(pageSrc)}`
+       + `｜脏态计数上钮=${/保存（\$\{n\} 处未保存）/.test(pageSrcAll)}`
        + `｜kept 上界面=${/\$\{r\.kept\} 行/.test(aiSlice || "")}`
        + `｜在飞文案=${/AI 匹配中…/.test(aiSlice || "")}`);
 
@@ -1754,20 +1770,20 @@ async function runChecks() {
    *   ④ 保存在飞禁二次点击（开关与 AI 钮都禁用），否则半程里改的东西会被上一次提交的结果盖掉。 */
   check("V28", "㉘ 行内只改草稿：onchange/采纳/开关三条腿全走 `stage` + 新行缺省进池只算一处"
      + " + 保存在飞禁二次点击 + 旧「整表按开关位置取 enabled」零回潮",
-     /sel\.onchange = \(\) => stage\(i, \{ target: String\(sel\.value \|\| ""\) \}\);/.test(pageSrc)
-     && /stage\(i, \{ target: btn\.dataset\.adopt \}\);/.test(pageSrc)
+     /sel\.onchange = \(\) => stage\(i, \{ target: String\(sel\.value \|\| ""\) \}\);/.test(pageSrcAll)
+     && /stage\(i, \{ target: btn\.dataset\.adopt \}\);/.test(pageSrcAll)
      && /stage\(i, \{ enabled: !on \}\);/.test(switchSlice || "")
      && /return p === null \? true : p;/.test(curOnSlice || "")
      && /if \(saving\) el\.disabled = true;/.test(switchSlice || "")
      && /aiBtn\.disabled = true;/.test(aiSlice || "")
-     && stripComments(pageSrc).indexOf("enabled: mapOn.get(i) !== false") < 0
-     && stripComments(pageSrc).indexOf("commitTarget") < 0,
-     () => `onchange 走 stage=${/sel\.onchange = \(\) => stage\(i/.test(pageSrc)}`
-       + `｜采纳走 stage=${/stage\(i, \{ target: btn\.dataset\.adopt/.test(pageSrc)}`
+     && stripComments(pageSrcAll).indexOf("enabled: mapOn.get(i) !== false") < 0
+     && stripComments(pageSrcAll).indexOf("commitTarget") < 0,
+     () => `onchange 走 stage=${/sel\.onchange = \(\) => stage\(i/.test(pageSrcAll)}`
+       + `｜采纳走 stage=${/stage\(i, \{ target: btn\.dataset\.adopt/.test(pageSrcAll)}`
        + `｜开关走 stage=${/stage\(i, \{ enabled: !on/.test(switchSlice || "")}`
        + `｜缺省进池一处算=${/return p === null \? true : p;/.test(curOnSlice || "")}`
        + `｜保存在飞禁点=${/if \(saving\) el\.disabled = true;/.test(switchSlice || "")}`
-       + `｜commitTarget 回潮=${stripComments(pageSrc).indexOf("commitTarget") >= 0}`);
+       + `｜commitTarget 回潮=${stripComments(pageSrcAll).indexOf("commitTarget") >= 0}`);
 
   /* ---------- V29 · 新增：取消必须真能取消（草稿制的另一半，10-04 那条律随本轮复活） ----------
    * 草稿制下"取消"是**唯一**能丢弃用户劳动的出口，而 modal() 有三条关闭通道
@@ -1780,21 +1796,21 @@ async function runChecks() {
   const closeSlice = fnSlice("const tryClose = () => {", "\n    };");
   check("V29", "㉙ 取消真能取消：三条关闭通道同走 tryClose + 有脏态先警告再关（两步）+ 关前摘监听 + 一改就撤警告",
      !!closeSlice
-     && /cancelBtn\.onclick = tryClose;/.test(pageSrc)
-     && /dlg\.el\.querySelector\("\.modal-close"\)\.onclick = tryClose;/.test(pageSrc)
-     && /document\.addEventListener\("mousedown", guardBackdrop, true\);/.test(pageSrc)
+     && /cancelBtn\.onclick = tryClose;/.test(pageSrcAll)
+     && /dlg\.el\.querySelector\("\.modal-close"\)\.onclick = tryClose;/.test(pageSrcAll)
+     && /document\.addEventListener\("mousedown", guardBackdrop, true\);/.test(pageSrcAll)
      && /if \(!n \|\| armed\) \{ detachGuard\(\); dlg\.close\(\); return; \}/.test(closeSlice)
      && (closeSlice.match(/dlg\.close\(\);/g) || []).length === 1
      && /data-discard/.test(closeSlice)
-     && /const detachGuard = \(\) => document\.removeEventListener\("mousedown", guardBackdrop, true\);/.test(pageSrc)
+     && /const detachGuard = \(\) => document\.removeEventListener\("mousedown", guardBackdrop, true\);/.test(pageSrcAll)
      && /armed = false;/.test(stageSlice || "")
      && /warn\) warn\.remove\(\);/.test(stageSlice || ""),
      () => `tryClose 体=${closeSlice ? closeSlice.length + " 字" : "找不到"}`
-       + `｜取消钮=${/cancelBtn\.onclick = tryClose/.test(pageSrc)}`
-       + `｜× 钮=${/\.modal-close"\)\.onclick = tryClose/.test(pageSrc)}`
-       + `｜遮罩捕获=${/guardBackdrop, true\)/.test(pageSrc)}`
+       + `｜取消钮=${/cancelBtn\.onclick = tryClose/.test(pageSrcAll)}`
+       + `｜× 钮=${/\.modal-close"\)\.onclick = tryClose/.test(pageSrcAll)}`
+       + `｜遮罩捕获=${/guardBackdrop, true\)/.test(pageSrcAll)}`
        + `｜dlg.close 次数=${!!closeSlice ? (closeSlice.match(/dlg\.close\(\);/g) || []).length : -1}`
-       + `｜摘监听=${/removeEventListener\("mousedown", guardBackdrop, true\)/.test(pageSrc)}`
+       + `｜摘监听=${/removeEventListener\("mousedown", guardBackdrop, true\)/.test(pageSrcAll)}`
        + `｜编辑撤警告=${/armed = false;/.test(stageSlice || "")}`);
 
   /* ---------- L · 反转的 M6-IX 真机断言（e2e-records/m6-accounts-assertions.json） ----------
@@ -1847,7 +1863,7 @@ async function runChecks() {
   }
   // 2026-10-01 用户指示废除展开详情行：实现词汇不再「降级到 .req-detail」而是**整页不出现**
   // （续期/模型目录并入模型映射弹窗；协议/设备身份/base_url 等只在后端视图可查）。
-  if (pageSrc.indexOf("req-detail") >= 0 || pageSrc.indexOf("data-exp") >= 0) {
+  if (pageSrcAll.indexOf("req-detail") >= 0 || pageSrcAll.indexOf("data-exp") >= 0) {
     detailBad.push("页面源码残留 req-detail / data-exp（展开行结构必须整体移除，不许只藏起来）");
   }
   check("L-A10", "反转 M6-IX A10：展开详情行已废除——协议/设备身份/目录来源/base_url 在页面上零出现，源码无 req-detail/data-exp 残留",
@@ -2365,6 +2381,27 @@ const MUTATIONS = [
     to: L('const ISO_RE = /./;') },
 ];
 
+/** D-1/D-4 拆分后（2026-10-06）：锚点可能落在 accounts/ 子模块——逐文件找恰一命中者，
+ *  返回 { file, src } 供变异只改那一段（其余文件原样随副本走）。 */
+const partFilesOf = () => {
+  const dir = PAGE_FILE.replace(/[^/\\]+$/, "") + "accounts";
+  return existsSync(dir)
+    ? readdirSync(dir).filter((f) => f.endsWith(".js")).sort().map((f) => join(dir, f))
+    : [];
+};
+const locateEdit = ({ from }) => {
+  const candidates = [[PAGE_FILE, readFileSync(PAGE_FILE, "utf-8")],
+    ...partFilesOf().map((f) => [f, readFileSync(f, "utf-8")])];
+  const hits = candidates.map(([f, src]) => [f, src.split(from).length - 1]);
+  const hit = hits.filter(([, n]) => n === 1);
+  if (hit.length === 1) {
+    const [file] = hit[0];
+    return { file, src: candidates.find(([f]) => f === file)[1] };
+  }
+  const total = hits.reduce((a, [, n]) => a + n, 0);
+  throw new Error(`锚点在主文件+子模块中命中 ${total} 次（需恰一段恰 1 次）。`
+    + "变异锚点过期 = 最隐蔽的一种假通过：请把本条变异重定锚到新页面对应位置，**不许删条目**");
+};
 const applyEdit = (src, { from, to }, tag) => {
   const hits = src.split(from).length - 1;
   if (hits !== 1) {
@@ -2382,6 +2419,23 @@ function runChild(pagePath) {
     { encoding: "utf-8", maxBuffer: 64 * 1024 * 1024, timeout: 90_000, killSignal: "SIGKILL" });
   const parsed = JSON.parse(out.trim().split("\n").filter(Boolean).pop());
   return parsed;
+}
+
+/** 变异副本 = 主文件副本 + accounts/ 子模块目录原样拷贝（子进程的
+ *  pagePartsDir 推导跟随副本父目录 ⇒ 子模块必须随行，否则主文件行为退化）。 */
+function stageCopy(work, name, mainSrc, mutatedPartFile, mutatedPartSrc) {
+  const copy = join(work, name);
+  writeFileSync(copy, mainSrc);
+  const srcDir = PAGE_FILE.replace(/[^/\\]+$/, "") + "accounts";
+  if (existsSync(srcDir)) {
+    const dstDir = join(work, "accounts");
+    mkdirSync(dstDir, { recursive: true });
+    for (const f of readdirSync(srcDir).filter((f) => f.endsWith(".js"))) {
+      writeFileSync(join(dstDir, f),
+        mutatedPartFile === f ? mutatedPartSrc : readFileSync(join(srcDir, f), "utf8"));
+    }
+  }
+  return copy;
 }
 
 async function runMutations() {
@@ -2416,7 +2470,6 @@ async function runMutations() {
   console.log("  expectGreen 型 " + greenExpected + " 条：基线红 = 真缺陷，记为不可核验并跳过变异（不施加过期 fix）。\n");
 
   for (const mut of MUTATIONS) {
-    let src = baseSrc;
     let stage = "";
     try {
       const before = okOf(baseRun, mut.id);
@@ -2439,9 +2492,7 @@ async function runMutations() {
           console.log(`  ✗ ${mut.id} ← ${mut.why}  ← BAD：基线红且没有 fix 可走`);
           continue;
         }
-        for (const f of mut.fix) src = applyEdit(src, f, `fix(${mut.id})`);
-        const copy = join(work, `accounts-${mut.id}-fixed.js`);
-        writeFileSync(copy, src);
+        throw new Error(`fix(${mut.id})：拆分后可绿性核验分支未适配 accounts/ 子模块——基线红时按 locateEdit 逐段修（本轮无此形状，防呆拦下）`);
         const fixed = runChild(copy);
         const fOk = okOf(fixed, mut.id);
         if (!fOk) throw new Error(`fix 后判据 ${mut.id} 读不到`);
@@ -2451,9 +2502,11 @@ async function runMutations() {
         prevRed = redOf(fixed);
         stage = `（基线红 → fix 转绿：${[...prevRed].join(",") || "全绿"} 仍红）`;
       }
-      const mutated = applyEdit(src, mut, mut.id);
-      const copy2 = join(work, `accounts-${mut.id}-mutated.js`);
-      writeFileSync(copy2, mutated);
+      const loc = locateEdit(mut);
+      const mutatedPartSrc = loc.src.replace(mut.from, () => mut.to);
+      const copy2 = stageCopy(work, `accounts-${mut.id}-mutated.js`,
+        loc.file === PAGE_FILE ? mutatedPartSrc : readFileSync(PAGE_FILE, "utf-8"),
+        loc.file === PAGE_FILE ? null : loc.file.split("/").pop(), mutatedPartSrc);
       const after = runChild(copy2);
       const aOk = okOf(after, mut.id);
       if (!aOk) throw new Error(`变异后判据 ${mut.id} 读不到`);

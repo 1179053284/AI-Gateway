@@ -408,3 +408,43 @@ class TestSchemaVersionAndForbid:
         cfg = load_config(f)
         save_config(cfg, f)
         assert load_config(f).schema_version == 1
+
+
+class TestConfigVersionOptimisticLock:
+    """S-2 收尾（2026-10-06）：配置代次乐观锁——GET 带出 `version`，PUT 可选校验，
+    不匹配 409 让界面重取。闭合 R1-F-5「多页签旧快照整份覆盖静默还原」的机器可判
+    形态；不带 version 的旧客户端保持兼容零变化。"""
+
+    def _runtime(self, tmp_path):
+        import yaml
+
+        from model_gateway.config.loader import load_config
+        from model_gateway.main import Runtime
+
+        f = tmp_path / "config.yaml"
+        f.write_text(yaml.safe_dump({"gateway": {"host": "127.0.0.1"}}), encoding="utf-8")
+        return Runtime(load_config(f), f, usage_dir=tmp_path / "usage"), f
+
+    def test_version_increments_on_every_successful_apply(self, tmp_path):
+        rt, _ = self._runtime(tmp_path)
+        v0 = rt.config_version
+        assert v0 == 1                       # 构造时 __init__ 置 0 + 首次 _apply 提交 ⇒ 1
+        from model_gateway.config.loader import load_config
+
+        rt._apply(load_config(rt.config_path))
+        rt._apply(load_config(rt.config_path))
+        assert rt.config_version == v0 + 2
+
+    def test_extract_client_version_shapes(self):
+        from model_gateway.api.admin import _extract_client_version
+
+        body = {"version": 3, "gateway": {"host": "127.0.0.1"}}
+        assert _extract_client_version(body) == 3
+        assert "version" not in body                     # 取走即剥（forbid 配套）
+        assert _extract_client_version({}) is None       # 旧客户端 → 不校验
+        body2 = {"version": "3"}
+        assert _extract_client_version(body2) == -1      # 非法形状 → 必不匹配
+        body3 = {"version": True}
+        assert _extract_client_version(body3) == -1      # bool 排除
+        body4 = {"version": -5}
+        assert _extract_client_version(body4) == -1

@@ -307,6 +307,11 @@ class Runtime:
         #: 运行态保持上一代（整体不换），失败原因经 `config_warnings()` 出横幅 ——
         #: 原先只有 stdout/日志，而启动脚本自动关窗（用户看不见），表现为"改了配置没反应"。
         self._apply_error: str | None = None
+        #: 配置代次（S-2 收尾，2026-10-06）：每次 `_apply` 成功提交 +1。GET `/admin/api/config`
+        #: 把它作为 `version` 带出；PUT 可选带 `version`——不匹配回 409 让界面刷新旧快照，
+        #: 不带的旧客户端保持兼容。闭合「多页签旧快照整份覆盖」这条静默还原路径的
+        #: 机器可判形态（锁管住服务端读写竞争，version 管住客户端间的旧快照竞争）。
+        self.config_version: int = 0
         # 🔴 熔断的"读时重判"判据在这里接线（2026-09-29 用户裁决）：
         #    `core/` 不 import `upstream/zcode/`，所以由装配侧把「熔断此刻是否仍成立」
         #    注入运行态读路径（出快照 / 选路两处共用）。与 `sync_circuit()` 的启动对齐
@@ -439,6 +444,7 @@ class Runtime:
 
         # —— 阶段 2：一次性提交（赋值；无失败路径）——
         self.config = config
+        self.config_version += 1  # S-2 收尾：每次成功提交递增（GET 带出 / PUT 校验）
         self.resources.rebuild(config)
         self.classifier = classifier
         self.enum_pool = enum_pool

@@ -211,3 +211,77 @@ class TestMergedSpecExitOnAdminView:
         assert r.status_code == 200, r.text
         raw = yaml.safe_load(Path(gw.config_path).read_text(encoding="utf-8"))
         assert all("spec" not in m for m in raw["models"]), raw["models"]
+
+
+class TestConfigVersionOptimisticLock:
+    """S-2 收尾（2026-10-06）：配置代次乐观锁——GET 带出 `version`、PUT 可选校验。
+
+    R1-F-5 的机器可判形态：页签 A 停在旧快照 ⇒ 页签 B 写入成功（代次 +1）⇒ A 原样
+    PUT 必得 409（current_version 带出），而不是 200 + 静默还原 B 的改动。带过期
+    version 之外的形状（缺失=旧客户端 / 非法=-1 必不匹配）与 A 重取后再保存全链路。"""
+
+    async def test_stale_snapshot_put_conflicts_and_refetch_flow(
+            self, vendor, make_gateway, client, cfg_factory):
+        cfg = cfg_factory(entries=[{"resource": "res-acc", "model": "vm-x", "enabled": True}],
+                          bit=_bit("vm-x", "sys-a", True))
+        gw = await make_gateway(cfg)
+
+        # 页签 A 拿快照（带出 version）
+        snap_a = (await client.get(f"{gw.base_url}/admin/api/config")).json()
+        v0 = snap_a["version"]
+        assert isinstance(v0, int) and v0 >= 1
+
+        # 页签 B 用同一快照成功写入一个改动（改 max_concurrent_requests 之外的合法位：资源名）
+        snap_b = copy.deepcopy(snap_a)
+        snap_b["resources"][0]["name"] = "B 页签改名"
+        r = await client.put(f"{gw.base_url}/admin/api/config", json=snap_b)
+        assert r.status_code == 200, r.text
+
+        # 页签 A 仍拿旧快照整份 PUT ⇒ 必 409，且回执带当前代次
+        r = await client.put(f"{gw.base_url}/admin/api/config", json=snap_a)
+        assert r.status_code == 409, r.text
+        out = r.json()
+        assert out["status"] == "conflict"
+        assert out["current_version"] == v0 + 1
+        assert "其它页面" in out["errors"][0]
+        # B 的改动没有被 A 的旧快照还原（盘上仍是 B 改的名）
+        disk = yaml.safe_load(Path(gw.config_path).read_text(encoding="utf-8"))
+        assert disk["resources"][0]["name"] == "B 页签改名"
+
+        # A 重取（拿到新代次）→ 再保存成功，全链路闭环
+        fresh = (await client.get(f"{gw.base_url}/admin/api/config")).json()
+        fresh["resources"][0]["name"] = "A 重取后改名"
+        r = await client.put(f"{gw.base_url}/admin/api/config", json=fresh)
+        assert r.status_code == 200, r.text
+        disk = yaml.safe_load(Path(gw.config_path).read_text(encoding="utf-8"))
+        assert disk["resources"][0]["name"] == "A 重取后改名"
+
+    async def test_put_without_version_stays_compatible(self, vendor, make_gateway,
+                                                        client, cfg_factory):
+        """旧客户端/脚本不带 `version` ⇒ 乐观锁不介入，行为与 S-2 之前零变化。"""
+        cfg = cfg_factory(entries=[{"resource": "res-acc", "model": "vm-x", "enabled": True}],
+                          bit=_bit("vm-x", "sys-a", True))
+        gw = await make_gateway(cfg)
+        snap = (await client.get(f"{gw.base_url}/admin/api/config")).json()
+        snap.pop("version", None)                      # 旧客户端没有这个键
+        snap["resources"][0]["name"] = "旧客户端改名"
+        r = await client.put(f"{gw.base_url}/admin/api/config", json=snap)
+        assert r.status_code == 200, r.text
+
+    async def test_put_with_illegal_version_is_rejected_not_persisted(
+            self, vendor, make_gateway, client, cfg_factory):
+        """非法 version（bool 是 int 子类 / 非整数）⇒ 必不匹配 409，绝不静默放行。"""
+        cfg = cfg_factory(entries=[{"resource": "res-acc", "model": "vm-x", "enabled": True}],
+                          bit=_bit("vm-x", "sys-a", True))
+        gw = await make_gateway(cfg)
+        snap = (await client.get(f"{gw.base_url}/admin/api/config")).json()
+        bad = copy.deepcopy(snap)
+        bad["version"] = True                          # bool 排除
+        r = await client.put(f"{gw.base_url}/admin/api/config", json=bad)
+        assert r.status_code == 409, r.text
+        disk_before = Path(gw.config_path).read_bytes()
+        bad2 = copy.deepcopy(snap)
+        bad2["version"] = "3"                          # 非整数
+        r = await client.put(f"{gw.base_url}/admin/api/config", json=bad2)
+        assert r.status_code == 409, r.text
+        assert Path(gw.config_path).read_bytes() == disk_before   # 两次都零落库
