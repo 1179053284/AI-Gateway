@@ -478,13 +478,8 @@ async def _fetch_balance(jwt: str, device_mid: str) -> httpx.Response:
         return await client.get(PROBE_PATH, params={"app_version": oauth.DEFAULT_APP_VERSION})
 
 
-def _json_or_empty(resp: httpx.Response) -> dict:
-    """读 JSON 体；非 JSON / 非对象 → 空 dict（**不因解析失败丢掉 HTTP 事实**）。"""
-    try:
-        body = resp.json()
-    except ValueError:
-        return {}
-    return body if isinstance(body, dict) else {}
+# R2a-F-5（2026-10-06）：实现收编到 `upstream/_text.py`（一份实现）。
+from model_gateway.upstream._text import json_or_empty as _json_or_empty  # noqa: F401 — 再导出
 
 
 #: 额度的**联网**通道来源标识（2026-10-02 方案裁决①）。

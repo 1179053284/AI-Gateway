@@ -20,6 +20,8 @@
 
 from __future__ import annotations
 
+from model_gateway.upstream._text import strip_control
+
 import math
 
 import base64
@@ -53,10 +55,11 @@ class ProtocolError(RuntimeError):
 # ---------- JSON 读取（兼容后端把数字返回成字符串） ----------
 
 def read_str(source: dict, key: str) -> str:
-    """安全读字符串（数字按字符串收，`lobsterai.ts:205-210`）。"""
+    """安全读字符串（数字按字符串收，`lobsterai.ts:205-210`）；控制字符剥离同 buddy
+    口径（R2a-F-4，`upstream/_text.py` 一份实现）——上游多行文本破坏落盘 JSON。"""
     value = source.get(key) if isinstance(source, dict) else None
     if isinstance(value, str):
-        return value
+        return strip_control(value)
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return str(value)
     return ""

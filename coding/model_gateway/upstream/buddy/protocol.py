@@ -346,9 +346,9 @@ def read_str(source: object, key: str) -> str:
     return ""
 
 
-def strip_control(value: str) -> str:
-    """去掉控制字符（含 CR/LF/Tab）并把连续空白折叠为单空格（`buddy.ts:257-261`）。"""
-    return " ".join(str(value).split())
+# R2a-F-4（2026-10-06）：实现收编到 `upstream/_text.py`（一份实现，其余产品同位接入）；
+# 本模块保留同名 re-export —— 既有 6 个内部引用点与判据不受影响。
+from model_gateway.upstream._text import strip_control  # noqa: F401 — 再导出（含 type 用途）
 
 
 def read_positive_int(source: object, key: str) -> int | None:

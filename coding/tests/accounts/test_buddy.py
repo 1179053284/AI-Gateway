@@ -626,3 +626,15 @@ def test_code_of_reads_numeric_string_codes():
     assert code_of({"code": None}) == 0         # 缺失 → 0（既有口径）
     assert code_of({"code": True}) == 0         # bool 是 int 子类，必须排除
     assert code_of("not-a-dict") == 0
+
+
+def test_strip_control_is_shared_with_other_products():
+    """R2a-F-4（2026-10-06 第三轮落地）：控制字符剥离收编为**一份实现**
+    （`upstream/_text.py`），buddy 再导出（6 个内部引用点不受影响），
+    raccoon/lobsterai/trae/cline 的 read_str 同位接入。"""
+    from model_gateway.upstream._text import strip_control
+    from model_gateway.upstream.buddy.protocol import strip_control as buddy_reexport
+
+    assert buddy_reexport is strip_control            # 一份实现，不是第二份抄写
+    assert strip_control("scope 第1行\n第2行\t制表") == "scope 第1行 第2行 制表"
+    assert strip_control("普通文本 保持不变") == "普通文本 保持不变"

@@ -290,13 +290,5 @@ async def submit_sms(session, *, sms_code: str) -> LoginOutcome:
 # ---------- 内部工具 ----------
 
 
-def _json_or_none(resp: httpx.Response) -> object:
-    """读 JSON 体；非 JSON → `None`（**不因解析失败而丢掉 HTTP 事实**）。
-
-    照抄 DSH 的容错口径：凭据过期时网关可能回 HTML 错误页，`resp.json()` 抛出的
-    `Unexpected token '<'` 对用户毫无意义。
-    """
-    try:
-        return resp.json()
-    except ValueError:
-        return None
+# R2a-F-5（2026-10-06）：实现收编到 `upstream/_text.py`（一份实现，6 处同包抄写消灭）。
+from model_gateway.upstream._text import json_or_none as _json_or_none  # noqa: F401 — 再导出

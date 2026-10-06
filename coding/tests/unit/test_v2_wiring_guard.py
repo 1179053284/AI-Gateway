@@ -60,15 +60,15 @@ ALLOWED_NO_REFERRER: dict[str, str] = {
     # 没法从源码里认出自己的调用方**，逐个登记；同名的兄弟实现自带同文件引用
     # （`self.` / `super.`），不占本表（这正是旧版按名豁免造成的假过期来源）。
     "adapters/anthropic_out.py#AnthropicOutAdapter.images_generate":
-        "接口方法（scheduler.py:514 `self._adapter(r).images_generate(...)`；本模块只定义不调用）",
+        "接口方法（scheduler.py:634 `self._adapter(r).images_generate(...)`；本模块只定义不调用）",
     "adapters/openai_out.py#OpenAIOutAdapter.images_generate":
-        "接口方法（scheduler.py:514；同上）",
+        "接口方法（scheduler.py:634；同上）",
     "upstream/qoder/out.py#QoderOut.chat_nonstream":
-        "接口方法（scheduler.py:500 `self._adapter(r).chat_nonstream(...)`；本类无同文件调用点）",
+        "接口方法（scheduler.py:607 `self._adapter(r).chat_nonstream(...)`；本类无同文件调用点）",
     "upstream/trae/out.py#TraeOut.chat_nonstream":
-        "接口方法（scheduler.py:500；本类直接聚合 SOLO 事件，不经 self.chat_stream）",
+        "接口方法（scheduler.py:607；本类直接聚合 SOLO 事件，不经 self.chat_stream）",
     "upstream/trae/out.py#TraeOut.chat_stream":
-        "接口方法（scheduler.py:589 `self._adapter(r).chat_stream(...)`；本类 chat_nonstream 不消费自身流，故无同文件引用）",
+        "接口方法（scheduler.py:739 `self._adapter(r).chat_stream(...)`；本类 chat_nonstream 不消费自身流，故无同文件引用）",
 }
 
 #: 上表里"鸭子类型接口方法"这一类（**按名字**列出；表内同名条目逐条核验，防白名单变垃圾桶）：

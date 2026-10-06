@@ -17,6 +17,8 @@
 
 from __future__ import annotations
 
+from model_gateway.upstream._text import strip_control
+
 import math
 
 import base64
@@ -42,7 +44,7 @@ def read_str(source: Any, *keys: str) -> str:
         value = source.get(key)
         if isinstance(value, str):
             if value:
-                return value
+                return strip_control(value)  # R2a-F-4：控制字符剥离（upstream/_text.py）
         elif isinstance(value, (int, float)) and not isinstance(value, bool):
             return str(value)
     return ""

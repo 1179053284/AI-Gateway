@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+from model_gateway.upstream._text import strip_control
+
 import datetime as dt
 import re
 from typing import Any
@@ -436,9 +438,13 @@ def _entry_list(value: Any) -> list[dict]:
 
 
 def _read_str(source: dict, *keys: str) -> str | None:
-    """从记录里读第一个非空字符串字段（`readString`，`cline.ts:72-79`）。"""
+    """从记录里读第一个非空字符串字段（`readString`，`cline.ts:72-79`）。
+
+    R2a-F-4（2026-10-06）：`strip()` 只去首尾，控制字符/内部换行同位敞着 ⇒
+    换 `strip_control`（`upstream/_text.py` 一份实现，buddy 同口径）。
+    """
     for key in keys:
         value = source.get(key)
         if isinstance(value, str) and value.strip():
-            return value.strip()
+            return strip_control(value)
     return None

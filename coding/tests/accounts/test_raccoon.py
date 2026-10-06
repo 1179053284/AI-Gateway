@@ -831,3 +831,32 @@ def test_parse_envelope_reads_numeric_string_codes():
     assert env3.code == 0 and env3.ok                          # 非数字字符串维持不猜
     env4 = parse_envelope({"code": "401"}, 401)
     assert env4.code == 401                                    # 状态兜底形状不变
+
+
+def test_read_str_strips_control_chars():
+    """R2a-F-4（2026-10-06）：raccoon read_str 接入共享剥离（多行 scope 破坏落盘 JSON
+    的同形状敞口，buddy 一手复盘）。"""
+    from model_gateway.upstream.raccoon.protocol import read_str
+
+    assert read_str({"k": "line1\nline2\tend"}, "k") == "line1 line2 end"
+    assert read_str({"k": "普通"}, "k") == "普通"
+    assert read_str({"k": 123}, "k") == ""            # 非字符串 → 空串（既有口径）
+    assert read_str(None, "k") == ""
+
+
+def test_json_parsers_are_one_shared_implementation():
+    """R2a-F-5（2026-10-06 第三轮落地）：同包 4 份 `_json_or_none` + cline/zcode 2 份
+    `_json_or_empty` 收编为 `upstream/_text.py` 一份实现——本地名只是 re-export，
+    18 个调用点形状零变化。"""
+    from model_gateway.upstream._text import json_or_empty, json_or_none
+    from model_gateway.upstream.raccoon.credits import _json_or_none as j_credits
+    from model_gateway.upstream.raccoon.login import _json_or_none as j_login
+    from model_gateway.upstream.raccoon.models import _json_or_none as j_models
+    from model_gateway.upstream.raccoon.product import _json_or_none as j_product
+    from model_gateway.upstream.cline.product import _json_or_empty as je_cline
+    from model_gateway.upstream.zcode.product import _json_or_empty as je_zcode
+
+    for alias in (j_credits, j_login, j_models, j_product):
+        assert alias is json_or_none
+    for alias in (je_cline, je_zcode):
+        assert alias is json_or_empty

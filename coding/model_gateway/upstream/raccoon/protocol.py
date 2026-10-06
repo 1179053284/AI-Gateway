@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+from model_gateway.upstream._text import strip_control
+
 import base64
 import json
 import math
@@ -76,11 +78,15 @@ def parse_envelope(payload: object, status: int = 0) -> Envelope:
 
 
 def read_str(record: dict | None, key: str) -> str:
-    """读字符串字段（缺失 / 类型不符 → 空串；**不猜**）。"""
+    """读字符串字段（缺失 / 类型不符 → 空串；**不猜**）。
+
+    🔴 R2a-F-4（2026-10-06）：控制字符剥离与 buddy 同口径（`upstream/_text.py` 一份
+    实现）——上游多行文本会破坏落盘 JSON（buddy `scope` 缺陷的同形状敞口）。
+    """
     if not isinstance(record, dict):
         return ""
     value = record.get(key)
-    return value if isinstance(value, str) else ""
+    return strip_control(value) if isinstance(value, str) else ""
 
 
 def read_number(record: dict | None, key: str) -> float | None:
