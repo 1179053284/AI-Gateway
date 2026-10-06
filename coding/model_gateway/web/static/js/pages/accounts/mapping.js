@@ -3,6 +3,11 @@
 import { GET, POST, esc } from "../../api.js";
 import { modal, confirmDialog, toast, toastCard, copyText, initSplitResize } from "../../components.js";
 import { view, selected, panelEl, setSelected, setPanelEl } from "./state.js";
+import {
+  CLAIM_LABEL, fetchView, fmtTok, paintPanel, paintRail, productOf,
+  receiptRow, refreshAfter, showBulkReceipt,
+} from "../accounts.js";
+import { switchEl } from "./login.js";
 
 /* ---------- 模型映射（产品内部模型 → 网关模型）与批量签到 / 领取 ----------
  * 契约（后端随本轮落地，前端按冻结 payload 实现，不预判字段）：

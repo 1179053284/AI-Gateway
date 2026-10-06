@@ -3,6 +3,7 @@
 import { GET, POST, esc } from "../../api.js";
 import { modal, confirmDialog, toast, toastCard, copyText, initSplitResize } from "../../components.js";
 import { rootEl } from "./state.js";
+import { readStore, writeStore, shortTime } from "../accounts.js";
 
 /* ---------- ZCode 专属：导入账号与购买账号（YouYu Shop）----------
  * 契约（后端随本轮落地，前端按冻结 payload 实现，不预判字段；两颗入口只在 `p.id === Z_PRODUCT` 的卡头渲染）：

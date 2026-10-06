@@ -135,7 +135,7 @@ const CATEGORIES = {
 /** 批量（`claim-all`）结果四类文案（summary 与逐行共用；键名 = payload.report/details.category）。
  *  ⚠️ 与行级 `CATEGORIES` 有意不同：批量出口把「已领 / 未参与」分开说（行级只出一句「跳过」）；
  *  着色口径一致 —— 仍然**只有失败着红**，success/already_done/inactive 一律中性。 */
-const CLAIM_LABEL = { success: "成功", already_done: "已领", inactive: "未参与", failed: "失败" };
+export const CLAIM_LABEL = { success: "成功", already_done: "已领", inactive: "未参与", failed: "失败" };
 
 /** 新手任务（一次性登录奖励）——⚠️ 后端无 `claim_onboarding` 端点（BD7 未落地）：
  *  按「未登记能力不渲染按钮 / 点了必然失败不做」整体隐藏。补端点后：① 本常量改 true；
@@ -162,7 +162,7 @@ const capsOf = (pid) => {
   return (p && p.capabilities) || {};
 };
 
-const productOf = (pid) => (view && view.products || []).find((p) => p.id === pid) || null;
+export const productOf = (pid) => (view && view.products || []).find((p) => p.id === pid) || null;
 const selectedProduct = () => productOf(selected);
 
 /* ---------- 入口：1 个 GET + 深链 + 一次性 shell ---------- */
@@ -187,7 +187,7 @@ export async function renderAccounts(root) {
 }
 
 /** 服务端视图重取（失败不抛：§5 保留上次数据 + 面板给「重试」）。 */
-async function fetchView() {
+export async function fetchView() {
   try {
     setView(await GET("/admin/api/accounts"));
     setLoadError("");
@@ -204,10 +204,10 @@ function productFromHash() {
   return m ? decodeURIComponent(m[1]) : "";
 }
 
-function readStore(key) {
+export function readStore(key) {
   try { return localStorage.getItem(key); } catch { return null; }    // 隐私模式/禁用存储
 }
-function writeStore(key, val) {
+export function writeStore(key, val) {
   try { localStorage.setItem(key, val); } catch { /* 记不住不影响本页功能 */ }
 }
 
@@ -316,7 +316,7 @@ function filterHTML() {
       </div>`;
 }
 
-function paintRail() {
+export function paintRail() {
   if (filterEl) {
     filterEl.innerHTML = filterHTML();
     const holder = filterEl.querySelector("#ac-only");
@@ -382,7 +382,7 @@ function wireRailKeys() {
 }
 
 /* ---------- 三级重绘之第二级：面板 ---------- */
-function paintPanel() {
+export function paintPanel() {
   if (!panelEl) return;
   const p = selectedProduct();
   panelEl.innerHTML = panelHTML(p);       // p=null 时 panelHTML 自己出「读失败 alert + 空态」
@@ -965,7 +965,7 @@ export async function refreshAfter(pid, name) {
  * 面板里也不留任何回执位（权威状态在表里：回执发出前已按服务端重取过视图）。
  * 🔴 术语解释（「未发起」/「未参与」那段）挂**计数行悬停**，不进正文 ——
  *    3 秒是读完"计数 + 逐号结果"的时间，不是读定义的时间；定义不许做成必读正文。 */
-function showBulkReceipt(title, { sum = "", note = "", rows = "", empty = "", tone = "" } = {}) {
+export function showBulkReceipt(title, { sum = "", note = "", rows = "", empty = "", tone = "" } = {}) {
   const html = (sum
     ? `<div class="t-sum"${note ? ` title="${esc(note)}"` : ""}>${sum}</div>` : "")
     + `<div class="t-rows">${rows || (empty ? `<div class="t-empty">${esc(empty)}</div>` : "")}</div>`;
@@ -973,7 +973,7 @@ function showBulkReceipt(title, { sum = "", note = "", rows = "", empty = "", to
 }
 
 /** 逐号一行：名称（过长省略号 + `title` 全名）+ 可选明细 + 结果词（色只走令牌）。 */
-function receiptRow(name, tag, tone = "", detail = "") {
+export function receiptRow(name, tag, tone = "", detail = "") {
   return `<div class="t-row"><span class="t-cell">`
     + `<span class="t-name" title="${esc(name)}">${esc(name)}</span>`
     + (detail ? `<span class="t-detail" title="${esc(detail)}">${esc(detail)}</span>` : "")
@@ -1202,10 +1202,10 @@ async function delAccount(p, a) {
 }
 
 /* ---------- 展示口径辅助 ---------- */
-const shortTime = (v) => String(v ?? "").replace("T", " ").slice(0, 16);
+export const shortTime = (v) => String(v ?? "").replace("T", " ").slice(0, 16);
 
 /** token 数压缩（与 models.js 同款 12px 辅助行格式，非规则副本）。 */
-const fmtTok = (n) => n == null ? "—" :
+export const fmtTok = (n) => n == null ? "—" :
   n >= 1048576 && n % 1048576 === 0 ? `${n / 1048576}M` :
   n % 1024 === 0 ? `${n / 1024}K` : String(n);
 
