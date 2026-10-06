@@ -1,4 +1,5 @@
 """S-5 完整版：AdminLanGuard 行为判据（纯 ASGI 直调，无网络）。"""
+import asyncio
 import json
 
 import pytest
@@ -97,3 +98,57 @@ async def test_guard_never_pierces_when_runtime_missing_or_unreadable():
     g2 = AdminLanGuard(make_app([]), lambda: _Unreadable())  # config 取值即抛
     sent = await call(g2, path="PUT", url="/admin/api/config", query=b"reveal=1")
     assert sent[0]["status"] == 200
+
+
+@pytest.mark.asyncio
+async def test_global_concurrency_gate_limits_v1_and_spares_admin():
+    """P1 收口（2026-10-06）：`max_concurrent_requests` 执行点——/v1 在途达上限 ⇒
+    429 + Retry-After；管理面与 health 不计数；0=不限零变化。"""
+    from model_gateway.api.auth import GlobalConcurrencyGate
+
+    def make(gw):
+        runtime = type("R", (), {"config": type("C", (), {"gateway": gw})()})()
+        captured = []
+
+        async def app(scope, receive, send):
+            captured.append(scope)
+            await asyncio.sleep(0.05)  # 模拟在途
+            await send({"type": "http.response.start", "status": 200,
+                        "headers": [(b"content-type", b"application/json")]})
+            await send({"type": "http.response.body", "body": b"{}"})
+
+        return GlobalConcurrencyGate(app, lambda: runtime), captured
+
+    async def call(guard, path="/v1/chat/completions"):
+        sent = []
+
+        async def send(msg):
+            sent.append(msg)
+
+        await guard({"type": "http", "method": "POST", "path": path,
+                     "query_string": b"", "client": ("127.0.0.1", 1), "headers": []},
+                    lambda *a: None, send)
+        return sent
+
+    # 限额 1：第一条在途期间第二条 429 + Retry-After
+    g, captured = make(GatewayConfig(host="127.0.0.1", max_concurrent_requests=1))
+    first = asyncio.ensure_future(call(g))
+    await asyncio.sleep(0.01)
+    second = await call(g)
+    await first
+    assert second[0]["status"] == 429
+    assert dict(second[0]["headers"])[b"retry-after"] == b"1"
+    assert len(captured) == 1                        # 被拒者不进下游
+
+    # 0 = 不限：并发多条全放行
+    g2, cap2 = make(GatewayConfig(host="127.0.0.1"))
+    results = await asyncio.gather(*[call(g2) for _ in range(5)])
+    assert all(r[0]["status"] == 200 for r in results) and len(cap2) == 5
+
+    # 管理面不受限
+    g3, cap3 = make(GatewayConfig(host="127.0.0.1", max_concurrent_requests=1))
+    first3 = asyncio.ensure_future(call(g3, path="/admin/api/config"))
+    await asyncio.sleep(0.01)
+    second3 = await call(g3, path="/admin/api/config")
+    await first3
+    assert second3[0]["status"] == 200 and len(cap3) == 2

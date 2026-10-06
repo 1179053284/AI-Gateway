@@ -1114,6 +1114,10 @@ def create_app(config_path: Path | None = None, *,
     #    关掉 `?reveal=1` / 管理写方法 / `resources/test`（gateway.lan_admin_open=true 显式放开）
     from model_gateway.api.auth import AdminLanGuard
     app.add_middleware(AdminLanGuard, runtime_provider=lambda: app.state.runtime)
+    # 🔴 P1 收口（2026-10-06 生产评估）：全局并发闸——`max_concurrent_requests` 从
+    #    "零读者配置"变为执行点（/v1/* 在途计数，超限 429 + Retry-After；0=不限零开销）
+    from model_gateway.api.auth import GlobalConcurrencyGate
+    app.add_middleware(GlobalConcurrencyGate, runtime_provider=lambda: app.state.runtime)
     # 静态 UI no-cache（Q19-①：防浏览器缓存旧界面）
     app.add_middleware(_StaticNoCacheMiddleware)
 

@@ -60,7 +60,7 @@ scheduling:                       # 调度参数全局唯一（Q18-③：一套�
                                   #     （判据是产品位 `product_models` + 号开关，见下方 Q33-① 段）
   fail_threshold: 2               # y：连续失败次数（跨请求累计；先判定，Q14）
   retry_per_request: 3            # m：单请求单资源重试上限（耗尽即切换，Q14）
-  retry_backoff_seconds: 0       # RETRYABLE 同资源重试间隔（0 = 立即）
+  retry_backoff_seconds: 1.5    # RETRYABLE 同资源重试间隔（对上游风控友好；0 = 立即）
   quota_retry: 2                  # 429 短指数退避重试次数
   quota_backoff_base_seconds: 1   # 第 n 次退避 = base × 2^(n-1)
   cooldown_seconds: 60            # api 模式默认冷却时长

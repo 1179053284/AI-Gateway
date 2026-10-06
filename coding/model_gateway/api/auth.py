@@ -159,3 +159,48 @@ class AdminLanGuard:
             or scope.get("method", "GET") in AdminLanGuard._WRITE_METHODS
             or scope.get("path", "") == "/admin/api/resources/test")
         return sensitive
+
+
+class GlobalConcurrencyGate:
+    """🔴 P1 收口（2026-10-06 生产评估）：`gateway.max_concurrent_requests` 的**执行点**。
+
+    审计 R7 的登记「界面写『超限 429』后端零读者」——配置存在但无任何消费方。
+    本闸在 **`/v1/*` 请求入口**数在途（含流式长连接）：达到上限的新请求立即
+    429 + `Retry-After: 1`（标准限流形状，客户端 SDK 原生处理），不排队——
+    排队会把上游风控的突发转化为网关内的隐式队列，反而放大风险。
+    `0 = 不限`（默认，零开销：不加锁不加计数）。仅 `/v1/*` 计数；管理面不受限。
+    """
+
+    def __init__(self, app, runtime_provider):
+        self.app = app
+        self._runtime = runtime_provider
+        self._in_flight = 0
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or not scope.get("path", "").startswith("/v1/"):
+            await self.app(scope, receive, send)
+            return
+        limit = getattr(getattr(self._runtime().config, "gateway", None),
+                        "max_concurrent_requests", 0)
+        if limit <= 0:
+            await self.app(scope, receive, send)
+            return
+        if self._in_flight >= limit:
+            body = json.dumps(
+                {"error": {"message": f"网关并发已满（{self._in_flight}/{limit}），请稍后重试",
+                           "type": "rate_limit_error", "code": 429},
+                 "detail": f"gateway.max_concurrent_requests={limit}"},
+                ensure_ascii=False).encode("utf-8")
+            await send({
+                "type": "http.response.start", "status": 429,
+                "headers": [(b"content-type", b"application/json"),
+                            (b"retry-after", b"1"),
+                            (b"content-length", str(len(body)).encode())],
+            })
+            await send({"type": "http.response.body", "body": body})
+            return
+        self._in_flight += 1
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            self._in_flight -= 1
