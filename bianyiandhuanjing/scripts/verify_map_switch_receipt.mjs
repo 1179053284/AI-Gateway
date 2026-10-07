@@ -24,9 +24,10 @@
  * 用法：
  *   node bianyiandhuanjing/scripts/verify_map_switch_receipt.mjs
  *   node bianyiandhuanjing/scripts/verify_map_switch_receipt.mjs --file /tmp/mutated.js
- *   node bianyiandhuanjing/scripts/verify_map_switch_receipt.mjs --mutate 1..18   # 成对撤证
+ *   node bianyiandhuanjing/scripts/verify_map_switch_receipt.mjs --mutate 23   # 成对撤证（单编号；逐一跑）
  *   （1~5 钉草稿腿 `mountSwitch` / `stage`，6~10 钉 AI 腿 `runAiMatch`，
- *    11~15 钉唯一写入口 `saveAll`，16~18 钉取消腿 `tryClose` 与三条关闭通道）
+ *    11~15 钉唯一写入口 `saveAll`，16~18 钉取消腿 `tryClose` 与三条关闭通道，
+ *    19~22 钉 2026-10-05 草稿制新判据的反例，23 钉三参调用形状——2026-10-06 bug 本形）
  */
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -159,6 +160,11 @@ const MUTATIONS = {
         slice: "saveAll",
         from: "              draft.delete(i);\n              const sel = selOf(i);",
         to: "              const sel = selOf(i);" },
+  23: { desc: "label 实参省掉、退回二参调用（回调绑到 `label` 形参 ⇒ `onToggle`=undefined ⇒ "
+             + "点击只自翻牌、`stage` 永不执行 ⇒ 草稿恒空 ⇒「保存」永不使能 = 用户报的那条 bug 本形）",
+        slice: "mountSwitch",
+        from: "const el = switchEl(on, `进池 / 出池映射 ${m.name || m.id}`, () => {",
+        to: "const el = switchEl(on, () => {" },
 };
 
 function runChecks(src, sw, st, ai, save, close) {
@@ -190,6 +196,11 @@ function runChecks(src, sw, st, ai, save, close) {
   add("A6", "悬停文案把「点保存才写入」说在位（三态各一条）且零「即落库」这种上一轮的旧口径",
       (sw.match(/保存/g) || []).length >= 3 && !/拨一下即落库|点一下即落库/.test(sw),
       `「保存」出现 ${(sw.match(/保存/g) || []).length} 处｜旧口径回潮=${/拨一下即落库|点一下即落库/.test(sw)}`);
+  add("A7", "🔴 **三参**调用 `switchEl(on, label, onToggle)`（2026-10-06 用户报的 bug 本因："
+     + "label 实参一省，回调绑到 `label` 形参、`onToggle` = undefined ⇒ 点击走 `ok=true` 的自翻牌支路，"
+     + "`stage` 一次都不执行 ⇒ 草稿恒空 ⇒ 脚部「保存」**永不使能**——界面看着翻了牌，改动却存不了）",
+      /const el = switchEl\(on, `[^`]+`, \(\) => \{/.test(sw),
+      (sw.match(/const el = switchEl[^\n]*/)?.[0] ?? "(没找到 switchEl 调用)").slice(0, 110));
 
   /* ---------- B · stage = 唯一的改草稿入口 ---------- */
   add("B0", "切到 `stage`（草稿的唯一改入口）", st !== null,
@@ -314,7 +325,7 @@ function main() {
     const key = argv[mutIdx + 1];
     const spec = MUTATIONS[key];
     if (!spec) {
-      console.log("变异编号须为 1~22（1~5 草稿腿 / 6~10 AI 腿 / 11~15 保存腿 / 16~18 取消腿 / 19~22 本轮新判据的反例）");
+      console.log("变异编号须为 1~23（1~5 草稿腿 / 6~10 AI 腿 / 11~15 保存腿 / 16~18 取消腿 / 19~22 本轮新判据的反例 / 23 三参调用形状）");
       process.exit(2);
     }
     // D-1/D-4 拆分（2026-10-06）：映射弹窗函数体在 accounts/mapping.js——
