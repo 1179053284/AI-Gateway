@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>参数配置详细说明 · Model-Gateway</title>
+<link rel="stylesheet" href="/css/base.css">
+<style>
+  /* 帮助页独立外壳：复用全站令牌与卡片/表格组件，不新造色值（ui 合规模式）。
+     数据 = GET /admin/api/enums 的 param_fields（与参数卡同一来源，零第二套真相）。 */
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.65 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 32px 20px 80px; }
+  .page-title { font-size: 22px; font-weight: 800; letter-spacing: -.02em; margin: 0 0 6px; }
+  .page-sub { font-size: 13px; color: var(--text-muted); margin-bottom: 20px; }
+  .page-sub a { color: var(--cool); font-weight: 600; text-decoration: none; }
+  h2 { font-size: 15px; font-weight: 800; margin: 28px 0 10px; color: var(--text); }
+  .card { margin-top: 14px; }
+  .kv { margin: 0; }
+  .kv dt { font-weight: 700; font-size: 13px; color: var(--text-soft); margin-top: 10px; }
+  .kv dd { margin: 2px 0 0; font-size: 13px; color: var(--text-muted); }
+  .tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .tbl th { text-align: left; font-weight: 700; font-size: 12px; color: var(--text-faint);
+            padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  .tbl td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .tbl tr:last-child td { border-bottom: 0; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .src { font-size: 11px; color: var(--text-faint); overflow-wrap: anywhere; }
+  details { border: 1px solid var(--border); border-radius: var(--radius-md);
+            background: var(--surface); margin-top: 10px; }
+  summary { cursor: pointer; padding: 10px 14px; font-size: 13px; font-weight: 700;
+            color: var(--text-soft); user-select: none; list-style: revert; }
+  summary:hover { color: var(--text); }
+  details[open] summary { border-bottom: 1px solid var(--border); }
+  details > div { padding: 4px 14px 10px; overflow-x: auto; }
+  .legend { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; align-items: center;
+            font-size: 12px; color: var(--text-muted); }
+  .empty { color: var(--text-faint); font-size: 13px; padding: 12px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 class="page-title">参数配置详细说明</h1>
+  <p class="page-sub">对应「网关模型管理」页的参数配置卡 · <a href="/#/models">返回控制台 ↩</a> · 数据来自内置模型目录（官网逐条取证）</p>
+
+  <div class="card">
+    <div class="card-head"><div class="card-title">一 · 参数配置卡怎么用</div></div>
+    <dl class="kv">
+      <dt>表格里填的值 = 网关随请求发出去的值</dt>
+      <dd>厂商公布了缺省值的参数，新建模型时已自动带入官方默认；改了值就按你改的发，留空就发厂商默认。</dd>
+      <dt>优先级：工具调用传参 &gt; 网关设置 &gt; 厂商默认</dt>
+      <dd>Trae / Cursor 等工具在请求里自己带的参数最优先；请求没带才用这张卡里的值；卡里也没写就用厂商默认。</dd>
+      <dt>只对对话（chat）生效</dt>
+      <dd>图像生成端点不注入任何参数。</dd>
+      <dt>「恢复官方配置」按钮</dt>
+      <dd>一键把全部参数还原为厂商官方默认，你改过的值与手动添加的自定义参数会被覆盖。</dd>
+    </dl>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><div class="card-title">二 · 网关自动代发的 2 个参数（参数卡里改不了）</div></div>
+    <dl class="kv">
+      <dt>max_tokens（最大输出）</dt>
+      <dd>你没有在参数卡里填写输出上限时，网关会按「实际承接这条请求的账号自己」的最大输出代发——防止超出某个账号的限额被厂商拒绝。整池对外承诺的上限以模型详情页「网关承诺（合并规格）」为准。想自己定：在参数卡写 max_tokens，写了网关就不再代发。</dd>
+      <dt>thinking / reasoning_effort（推理档位）</dt>
+      <dd>控制模型是否深度思考、思考多深。资源池里哪一行设了默认就按那一行代发；都没设就不代发，用厂商自己的默认行为。想设置：模型详情页「资源池」每行右侧的推理档位下拉。</dd>
+      <dt>共同规则</dt>
+      <dd>工具请求里明确带了这两个参数时，以请求为准，网关不覆盖。</dd>
+    </dl>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><div class="card-title">三 · 常见参数是什么意思（通用概念）</div></div>
+    <dl class="kv">
+      <dt>温度 temperature</dt><dd>越高回答越发散有创意，越低越确定、保守。写代码、抽取类任务建议 0~1，写作可调高。</dd>
+      <dt>核采样 top_p</dt><dd>另一种控制随机性的方式（只从累计概率前 top_p 的候选词里挑）。一般和温度二选一调，不建议同时大改。</dd>
+      <dt>top_k / min_p</dt><dd>同样是收窄候选词范围的采样参数，不同厂商支持情况不同，以各模型档案为准。</dd>
+      <dt>最大输出 max_tokens</dt><dd>本次回答最多生成多少 token，到上限就停。注意部分厂商把思考过程的 token 也计入上限。</dd>
+      <dt>停止词 stop</dt><dd>生成到这些词就停，多个值用英文逗号分隔；各厂商有条数上限（见各模型档案）。</dd>
+      <dt>存在惩罚 presence_penalty / 频率惩罚 frequency_penalty / 重复惩罚 repetition_penalty</dt><dd>减少重复内容的力度。部分厂商已废弃或忽略这些参数，设了不生效。</dd>
+      <dt>随机种子 seed</dt><dd>同样输入想复现同样输出时用；部分厂商已不保证确定性。</dd>
+      <dt>生成条数 n</dt><dd>一次生成几条候选回答。</dd>
+      <dt>采样开关 do_sample</dt><dd>关掉采样 = 贪心输出（最确定）；智谱模型设为 false 时温度与 top_p 一起失效。</dd>
+      <dt>max_completion_tokens</dt><dd>较新厂商替代 max_tokens 的键名（含思考 token），含义相同。</dd>
+    </dl>
+    <div class="legend">
+      档案四档含义：
+      <span class="badge b-ok">可设</span> 正常生效
+      <span class="badge b-warn">已废弃</span> 厂商标注弃用（网关不代发它的默认值）
+      <span class="badge b-muted">被忽略</span> 设了也不生效
+      <span class="badge b-warn">会报错</span> 传非默认值直接被拒绝
+    </div>
+  </div>
+
+  <h2>四 · 各厂商模型逐条档案</h2>
+  <p class="page-sub" style="margin-bottom:0">「网关行为」列 = 这张卡上这一项的实际效果；「厂商说明」= 取证时的官方原话要点（含出处）。厂商没公布的缺省值网关一律不猜。</p>
+  <div id="catalog" class="empty">加载中…</div>
+</div>
+
+<script>
+/* 主题三态与控制台同一把钥匙（mg-theme）：控制台切了深色，帮助页跟随。 */
+(() => {
+  const mq = window.matchMedia("(prefers-color-scheme: dark)");
+  const mode = localStorage.getItem("mg-theme") || "system";
+  const apply = () => document.documentElement.setAttribute("data-theme",
+    mode === "system" ? (mq.matches ? "dark" : "light") : mode);
+  apply();
+  mq.addEventListener?.("change", apply);
+})();
+
+const AVAIL = {
+  supported: ["可设", "b-ok"],
+  deprecated: ["已废弃", "b-warn"],
+  ignored: ["被忽略", "b-muted"],
+  rejected: ["会报错", "b-warn"],
+};
+const fmtVal = (v) => typeof v === "boolean" ? String(v) : Array.isArray(v) ? v.join(", ") : String(v);
+
+/* 「网关行为」一列：与参数卡 paramBasisText 同一套派生口径（supported 且未标不注入才说"代发"）。 */
+function gateBehavior(f, key) {
+  const avail = f.availability || "supported";
+  const known = f.default !== undefined && f.default !== null;
+  if (avail === "deprecated") return "厂商已废弃此键，网关不代发默认值";
+  if (avail === "ignored") return "厂商忽略此参数，设了不生效";
+  if (avail === "rejected") return "厂商拒绝非默认值，保持默认";
+  if (f.inject === false) return "档案在册，但官方依据不适用于单模型，网关不代发";
+  if (known) return `网关按官方${f.default_source === "recommended" ? "推荐" : "缺省"}值 ${esc(fmtVal(f.default))} 代发（请求自带时以请求为准）`;
+  if (key === "max_tokens") return "厂商缺省不单一，网关按实际承接账号的上限代发";
+  return "厂商未公布缺省值，网关不猜；可在参数卡手动设";
+}
+function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+const known = (f) => f.default !== undefined && f.default !== null;
+
+function vendorBlock(vendor, entries) {
+  const rows = entries.map((e) => {
+    const keys = Object.keys(e.param_fields || {});
+    if (!keys.length) return "";
+    const body = keys.map((k) => {
+      const f = e.param_fields[k];
+      const [av, cls] = AVAIL[f.availability || "supported"];
+      const range = (f.min != null || f.max != null)
+        ? `${f.min == null ? "" : f.min} ~ ${f.max == null ? "" : f.max}` : "—";
+      const meta = [f.note, f.source].filter(Boolean).join(" · ");
+      return `<tr>
+        <td class="mono">${esc(k)}</td>
+        <td><span class="badge ${cls}">${av}</span></td>
+        <td>${known(f) ? esc(fmtVal(f.default)) + (f.default_source === "recommended" ? "（推荐）" : "") : "未公布"}</td>
+        <td class="mono">${range}${(f.kind === "string_list" && f.max != null) ? `（≤${f.max} 条）` : ""}</td>
+        <td>${esc(gateBehavior(f, k))}</td>
+        <td class="src">${esc(meta)}</td>
+      </tr>`;
+    }).join("");
+    return `<details>
+      <summary>${esc(e.display || e.name)} <span class="mono" style="font-weight:500;color:var(--text-faint)">${esc(e.name)}</span></summary>
+      <div><table class="tbl">
+        <thead><tr><th>参数</th><th>档案档</th><th>官方缺省</th><th>官方范围</th><th>网关行为</th><th>厂商说明 · 出处</th></tr></thead>
+        <tbody>${body}</tbody>
+      </table></div>
+    </details>`;
+  }).join("");
+  return `<h2 style="margin-top:18px">${esc(vendor || "自定义")}</h2>${rows || '<div class="empty">该厂商暂无参数档案</div>'}`;
+}
+
+fetch("/admin/api/enums").then((r) => r.json()).then((d) => {
+  const entries = (d && d.entries) || [];
+  const byVendor = new Map();
+  for (const e of entries) {
+    if (!e.param_fields || !Object.keys(e.param_fields).length) continue;
+    if (!byVendor.has(e.vendor)) byVendor.set(e.vendor, []);
+    byVendor.get(e.vendor).push(e);
+  }
+  const box = document.getElementById("catalog");
+  box.className = "";
+  box.innerHTML = byVendor.size
+    ? [...byVendor].map(([v, es]) => vendorBlock(v, es)).join("")
+    : '<div class="empty">内置目录为空或没有带参数档案的模型。</div>';
+}).catch((e) => {
+  document.getElementById("catalog").textContent = "档案加载失败：" + e.message + "（网关未启动？）";
+});
+</script>
+</body>
+</html>

@@ -45,6 +45,12 @@
   --side-hover: #f6f7f8; --side-active: var(--brand); --side-text-active: var(--on-brand);
   --side-border: #f6f7f8;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  /* 代码块 = 固定深底（两主题同一个底），块里的复制钮因此要自己带一套色：
+     浅色下是白片，深色下换成同色相的抬升片（走 --code-ctl-* 覆写，见 [data-theme="dark"]），
+     免得 #17191d 的常规面压在 #161a26 上几乎分不出"这里有个钮"。 */
+  --code-bg: #161a26; --code-fg: #c9d1e8; --code-border: #232a40;
+  --code-ctl-bg: #ffffff; --code-ctl-hover: #f2f4f6;
+  --code-ctl-border: #2f3752; --code-ctl-fg: #3b424a;
 }
 
 [data-theme="dark"] {
@@ -72,6 +78,9 @@
   --side: #17191d; --side-text: #8b929c; --side-strong: #ecedf0;
   --side-hover: rgba(255,255,255,.05); --side-active: var(--brand); --side-text-active: var(--on-brand);
   --side-border: #22252b;
+  /* 深色下代码块里的控件：同色相抬升一档（块底 #161a26 → 片 #262e42），文字仍用块前景色 */
+  --code-ctl-bg: #262e42; --code-ctl-hover: #2f3850;
+  --code-ctl-border: #3d4a6b; --code-ctl-fg: #c9d1e8;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -554,10 +563,22 @@ select.in option { background: var(--surface); color: var(--text); }
    参数卡教训 design-spec v2.8；≤768 回退单列） */
 .endpoint-list { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .endpoint-item { display: flex; flex-direction: column; gap: 2px; }
-.code-block { background: #161a26; color: #c9d1e8; border: 1px solid #232a40;
+.code-block { background: var(--code-bg); color: var(--code-fg);
+  border: 1px solid var(--code-border);
   border-radius: var(--radius-md); padding: 13px 16px; font-size: 12px;
   font-family: var(--mono); white-space: pre-wrap;
   word-break: break-all; line-height: 1.75; }
+/* 代码块 + 块内右上角那颗复制钮（2026-10-08 用户指示：钮搬进框内、上/右各留 8px）。
+   块顶内边距按「钮高 + 上下间距」预留 ⇒ 窄屏代码折行也从钮下方走过，不赌"这行不够长"；
+   多语言 tab 组里三个 pre 同值 ⇒ 切语言不跳版。 */
+.code-shell { position: relative; }
+.code-shell > .code-block { padding-top: 42px; }
+.btn.code-copy { position: absolute; top: 8px; right: 8px; z-index: 1;
+  height: 26px; padding: 0 9px; font-size: 12px; font-weight: 600;
+  background: var(--code-ctl-bg); border-color: var(--code-ctl-border);
+  color: var(--code-ctl-fg); }
+.btn.code-copy:hover { background: var(--code-ctl-hover);
+  border-color: var(--code-ctl-border); color: var(--code-ctl-fg); }
 
 /* ---------- 模型启用圆点（列表行尾开关）---------- */
 .mg-dot { width: 11px; height: 11px; border-radius: var(--radius-full); flex: none;

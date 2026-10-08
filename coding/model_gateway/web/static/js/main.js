@@ -7,6 +7,7 @@ import { renderResources } from "./pages/resources.js";
 import { renderModels } from "./pages/models.js";
 import { renderAccounts } from "./pages/accounts.js";
 import { renderApiAccess } from "./pages/apiaccess.js";
+import { renderApiDocs } from "./pages/apidocs.js";
 import { renderStats } from "./pages/stats.js";
 import { renderLogs } from "./pages/logs.js";
 import { renderSettings } from "./pages/settings.js";
@@ -19,7 +20,7 @@ import { renderTemplates } from "./pages/templates.js";
 const PAGES = {
   dashboard: renderDashboard, resources: renderResources, models: renderModels,
   accounts: renderAccounts,
-  apiaccess: renderApiAccess, stats: renderStats, logs: renderLogs, settings: renderSettings,
+  apiaccess: renderApiAccess, apidocs: renderApiDocs, stats: renderStats, logs: renderLogs, settings: renderSettings,
   templates: renderTemplates,
 };
 
@@ -32,6 +33,7 @@ const PAGE_META = {
   stats: { title: "数据看板", group: "运行观测" },
   logs: { title: "请求日志", group: "运行观测" },
   apiaccess: { title: "API 接入", group: "系统设置" },
+  apidocs: { title: "对接说明", group: "系统设置" },
   settings: { title: "系统设置", group: "系统设置" },
   templates: { title: "模板页面", group: "模板" },
 };
