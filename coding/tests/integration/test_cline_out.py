@@ -287,8 +287,16 @@ def test_error_mapping_aligns_with_the_existing_classifier(status, expected):
 
 
 def test_403_region_block_is_not_treated_as_an_auth_error():
-    """🔴 403 = 地域封锁/模型未开通（本产品特有）→ `BAD_REQUEST`，**绝不** disable
-    （DSH 早期把 401/403 一律当凭据过期，界面显示「API 密钥无效」，真实原因被掩盖）。"""
+    """🔴 403 = 地域封锁/模型未开通（本产品特有）→ **`RESOURCE_UNAVAILABLE`**，
+    **绝不** `AUTH`/disable（DSH 早期把 401/403 一律当凭据过期，界面显示「API 密钥无效」，
+    真实原因被掩盖）。
+
+    **2026-10-08 判据升级（原判据是 `BAD_REQUEST`）**：实盘抓到 `BAD_REQUEST` 的连带后果 ——
+    请求**直接失败、不换号**，池里健康资源全程闲置（`glm-5.3-flash` 池里那条未订阅的
+    `cline-pass/glm-5.3-flash` 实测 5/5 全失败）。本类错误的正确语义是「**这条资源**
+    对本模型不可承接（请求本身没错，换一条就能成）」⇒ 换号续跑 + 冷却该条 (资源, 模型)，
+    但**不 disable 账号**（它别的模型照常可用）、不计 C。
+    原判据要守的那条红线（**不是凭据问题、不许 disable**）由本判据继续守。"""
     store.commit_login("cline", ACCOUNT, {"access_token": TOKEN_BARE, "account_id": "usr-01M3"}, {})
     seen: list[httpx.Request] = []
     adapter = _adapter(_handler(seen, mode="error", status=403, error_body=(
@@ -303,8 +311,72 @@ def test_403_region_block_is_not_treated_as_an_auth_error():
 
     err = asyncio.run(run())
     assert err.status_code == 403
-    assert "not available in your region" in (err.error_body or "")
-    assert ErrorClassifier().classify(err) is ErrorClass.BAD_REQUEST
+    assert "not available in your region" in (err.error_body or "")   # 原文保真
+    cls = ErrorClassifier().classify(err)
+    assert cls is ErrorClass.RESOURCE_UNAVAILABLE
+    assert cls is not ErrorClass.AUTH                                  # 🔴 绝不误判成凭据
+    assert cls is not ErrorClass.BAD_REQUEST                           # 不再"原样透传、不换号"
+
+
+@pytest.mark.parametrize("body,expected", [
+    # ✅ 取证过的两种"资源级不可承接"表述（DSH 逐字）
+    ('{"error":{"code":"ENTITLEMENT_ERROR","message":"Error 403: the user is not'
+     ' subscribed to required model plan"}}', True),
+    ('{"error":"access forbidden: x is not available in your region","success":false}', True),
+    ('{"error":"region not supported"}', True),
+    ('{"error":"this model is not available in your country"}', True),
+    # ⛔ 负向：不能把真凭据问题/其它 403 吞成"换号就行"
+    ('{"error":{"type":"invalid_api_key","message":"bad token"},"success":false}', False),
+    ('{"error":"forbidden"}', False),
+    ('{"error":"some other permission problem"}', False),
+    ("", False),
+])
+def test_403_resource_scoped_detection_markers(body, expected):
+    """「资源级 403」识别标记的**正/负双向**判据（`_is_resource_scoped_403`）。
+
+    判据来源：DSH `isClineRegionForbidden`（`cline-adapter.ts:969-978` 四特征词）
+    ＋ `cline-rate-limit.ts:240-241` 的 `ENTITLEMENT_ERROR` 实录。
+    ⚠️ 只认取证过的表述（不认泛词 `forbidden`）—— 同一批 403 里既有真凭据问题、
+    也有地域/订阅问题，吞错方向会把"该重新登录"误导成"换号就行"。"""
+    from model_gateway.upstream.cline.out import _is_resource_scoped_403
+
+    assert _is_resource_scoped_403(body) is expected
+
+
+async def test_403_resource_unavailable_fails_over_and_never_disables(
+        make_gateway, client):
+    """**2026-10-08 端到端红证**：资源级 403（未订阅/地域）必须**换号续跑**，
+    客户端拿 200；坏的那条 (资源, 模型) 进冷却（**不是** `disabled` / `invalid`），
+    账号**不被判死**（它别的模型照常可用）。"""
+    store.commit_login("cline", ACCOUNT, {"access_token": TOKEN_BARE, "account_id": "usr-01M3"}, {})
+    cfg = _cfg()
+    cfg["resources"].append({
+        "id": "res-cl2", "name": "Cline 备用", "vendor": "", "preset": "",
+        "account": ACCOUNT, "product": "cline", "account_ref": ACCOUNT,
+        "protocol": "openai", "base_url": "https://cline-e2e-2.invalid/api/v1",
+        "api_key": "", "enabled": True, "access_mode": "api",
+    })
+    cfg["models"][0]["resources"].append({"resource": "res-cl2", "model": VENDOR_MODEL})
+    seen_a: list[httpx.Request] = []
+    seen_b: list[httpx.Request] = []
+    gw = await make_gateway(cfg)
+    # res-cl = 未订阅该模型（实盘同一形状）；res-cl2 = 健康
+    await _install(gw, "res-cl", _handler(seen_a, mode="error", status=403, error_body=(
+        '{"error":{"code":"ENTITLEMENT_ERROR","message":"Error 403: the user is not'
+        ' subscribed to required model plan"}}')))
+    await _install(gw, "res-cl2", _handler(seen_b, mode="json"))
+
+    resp = await _chat(client, gw, _body())
+    assert resp.status_code == 200, f"资源级 403 未换号：{resp.status_code} {resp.text[:200]}"
+    assert resp.json()["choices"][0]["message"]["content"] == "来自假上游"
+    assert len(seen_a) == 1 and len(seen_b) == 1        # 坏号只打了 1 次（确定性否认不重试）
+
+    st = gw.runtime.resources.registry.get(("res-cl", VENDOR_MODEL))
+    assert st.status == "cooldown", f"坏号应进冷却而非判死：{st.status}"
+    assert st.C == 0, f"资源级不可承接不该计 C（不是健康度信号）：C={st.C}"
+    assert st.last_error and "ENTITLEMENT_ERROR" in st.last_error   # 原文保真（可诊断）
+    await gw.drain_events()
+    assert gw.read_switches()[0]["reason_cls"] == "RESOURCE_UNAVAILABLE"
 
 
 async def test_401_disables_the_resource_end_to_end(make_gateway, client):
