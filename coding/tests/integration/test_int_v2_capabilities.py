@@ -74,6 +74,9 @@ async def test_capability_values_come_from_builtin_directory(make_gateway):
         assert m["vendor"] == "智谱 GLM"
         assert m["maxInputTokens"] == 1048576
         assert m["supportsReasoning"] is True
+        # 方言桥键（2026-10-06 契约扩展）：目录认得输入容量的模型 ⇒ 下发 `context_length`，
+        # 与 `maxInputTokens` 同源同值 —— DSH discovery 只认这个 snake_case 键。
+        assert m["context_length"] == 1048576
     finally:
         await gw.stop()
 
@@ -85,6 +88,8 @@ async def test_custom_model_does_not_crash_models_list(make_gateway):
         m = (await _models(gw))[0]
         assert m["id"] == "my-own-model"
         assert m["maxInputTokens"] is None
+        # 不知道 ⇒ 整键缺省（三态家族同口径：不印 null/0 冒充有据）
+        assert "context_length" not in m
     finally:
         await gw.stop()
 

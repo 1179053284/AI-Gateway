@@ -42,6 +42,10 @@ async def list_models(request: Request):
     原有 6 字段**不删不改**（向后兼容），追加 9 个能力位字段：
     `name` / `vendor` / `maxInputTokens` / `maxOutputTokens` /
     `supportsToolCall` / `supportsImages` / `supportsReasoning` / `specStale` / `caps`。
+    另追加方言桥键 **`context_length`**（2026-10-06 用户批准的契约扩展，仅本 OpenAI 兼容面）：
+    与 `maxInputTokens` 同源的输入窗口，供只认该键的清单读取方（如 DSH `llm-pi-ai` 的
+    discovery，解析序 `contextWindow, context_window, context_length, max_input_tokens, …`）
+    拉取到真实输入容量；值取自能力位同一合并腿（固定最大标准），未知的自定义模型**缺键**不下发。
 
     🔴 实测依据（`08` §6.4）：工具侧 `supportsToolCall !== true` 会**删除请求中的 tools**；
     无 `thinkingLevelMap` 会让推理档位**变哑** —— 都是"无报错的能力静默降级"。
@@ -57,13 +61,19 @@ async def list_models(request: Request):
             continue
         if m.name not in servable:  # BUG-1：有映射但无任何可用资源 → 不对外声明
             continue
+        caps = build_model_caps(m, runtime.enum_pool,
+                                spec=runtime.model_specs.get(m.name))
         data.append({
             # —— 原有 6 字段（不动）——
             "id": m.name, "object": "model", "created": 0, "owned_by": "model-gateway",
             "endpoint": m.endpoint, "group": m.group,
             # —— v2.0 能力位 ——
-            **build_model_caps(m, runtime.enum_pool,
-                               spec=runtime.model_specs.get(m.name)),
+            **caps,
+            # —— 方言桥键（只加在 OpenAI 兼容面，不动 capabilities 共通契约）——
+            #    DSH 侧 contextWindow 缺省 262144（DEFAULT_CONTEXT_WINDOW）的根修；
+            #    与 maxInputTokens 同源同值（None = 不知道 ⇒ 整键缺省，不印 0 冒充有据）。
+            **({"context_length": caps["maxInputTokens"]}
+               if caps["maxInputTokens"] is not None else {}),
             "caps": build_caps_block(m, runtime.enum_pool,
                                      getattr(runtime, "dialects", None),
                                      spec=runtime.model_specs.get(m.name)),
