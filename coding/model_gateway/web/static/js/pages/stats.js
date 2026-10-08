@@ -179,11 +179,19 @@ function drawChart(root) {
   });
 }
 
+/* Chart.js 缺席时的降级柱状（本地 vendor 件加载失败才会走到这里）。
+ * 🔴 柱高与总览趋势图同一套语法：**flex 分配**（`flex:pct` + 空白 `flex:100-pct`），不用
+ *   `height:PCT%`。原先行容器 `align-items:flex-end` 让包裹层高度=内容高 ⇒ 百分比高度没有
+ *   确定父高可算 ⇒ 柱子恒为 0px（与 2026-10-08 总览趋势图同一处病，同族一次找完）。 */
 function cssBars(box, trend) {
   const max = Math.max(1, ...trend.map((d) => d.requests));
-  box.innerHTML = `<div style="display:flex;height:100%;align-items:flex-end;gap:3px">${trend.map((d) => `
-    <div title="${d.date} · ${d.requests} 次" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px">
-      <div style="width:60%;height:${Math.round((d.requests / max) * 100)}%;background:var(--ok);border-radius:3px 3px 0 0;opacity:.85"></div>
+  box.innerHTML = `<div style="display:flex;height:100%;gap:3px">${trend.map((d) => {
+    const grow = Math.min(100, Math.max(2, (d.requests / max) * 100));
+    return `
+    <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;min-width:0">
+      <div title="${d.date} · ${d.requests} 次" style="width:60%;flex:1;display:flex;flex-direction:column-reverse;overflow:hidden">
+        ${d.requests ? `<div style="flex:${grow.toFixed(2)};background:var(--ok);border-radius:3px 3px 0 0;opacity:.85"></div><div style="flex:${(100 - grow).toFixed(2)}"></div>` : ""}
+      </div>
       <div style="font-size:10px;color:var(--text-faint)">${d.date.slice(4, 6)}/${d.date.slice(6, 8)}</div>
-    </div>`).join("")}</div>`;
+    </div>`; }).join("")}</div>`;
 }
