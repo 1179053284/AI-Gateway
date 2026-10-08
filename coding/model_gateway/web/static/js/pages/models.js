@@ -120,7 +120,7 @@ function draw(root) {
   root.innerHTML = `
     <style>
       /* 参数配置两列栅格：单元格不继承 .list-row 兄弟分割线（网格中左右线错位），
-         行距对齐 12px 节奏；窄屏回退单列。🔴 下段「网关还会注入」同网格 ⇒ 同一课一起覆写 */
+         行距对齐 12px 节奏；窄屏回退单列。🔴 下段「网关自动代发的 2 个参数」同网格 ⇒ 同一课一起覆写 */
       #md-params .list-row + .list-row, #md-injected .list-row + .list-row { border-top: 0; }
       @media (max-width: 1080px) { #md-params, #md-injected { grid-template-columns: minmax(0,1fr) !important; } }
     </style>
@@ -263,8 +263,45 @@ function pfield(e, key) {
   return (e && e.param_fields && e.param_fields[key]) || null;
 }
 
-/** 一行的"依据"文字（常驻可见，不只住 tooltip：悬停不算看见过） */
-function paramBasisText(field) {
+/** 每个参数的**特有**人话说明（2026-10-06 用户指示：说明用人话、简短易懂）。
+ *  只写"不看就会误解"的那一句（官方 note 的翻译），没有就返回空串——
+ *  宁可少说，不编。取证原话与 URL/日期已从行内挪到「参数配置详细说明」帮助页
+ *  （/help/params.html），本函数不再是证据出口，只是结论出口。 */
+function paramPlainNote(e, key) {
+  const v = (e && e.vendor) || "";
+  const name = (e && e.name) || "";
+  if (v === "Moonshot Kimi"
+    && ["temperature", "top_p", "presence_penalty", "frequency_penalty"].includes(key))
+    return "厂商固定值，传其他值会报错（保持默认即可）";
+  if (v === "DeepSeek") {
+    if (key === "temperature") return "深度思考模式下厂商不读这个值";
+    if (key === "top_p") return "深度思考模式下低于 0.95 会被按 0.95 处理";
+    if (key === "max_tokens") return "厂商缺省随思考档变化（8K/64K/128K），网关因此按资源自己的上限代发";
+  }
+  if (v === "Anthropic" && (key === "temperature" || key === "top_p")
+    && name.startsWith("claude-haiku"))
+    return "temperature 与 top_p 只能二选一，同时设置会报错";
+  if (v === "智谱 GLM") {
+    if (key === "do_sample") return "设为 false 时温度与 top_p 一起失效";
+    if (key === "max_tokens") return "官方默认 65536，131072 是上限——两个数不是一回事";
+  }
+  if (v === "Google Gemini" && key === "temperature" && !/^gemini-3\.[6-8]/.test(name))
+    return "官方提示：低于 1.0 可能输出循环或质量下降";
+  if (v === "OpenAI" && (key === "temperature" || key === "top_p"))
+    return "使用推理档时厂商建议移除这个参数";
+  if (v === "腾讯混元"
+    && ["temperature", "top_p", "presence_penalty", "frequency_penalty", "n"].includes(key))
+    return "官方只有平台级通用默认值（以具体模型能力为准），网关不代发";
+  if (v === "MiniMax" && key === "max_tokens")
+    return "Chat 端官方已弃用此键，新写法是 max_completion_tokens";
+  if (v === "商汤 SenseNova" && key === "presence_penalty")
+    return "官方按模式与任务给 4 组推荐值（1.5/0.0/1.5/2.0），这里取第一组";
+  return "";
+}
+
+/** 一行的"依据"文字（常驻可见，不只住 tooltip：悬停不算看见过）。
+ *  人话短句版（2026-10-06）：结论 + 后果；URL/日期/官方原话挪帮助页，不再进行内。 */
+function paramBasisText(field, e, key) {
   if (!field) return "未取证：该键不在这个模型的官方参数档案里，网关照原样发出";
   const known = field.default !== undefined && field.default !== null;
   /* 「官方缺省」与「官方推荐值」是两种事实（商汤那六键官方只给了推荐值）——混着写就是把
@@ -284,15 +321,19 @@ function paramBasisText(field) {
       bits.push(`官方范围 ${field.min == null ? "" : field.min}~${field.max == null ? "" : field.max}`);
     }
   }
-  if (field.kind === "string_list") bits.push("多个值用英文逗号分隔");
+  if (field.kind === "string_list") {
+    bits.push("多个值用英文逗号分隔");
+    if (field.max != null) bits.push(`官方最多 ${field.max} 条`);
+  }
   if (field.kind === "enum" && (field.values || []).length) {
     bits.push(`官方枚举 ${field.values.map(paramVal).join(" / ")}`);
   }
   if (field.availability === "deprecated") bits.push("⚠ 厂商已标注废弃");
   if (field.availability === "ignored") bits.push("⚠ 厂商明确忽略该参数，设了不生效");
   if (field.availability === "rejected") bits.push("⚠ 厂商对非默认值直接返回报错");
-  const src = [field.note, field.source].filter(Boolean).join(" · ");
-  return bits.join(" · ") + (src ? `（${src}）` : "");
+  const plain = paramPlainNote(e, key);
+  if (plain) bits.push(plain);
+  return bits.join(" · ");
 }
 
 /** 值输入控件：形状跟着官方档案走（布尔给下拉、枚举给下拉、数组给逗号分隔文本） */
@@ -326,7 +367,7 @@ function paramRow(m, e, key) {
      （`core/scheduler.py::_out_body` 先 `apply_model_params` 再 `apply_spec_defaults`）。
      方向说反过一次，所以这一行按当前合并规格把实际后果写出来。 */
   const delTip = key === "max_tokens" && m?.spec?.max_output != null
-    ? `清空后这一项改由统一规格注入 ${m.spec.max_output}（见下方「网关还会注入」）`
+    ? `清空后这一项改由统一规格注入 ${m.spec.max_output}（见下方「网关自动代发的 2 个参数」）`
     : (official
       ? "清空网关值（不再注入，走供应商通道默认；可用「恢复官方配置」一键还原）"
       : "删除该自定义参数");
@@ -341,7 +382,7 @@ function paramRow(m, e, key) {
           <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
         </button>
       </div>
-      <div class="pbasis" style="font-size:11px;font-weight:500;line-height:1.35;color:var(--text-muted);padding-left:180px;overflow-wrap:anywhere">${esc(paramBasisText(field))}</div>
+      <div class="pbasis" style="font-size:11px;font-weight:500;line-height:1.35;color:var(--text-muted);padding-left:180px;overflow-wrap:anywhere">${esc(paramBasisText(field, e, key))}</div>
     </div>`;
 }
 
@@ -359,16 +400,18 @@ function injectedElsewhereHTML(m) {
       </div>
       <div style="font-size:11px;font-weight:500;line-height:1.35;color:var(--text-muted);padding-left:180px;overflow-wrap:anywhere">${esc(where)}</div>
     </div>`;
+  /* 人话版（2026-10-06 用户指示）：原文案「按「承接这条请求的资源自己」的最大输出注入…」
+     用户读不懂。两条都说「会发什么 + 为什么要管它 + 去哪改」。 */
   return cell("max_tokens",
     cap == null
-      ? "合并规格里没有这个数 ⇒ 不注入（走供应商通道默认）"
-      : `按「承接这条请求的资源自己」的最大输出注入（本模型对外承诺上限 ${cap}；逐号更小则按其自身值）`,
-    "来源 = 统一规格（Q33-④）· 改法：在本卡写 max_tokens，或调整资源池成员")
+      ? "规格里没有输出上限这个数 ⇒ 网关不代发（用厂商自己的默认值）"
+      : `你没填输出上限时，网关按实际接单账号自己的上限代发（此模型承诺上限 ${cap}；单个账号更小就按该账号的）`,
+    "影响：输出到上限即停。想自己定 → 在上方表格写 max_tokens（写了一网关就不代发）")
     + cell("thinking / reasoning_effort",
       reasoningRows.length
-        ? `资源池里 ${reasoningRows.length} 条映射设了推理默认，按承接资源注入`
-        : "资源池没有资源级推理默认 ⇒ 不注入",
-      "来源 = 资源池行内 effort 下拉（请求携带时以请求为准）");
+        ? `资源池里 ${reasoningRows.length} 行设了推理默认，网关按实际接单行的设置代发`
+        : "资源池没设推理默认 ⇒ 网关不代发（用厂商自己的默认行为）",
+      "影响：控制模型是否深度思考。想设置 → 下方「资源池」每行右侧的推理档位下拉");
 }
 
 /** 网关侧合并规格的三态呈现（数据 = `GET /admin/api/config` 每条模型上的只读派生位 `spec`）。
@@ -475,7 +518,7 @@ function drawDetail(root) {
       </section>
 
       <!-- 参数配置：工具传参 > 网关设置 > 供应商通道默认（Q24，仅 chat 注入）。
-           两段式（2026-10-04）：上段 = 这张卡能改的；下段 = 网关照样会发、但不住这张卡的
+           两段式（2026-10-04；2026-10-06 用户指示改成人话）：上段 = 这张卡能改的；下段 = 网关照样会发、但不在这张卡上的
            （max_tokens 走统一规格、推理档走资源池，见 core/scheduler.py 的 _out_body 两次注入）。
            只画上段的话，空卡就在谎称"网关没设参数"。 -->
       ${isChat ? `
@@ -491,9 +534,18 @@ function drawDetail(root) {
               title="一键将该模型全部参数重置为官方默认（当前值与自定义参数将被覆盖）">恢复官方配置</button>
           </div>
         </div>
+        <!-- 公共说明色块（2026-10-06 用户指示）：所有模型通用的文档性信息集中成卡，
+             每参数特有说明才下放到行内；详细出处（URL/日期/官方原话）收进帮助页。 -->
+        <div class="alert alert-info" style="margin:12px 0 0">
+          <div class="alert-title">这个表格怎么用</div>
+          这里每一行 = 一个请求参数。表格里填的值，网关会自动随每次对话请求发给厂商；
+          留空就发厂商自己的默认值。优先级：工具调用临时带的参数 &gt; 这里设置的值 &gt; 厂商默认。
+          只对对话请求生效，图像生成不受影响。<a href="/help/params.html" target="_blank" rel="noopener"
+            style="color:var(--cool);font-weight:600;text-decoration:none;white-space:nowrap">参数配置详细说明 ↗</a>
+        </div>
         <div id="md-params" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 28px;margin-top:12px">
           ${pkeys.map((k) => paramRow(m, e, k)).join("") ||
-            `<p class="form-hint" style="padding:2px 0">厂商官方没有公布这个模型的参数缺省值${e ? "（未核实的值网关不替你猜）" : "（该模型不在内置目录，无官方档案）"}，你也还没设过任何参数 ⇒ 这些参数一律不注入，走供应商通道默认。可在下方按参数名手动添加；网关另会注入的内容见本卡下方「网关还会注入」。</p>`}
+            `<p class="form-hint" style="padding:2px 0">厂商官方没有公布这个模型的参数缺省值${e ? "（未核实的值网关不替你猜）" : "（该模型不在内置目录，无官方档案）"}，你也还没设过任何参数 ⇒ 这些参数一律不注入，走供应商通道默认。可在下方按参数名手动添加；网关自动代发的内容见下方「网关自动代发的 2 个参数」。</p>`}
         </div>
         <div style="display:flex;gap:8px;margin-top:12px;align-items:center">
           <input class="in mono" id="md-pnew" list="md-pkey-list" placeholder="添加参数名（如 top_k）" style="width:220px">
@@ -503,15 +555,15 @@ function drawDetail(root) {
           <button class="btn" id="md-padd">添加参数</button>
         </div>
         <div style="border-top:1px solid var(--border);margin-top:16px;padding-top:12px">
-          <div style="display:flex;align-items:baseline;gap:14px;min-width:0">
-            <div style="font-size:14px;font-weight:800;color:var(--text)">网关还会注入 · 不住这张卡</div>
-            <span style="font-size:12px;font-weight:500;color:var(--text-muted)">只读 · 这一段的值不在上面的表格里，但确实会随请求发出去</span>
+          <div style="display:flex;align-items:baseline;gap:14px;min-width:0;flex-wrap:wrap">
+            <div style="font-size:14px;font-weight:800;color:var(--text)">网关自动代发的 2 个参数 · 这里改不了</div>
+            <span style="font-size:12px;font-weight:500;color:var(--text-muted)">只读 · 不在上面的表格里，但网关确实会随请求发出去 · <a href="/help/params.html" target="_blank" rel="noopener" style="color:var(--cool);font-weight:600;text-decoration:none">详见说明 ↗</a></span>
           </div>
           <div id="md-injected" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 28px;margin-top:10px">
             ${injectedElsewhereHTML(m)}
           </div>
         </div>
-        <p class="form-hint" style="margin-top:12px">行内值 = 网关注入值（厂商公布了缺省的那几项，初始化即带入官方默认）；某行留空 = 该键不注入、走该供应商通道默认（<span class="mono">max_tokens</span> 例外：本卡没写时由统一规格补，见上段）。同一参数请求已携带时以请求为准。行尾 ×：清空该参数（自定义参数 = 删除该行），「恢复官方配置」可一键还原全部官方默认。厂商未公布的缺省值一律不替你猜（未核实不注入）。仅 chat 端点注入；images 不注入。</p>
+        <p class="form-hint" style="margin-top:12px">表格里的值 = 网关随请求发出去的值（厂商公布了缺省的那几项，新建时已自动带入官方默认）。留空 = 不代发、用厂商默认（<span class="mono">max_tokens</span> 例外：留空时网关按账号上限代发，见上段）。工具请求自带参数时以请求为准。行尾 × = 清空该参数（自定义参数 = 删除该行）；「恢复官方配置」一键还原官方默认。仅 chat 对话生效，图像生成不注入。</p>
       </section>` : ""}
     </div>`;
 

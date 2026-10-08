@@ -60,7 +60,7 @@ function sliceFn(src, marker) {
 
 const M = {
   paramRow: "function paramRow(m, e, key) {",
-  basis: "function paramBasisText(field) {",
+  basis: "function paramBasisText(field, e, key) {",
   control: "function paramControl(field, key, cur) {",
   coerce: "function coerceParamFor(raw, field) {",
   injected: "function injectedElsewhereHTML(m) {",
@@ -74,13 +74,13 @@ const MUTATIONS = {
   2: { file: "models", desc: "行集合退回只看 params_default（档案里没缺省值的键又不出行）",
        from: "    ...Object.keys(e?.param_fields || {}),\n", to: "" },
   3: { file: "models", desc: "依据列搬进 tooltip（信息只住悬停那条红线）",
-       from: "overflow-wrap:anywhere\">${esc(paramBasisText(field))}</div>",
-       to: "overflow-wrap:anywhere\" title=\"${esc(paramBasisText(field))}\"></div>" },
+       from: "overflow-wrap:anywhere\">${esc(paramBasisText(field, e, key))}</div>",
+       to: "overflow-wrap:anywhere\" title=\"${esc(paramBasisText(field, e, key))}\"></div>" },
   4: { file: "models", desc: "摘掉「设了被忽略」这一档（四档塌成三档）",
        from: "  if (field.availability === \"ignored\") bits.push(\"⚠ 厂商明确忽略该参数，设了不生效\");\n",
        to: "" },
   5: { file: "models", desc: "max_tokens 清空后果又写成走供应商通道默认（方向说反的那条）",
-       from: "? `清空后这一项改由统一规格注入 ${m.spec.max_output}（见下方「网关还会注入」）`",
+       from: "? `清空后这一项改由统一规格注入 ${m.spec.max_output}（见下方「网关自动代发的 2 个参数」）`",
        to: "? \"清空网关值（不再注入，走供应商通道默认）\"" },
   6: { file: "models", desc: "丢掉 string_list 的逗号解析（官方形状是数组却存成字符串）",
        from: "    const arr = s.split(\",\").map((x) => x.trim()).filter(Boolean);",
@@ -98,8 +98,8 @@ const MUTATIONS = {
         from: '  const willInject = known && field.availability === "supported" && field.inject !== false;',
         to: '  const willInject = known;' },
   11: { file: "models", desc: "把「官方推荐值」说成「官方缺省」（证据说重一档）",
-        from: "  const dLabel = field.default_source === \"recommended\" ? \"厂商推荐值\" : \"厂商官方缺省\";",
-        to: "  const dLabel = \"厂商官方缺省\";" },
+        from: '  const dLabel = field.default_source === "recommended" ? "厂商推荐值" : "厂商官方缺省";',
+        to: '  const dLabel = "厂商官方缺省";' },
   10: { file: "admin", desc: "同一件事再开第二条出口（写面回执一份 warnings）",
         from: "    return {\"status\": \"ok\", \"message\": \"配置已保存并生效\"}",
         to: "    return {\"status\": \"ok\", \"message\": \"配置已保存并生效\", \"warnings\": advice}" },
@@ -120,8 +120,8 @@ function runChecks(S) {
       [row, basis, control, coerce, inj, detail].map((x, i) => (x === null ? "✗" : "✓") + i).join(""));
 
   /* ---- R1 行集合来自官方档案 ---- */
-  add("P1", "空态把话指向只读段（「另会注入」不是黑箱）",
-      detail !== null && /网关还会注入/.test(S.models));
+  add("P1", "空态把话指向只读段（「网关自动代发」不是黑箱；2026-10-06 人话版锚点）",
+      detail !== null && /网关自动代发的 2 个参数/.test(S.models));
   /* 🔴 负向判据：那句谎话必须**全文件再也不出现**。只有正向判据的门，
      把谎话改回来照样全绿（本次 --mutate 1 第一版就是这么空转的）。 */
   add("P1b", "全文件不得出现「也未设置网关参数」（统一规格那条腿照样在注入）",
@@ -135,7 +135,7 @@ function runChecks(S) {
   /* ---- R3 依据常驻可见 + 四档不折叠 ---- */
   add("P3", "每行渲染 .pbasis 文本位（内容来自 paramBasisText，不是只挂 title）",
       row !== null && row.includes("class=\"pbasis\"")
-      && />\$\{esc\(paramBasisText\(field\)\)\}<\/div>/.test(row));
+      && />\$\{esc\(paramBasisText\(field, e, key\)\)\}<\/div>/.test(row));
   add("P4", "四档语义齐备：未公布缺省 / 已废弃 / 设了被忽略 / 传非默认报错",
       basis !== null && ["厂商未公布缺省值", "已标注废弃", "厂商明确忽略该参数", "对非默认值直接返回报错"]
         .every((t) => basis.includes(t)));
@@ -154,9 +154,9 @@ function runChecks(S) {
   /* ---- R2 只读段 + max_tokens 方向 ---- */
   add("P7", "只读段渲染进参数卡（md-injected + injectedElsewhereHTML(m)）",
       detail !== null && detail.includes("md-injected") && detail.includes("injectedElsewhereHTML(m)"));
-  add("P8", "只读段两条腿齐：max_tokens 走统一规格、推理档走资源池",
+  add("P8", "只读段两条腿齐：max_tokens 走统一规格、推理档走资源池（2026-10-06 人话版锚点）",
       inj !== null && inj.includes("max_tokens") && inj.includes("reasoning_effort")
-      && inj.includes("统一规格") && inj.includes("资源池"));
+      && inj.includes("上限代发") && inj.includes("资源池"));
   add("P9", "行内 × 的提示按合并规格的实际值说（改由统一规格注入）",
       row !== null && row.includes("改由统一规格注入"));
   add("P10", "同一条方向在两处回执口径一致（× 与清空都写，命中 ≥2）",
