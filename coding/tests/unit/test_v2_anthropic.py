@@ -337,3 +337,41 @@ def test_device_mid_header_when_present():
 def test_anthropic_version_header_always_present():
     for key in ("sk-a", _jwt()):
         assert AnthropicOutAdapter._headers(key)["anthropic-version"] == ANTHROPIC_VERSION
+
+
+# ============ 入站流式编码器：OpenAI chunk → Anthropic 事件 ============
+
+def test_stream_encoder_emits_official_tool_use_block_type():
+    """🔴 **2026-10-07 实盘抓修的判据**（用户实拍 TraceID c0abb826…）：
+
+    入站流式编码器 `AnthropicStreamEncoder` 在工具调用分支里原本写
+    `"type": "input_tool_use"` —— Anthropic 协议的工具块类型是 **`tool_use`**
+    （官方 discriminator 选项：text/thinking/tool_use/redacted_thinking/…，
+    没有 `input_tool_use`）。ZCode 客户端做严格联合类型校验，收到该块直接
+    `Type validation failed: No matching discriminator` 并让整轮失败。
+
+    该分支此前**零覆盖**（既有测试只测出站方向的 `_StreamTranslator`），
+    所以笔误长期存活。本判据钉：工具块的 `content_block_start.content_block.type`
+    必须是 `tool_use`，且后续增量走 `input_json_delta`。
+    """
+    from model_gateway.api.anthropic import AnthropicStreamEncoder
+
+    enc = AnthropicStreamEncoder(system_model="glm-5.3-flash")
+    events = enc.encode({"id": "msg_x", "choices": [{"delta": {"tool_calls": [
+        {"index": 0, "id": "call_1", "type": "function",
+         "function": {"name": "Bash", "arguments": '{"cmd"'}}]}}]})
+    events += enc.encode({"choices": [{"delta": {"tool_calls": [
+        {"index": 0, "function": {"arguments": ':"ls"}'}}]}}]})
+
+    starts = [e for e in events if e[0] == "content_block_start"]
+    assert starts, "未产生 content_block_start"
+    blk = starts[0][1]["content_block"]
+    assert blk["type"] == "tool_use", (
+        f"工具块类型必须是官方 `tool_use`，实测 {blk['type']!r}"
+        "（写成 input_tool_use 会被 Anthropic 客户端联合类型校验拒绝）")
+    assert blk["id"] == "call_1" and blk["name"] == "Bash"
+
+    # 增量走 input_json_delta（官方工具入参增量类型）
+    deltas = [e for e in events if e[0] == "content_block_delta"]
+    assert deltas and all(d[1]["delta"]["type"] == "input_json_delta" for d in deltas)
+    assert "".join(d[1]["delta"]["partial_json"] for d in deltas) == '{"cmd":"ls"}'

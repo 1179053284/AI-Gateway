@@ -274,8 +274,14 @@ class AnthropicStreamEncoder:
             for tc in delta.get("tool_calls") or []:
                 oi = tc.get("index", 0)
                 if oi not in self.tool_block_of:
+                    # 🔴 2026-10-07 实盘抓修：此处原写 `"input_tool_use"` —— Anthropic
+                    # 协议的工具块类型是 **`tool_use`**（官方 discriminator 选项里没有
+                    # `input_tool_use`）。ZCode 客户端做严格联合类型校验，收到该块直接
+                    # 报 `Type validation failed: ... No matching discriminator` 并整轮
+                    # 失败（用户实拍 TraceID c0abb826…）。同文件非流式 `:186` 与出站
+                    # `anthropic_out.py:191` 用的都是正确写法，仅流式这一处笔误。
                     idx = self._ensure_block("tool_use", events, {
-                        "type": "input_tool_use",
+                        "type": "tool_use",
                         "id": tc.get("id") or f"toolu_{oi}",
                         "name": (tc.get("function") or {}).get("name", "")})
                     self.tool_block_of[oi] = idx
