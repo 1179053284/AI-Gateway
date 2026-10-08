@@ -25,11 +25,20 @@
   不带验证码头直接发请求 —— 这是设计内的降级档，**不是**绕过；上游若强制验证码
   会回 `3007`，如实透传（可重试语义）。
 
+## ✅ 已落地的 3012 防线（2026-10-07，P0 批次；取证见文末「3012 防线实施记录」）
+
 ## ⚠️ 已知缺口（本轮只登记，不在本层实现；详见 M6-5c 报告）
 
-1. **system 身份块**：DSH 实测「缺官方身份块 → `3012 unusual activity`」
+1. **system 身份块**：~~DSH 实测「缺官方身份块 → `3012 unusual activity`」
    （`zcode-identity.ts:1-30` 的准入矩阵）。本层**不做**请求体注入（那是产品策略、
-   不是协议接线；且会覆盖调用方 system）——真实可用性待 D1 实测后裁决。
+   不是协议接线；且会覆盖调用方 system）——真实可用性待 D1 实测后裁决。~~
+   **已裁决并实施（2026-10-07 P0-1）**：10-05/10-06 实盘 31 次 zcode 尝试
+   （10× JSON 3012 + 21× WAF HTML）已把 D1 待裁决点**裁决完毕**——缺身份块的
+   形状与 DSH 矩阵的 ✗ 行完全一致。本层经 `identity.build_identity_blocks()`
+   注入官方块数组（`upstream/zcode/identity.py`），调用方 system 追加在最后。
+   ✅ **D1 已实测通过（2026-10-07 21:55，:8300 真实上游）**：非流式 200 正文
+   「收到」（prompt_tokens=622 ≈ 身份块量级）、流式 SSE 全链正常、事件流水
+   attempts=1 / switch=0 / 零风控。读数存档 `E2E-20261007-zcode-3012-defense.md` §6。
 2. **3007 / 3012 的通道级细分**：现有分类按 HTTP 状态走（§22.5-5 明确
    「通道级 vs 账号级细分留待 D1 实测结论」），本层只保真透传原始错误体。
 3. **流量路径的 3012 无护栏（F-4，M6-6 Fix-γ 登记）**：`circuit.enter()` 现有**两个**调用点
@@ -67,7 +76,7 @@ import httpx
 from model_gateway.adapters.anthropic_out import ANTHROPIC_VERSION, AnthropicOutAdapter
 from model_gateway.adapters.product_out import ProductAccount, ProductOutAdapter
 from model_gateway.core.errors import RISK_CONTROL_TYPE, UpstreamError
-from model_gateway.upstream.zcode import auth, oauth
+from model_gateway.upstream.zcode import auth, business_codes, identity, oauth
 from model_gateway.upstream.zcode import product as zproduct
 from model_gateway.upstream.zcode import quota as zquota
 
@@ -105,6 +114,19 @@ def _fingerprint_enabled() -> bool:
         return False
 
 
+def _risk_shape(body: str) -> str:
+    """P1-5 诊断：错误体的 HTTP 形状 —— `3012-json`（应用层风控）/
+    `waf-html`（前置 WAF/CDN 拦截，未到应用层）/ `other`。
+
+    两层的处置与成因完全不同：WAF-HTML 指向**出口 IP / TLS 指纹 / 行为画像**
+    （换号风暴的直接推手），3012-JSON 指向**请求体内容或账号标记** ——
+    不区分则归因必然错一半。"""
+    head = (body or "").lstrip()[:100].lower()
+    if head.startswith("<!doctype") or head.startswith("<html"):
+        return "waf-html"
+    return "3012-json"
+
+
 def _as_risk_control(e: UpstreamError) -> UpstreamError:
     """把 ZCode 的**通道级风控形状**归一化成 `errors.RISK_CONTROL_TYPE`；认不出就原样返回。
 
@@ -134,12 +156,64 @@ def _as_risk_control(e: UpstreamError) -> UpstreamError:
         if isinstance(data, dict):
             code = data.get("code")
             msg = str(data.get("msg") or data.get("message") or "")
-    if code in _RISK_CODES or zquota.looks_like_risk_control(msg):
+    # 🔴 风控标记只在**真风控形状**上置位（2026-10-08 收紧）。三条判据，逐条有出处：
+    #    ① 信封业务码 `code ∈ {3012, 3007}`（`quota.py:50` / `claim.py`，权威）；
+    #    ② HTTP **405**（`billing.py:59` 把 405 与 3012 并列为风控信号）；
+    #    ③ 响应体命中风控文案（`quota.looks_like_risk_control`，与额度腿同一把尺）。
+    #
+    # ⚠️ ③ 必须**限定在真有响应体**时（`body` 非空）：出站层归一化过的信封错误带
+    # `error_body`，而网络类错误（`status_code=None`、无 body）不得因文案误判 ——
+    # 否则一条 `{"code":2007,"msg":"unusual activity"}`（上游异常，官方归因
+    # `server_error`）会被当成风控「首试即 bench 30min + 不换号」，
+    # 而它本该走 RETRYABLE 重试/换号（2026-10-08 自测抓到）。
+    risk_by_code = code in _RISK_CODES
+    risk_by_text = bool(body) and zquota.looks_like_risk_control(msg)
+    if risk_by_code or risk_by_text or e.status_code == 405:
         e.error_type = e.error_type or RISK_CONTROL_TYPE
-        return e
-    if e.status_code == 405:
-        e.error_type = e.error_type or RISK_CONTROL_TYPE
+        # 🔴 P0-2：置风控标记（分类仍走 RETRYABLE——2026-10-05 用户裁定
+        # 「多次失败应排除出可用范围」的换号语义保留；处置由调度器按标记走
+        # 「首试即 30min bench + 不重试同资源」，见 `core/errors.py` 字段注释）
+        e.risk_control = True
+        _attach_risk_diagnostics(e, body)
     return e
+
+
+#: 本请求是否已注入官方身份块（P1-5 诊断：3012 时报告「身份块已注入」还是
+#: 「未注入」——区分「请求形状问题」与「账号被标记」。ContextVar 与 captcha
+#: 同一模式：适配器实例被并发共享，不能放实例属性）
+_IDENTITY_INJECTED: ContextVar[bool] = ContextVar("zcode_identity_injected", default=False)
+#: 本请求 system 的**实测**字符数（P1-5 诊断：读真实请求体形状，不是常量回显——
+#: DSH 诊断行的立意就是「实测值 vs 官方预期」并排才可判形状漂移）
+_IDENTITY_CHARS: ContextVar[int] = ContextVar("zcode_identity_chars", default=0)
+
+
+def _attach_risk_diagnostics(e: UpstreamError, body: str) -> None:
+    """P1-5 诊断行：3012/WAF 时在错误消息尾部追加可观测上下文。
+
+    形态（照 DSH `zcode-diagnostics.ts` 的立意，但只取本层拿得到的事实）：
+    `〔风控诊断 shape=3012-json identity=已注入(实测 3210 字符) logid=…〕`
+    - `shape` = 应用层 JSON vs WAF HTML（两层处置不同，必须可判）；
+    - `identity` = 本请求是否带官方身份块 + system **实测**字符数
+      （DSH 记录过「身份块达标仍 3012」的残例，账号标记 vs 形状问题的唯一现场证据）；
+    - `logid` = 上游错误体里的 logid 字段（有则带，无则省）。
+    不含凭据、不含 Authorization —— 文本经 `scrub_upstream_text` 出门。
+    """
+    shape = _risk_shape(body)
+    injected = _IDENTITY_INJECTED.get()
+    chars = _IDENTITY_CHARS.get()
+    # 实测 vs 官方预期并排（identity_chars 含调用方 system，恒 ≥ 官方 2898 才正常；
+    # 低于预期 = 身份块被截断/丢失 —— 形状漂移的唯一现场判据）
+    expect = identity.OFFICIAL_IDENTITY_CHARS
+    if injected:
+        diag = (f"〔风控诊断 shape={shape} identity=已注入"
+                f"({chars} 字符,官方段≥{expect})")
+    else:
+        diag = f"〔风控诊断 shape={shape} identity=未注入"
+    with contextlib.suppress(ValueError, TypeError):
+        data = json.loads(body)
+        if isinstance(data, dict) and data.get("logid"):
+            diag += f" logid={data['logid']}"
+    e.args = (f"{e.args[0]} {diag}〕",) if e.args else (f"{diag}〕",)
 
 
 class ZcodeOut(AnthropicOutAdapter, ProductOutAdapter):
@@ -214,10 +288,53 @@ class ZcodeOut(AnthropicOutAdapter, ProductOutAdapter):
                 "或暂时停用该 ZCode 资源") from e
         _CAPTCHA_VAR.set(str(param or ""))
 
-    # —— chat：wrappers 只做「先取验证码，再走基类」——
+    # —— chat：wrappers 只做「先取验证码，再走基类」；身份块经 `_prepare_payload` 注入 ——
+
+    def _envelope_error_class(self, data: dict):
+        """**自有信封**（`200 + {"code":…,"msg":…}`）的业务码 → 错误类别（2026-10-08）。
+
+        ZCode 用 `200 + 信封` 表达业务错误（`1005` 额度耗尽 / `3007` 安全校验 /
+        `3010` 并发上限 …），HTTP 状态本身**没有信息量**。基类原先一律
+        `status_code=None` ⇒ RETRYABLE ⇒ 额度耗尽的号被当"网络抖动"反复打
+        （实测一轮换号连撞 6 个号各 2 次）。
+
+        码表与口径**逐字取自官方归因表**（出处见 `business_codes.py` 模块头）；
+        本方法只做"认了就给类别、没认就返回 None 交回既有逻辑"。
+
+        ⚠️ `3012`（风控）在 `business_codes` 里显式返回 `None` —— 它有自己的通道处置
+        （`_as_risk_control` + `risk_control` 标记），不从这条腿走。
+        """
+        return business_codes.classify_business_code(data.get("code"))
+
+    def _prepare_payload(self, payload: dict) -> dict:
+        """给 Anthropic 形状 payload 注入官方身份块（P0-1；缺它 = 405+3012）。
+
+        🔴 这里的「覆盖」是**垫前缀**不是替换：`openai_to_anthropic` 把调用方
+        system 拼成单串（`anthropic_out.py:212-213`），这里取出它、作为最后一块
+        追加在官方身份块之后 —— 上游检查看的是**前缀结构**（首块逐字 cliPrefix），
+        调用方内容必须落在身份块之后（DSH `zcode-identity.ts:98-101`）。
+
+        幂等：payload 已带官方身份块（重复包装防御）时原样返回。
+        同步置位 `_IDENTITY_INJECTED` / `_IDENTITY_CHARS`（P1-5 诊断行读它们）。
+        """
+        caller = payload.get("system")
+        if isinstance(caller, list) and identity.has_official_identity(caller):
+            _IDENTITY_INJECTED.set(True)  # 已带官方块（防御重复包装 / 外部已注入）
+            _IDENTITY_CHARS.set(identity.identity_chars(caller))
+            return payload
+        caller_text = None
+        if isinstance(caller, str) and caller.strip():
+            caller_text = caller
+        payload = dict(payload)
+        payload["system"] = identity.build_identity_blocks(caller_text)
+        _IDENTITY_INJECTED.set(True)
+        _IDENTITY_CHARS.set(identity.identity_chars(payload["system"]))
+        return payload
 
     async def chat_stream(self, key: str, vendor_model: str, body: dict,
                           timeout: float) -> AsyncIterator[dict]:
+        _IDENTITY_INJECTED.set(False)   # 每请求复位（P1-5 诊断事实位）
+        _IDENTITY_CHARS.set(0)
         await self._mint_captcha()
         try:
             async for chunk in super().chat_stream(key, vendor_model, body, timeout):
@@ -227,6 +344,8 @@ class ZcodeOut(AnthropicOutAdapter, ProductOutAdapter):
 
     async def chat_nonstream(self, key: str, vendor_model: str, body: dict,
                              timeout: float) -> dict:
+        _IDENTITY_INJECTED.set(False)   # 每请求复位（P1-5 诊断事实位）
+        _IDENTITY_CHARS.set(0)
         await self._mint_captcha()
         try:
             return await super().chat_nonstream(key, vendor_model, body, timeout)

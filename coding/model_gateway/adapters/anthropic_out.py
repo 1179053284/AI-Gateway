@@ -21,12 +21,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 from typing import Any, AsyncIterator, Callable
 
 import httpx
 
-from model_gateway.core.errors import UpstreamError
+from model_gateway.core.errors import ErrorClass, UpstreamError
 from model_gateway.core.resources import normalize_base_url
 
 #: Anthropic 版本头（官方固定值）
@@ -516,24 +517,62 @@ class AnthropicOutAdapter:
             status_code=None,
         )
 
+    def _envelope_error_class(self, data: dict) -> ErrorClass | None:
+        """**自有信封**（2xx + `{code,msg}`）的业务码 → 错误类别；**认不出返回 `None`**。
+
+        基类缺省 = `None`（不认识任何产品的码表，保持中性）；产品子类按**取证过的**
+        官方归因表覆写（ZCode 见 `upstream/zcode/business_codes.py`）。
+
+        🔴 为什么必须有这个钩子（2026-10-08 实盘）：`_shape_error` 原先对**所有**
+        「200 + 自有信封」一律 `status_code=None` ⇒ `RETRYABLE`。而 ZCode 的 `1005`
+        （额度耗尽）在该路径下变成"网络抖动"⇒ 短冷却 + 计 C，同一条额度尽的号被反复打
+        （实测一轮换号连撞 6 个号各 2 次）；正确动作是**长冷却**（官方
+        `providerBusinessError.ts` 明写 `1005 → refresh-quota`，DSH `trae-credits.ts:65`
+        同码 → 43200s）。**不区分的"一律可重试"与"一律不可重试"是同一类错误**。
+        """
+        return None
+
     def _shape_error(self, status: int, content_type: str, text: str) -> UpstreamError:
         """🔴 2xx 且是 JSON，但**看不出是一条 Anthropic 消息**（`{code:…, msg:…}` 这类自有信封）
-        → `status_code=None`（= RETRYABLE），而不是当成功返回空正文。
+        → 错误（默认 `status_code=None` = RETRYABLE），而不是当成功返回空正文。
 
         与上面 `_non_json_error` 同一条立意（§18.2 ⑤ / §22.8-5「状态码 200 ≠ 取到了」）：
         2026-10-05 实盘审计的形状是「上游用 200 + 自有信封表达风控/错误」，旧实现把它当正常回答 ⇒
         客户端拿到 `content:""` + `finish_reason=stop`、事件行记 `success`、`note_success` 还把连续
         失败计数**清零**（= 一条永远健康的僵尸通道）。落 `None` 才进 C 计数与冷却、才换号。
+
+        🔴 2026-10-08：**按信封业务码细分**（`_envelope_error_class` 钩子）——
+        额度耗尽（1005）与网络抖动不是一回事，前者要长冷却、后者要短重试。
+        认不出业务码时保持既有兜底（`status_code=None` → RETRYABLE），不猜。
         """
+        cls: ErrorClass | None = None
+        with contextlib.suppress(ValueError, TypeError):
+            data = json.loads(text)
+            if isinstance(data, dict) and "code" in data:
+                cls = self._envelope_error_class(data)
         return UpstreamError(
             f"upstream {status} 非消息形状 (content-type={content_type or '?'}): {text[:160]}",
             status_code=None,
+            error_body=text,
+            # 显式类别（不是把类别名编进字符串再解析 —— 那是绕路）。
+            # 分类器第 1.5 步直接采信；`error_rules` 的用户覆写仍排在它前面。
+            error_class=cls,
         )
+
+    def _prepare_payload(self, payload: dict) -> dict:
+        """出站前对 Anthropic 形状 payload 的加工钩子（默认原样返回）。
+
+        子类按产品差异覆写（ZCode 身份块注入 `upstream/zcode/out.py`）。
+        必须在 `openai_to_anthropic` **之后**调用 —— 产品的准入判据看的是
+        Anthropic 请求体的最终形状，不能在 OpenAI 形状的 body 上加工。
+        """
+        return payload
 
     # —— chat 非流式 ——
     async def chat_nonstream(self, key: str, vendor_model: str, body: dict,
                              timeout: float) -> dict:
         payload = openai_to_anthropic(body, vendor_model)
+        payload = self._prepare_payload(payload)
         payload.pop("stream", None)
         try:
             resp = await self._client.post(
@@ -569,6 +608,7 @@ class AnthropicOutAdapter:
                           timeout: float) -> AsyncIterator[dict]:
         payload = openai_to_anthropic(body, vendor_model)
         payload["stream"] = True
+        payload = self._prepare_payload(payload)
         translator = _StreamTranslator(vendor_model)
         try:
             async with self._client.stream(

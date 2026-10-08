@@ -13,6 +13,11 @@ dependencies = [
     "pyyaml>=6.0",
     # v2.0 §12.4/§17：ZCode 凭据 `enc:v1` 为 AES-256-GCM，stdlib 无 AES → 需此依赖
     "cryptography>=44.0",
+    # 2026-10-07 P1-4：ZCode TLS 指纹伪装（`gateway.zcode.fingerprint=true` 走
+    # `upstream/zcode/auth.py::build_client`）。未安装时自动降级 httpx 并告警
+    # （`fingerprint_available()` 自检），不阻断出站。10-06 实盘 21 次 WAF HTML 405
+    # 的前瞻防御；T5a/T5b 实测 curl_cffi 连通 200/401-JSON。
+    "curl_cffi>=0.7",
     # M7-C1（2026-10-01）扫码型接入：`qr` 型登录要**服务端出图**（PNG data URI 进
     # `Challenge.qr_payload`），否则界面只能把内容串印成一行字让用户"扫这行字"（本轮缺陷）。
     # 选 segno 的理由：纯 Python、**零传递依赖**、MIT、无需 Pillow 即可写 PNG/SVG/data URI，

@@ -313,6 +313,61 @@ class Scheduler:
             return 404
         return 503
 
+    def _bench_risk_control(self, resource, snap, summary: str) -> None:
+        """风控梯度对齐冷却（P0-2，2026-10-07；ZCode 3012/WAF 专用）。
+
+        上游 3012 惩罚梯度（DSH `zcode-identity.ts:42` 实测）：30 分钟；24h 内
+        第 3 次 → 24h；第 5 次 → 账号停用。旧路径走通用 RETRYABLE 分支：
+        `note_failure` 累 C，C≥y=2 才 bench —— 单账号一次 3012 后**还会再打一次**
+        （帮它向梯度第 2/3 档前进），且 bench 落 5h plan 档（`cooldown_seconds_plan
+        =18000`），把「30 分钟观察期」的账号整段退出轮转 5 小时。
+
+        处置 = **首试即 bench 30 分钟**（对齐上游第一档；`bench` 只延长不缩短，
+        `resources.py:688-722`，故 5h 档若已在冷却不会被剪短）+ 仍换号（保留
+        2026-10-05 用户裁定「多次失败应排除出可用范围」的语义——排除的是
+        *这一条*被标记资源，不是整池）。
+        """
+        self.runtime.resources.bench(resource, self.RISK_CONTROL_COOLDOWN_SECONDS)
+        # last_error 由 bench 所有权裁决（`bench` 返回 extended 才有资格写，
+        # 否则更长的旧冷却还在说话——见 `bench` 不变量三）。这里记一次日志即可。
+        logger.warning(
+            "[风控] %s：%s —— 首试即冷却 %d 分钟（对齐上游 3012 惩罚第一档），"
+            "本请求不再重试该资源",
+            getattr(resource, "resource_id_str", resource), summary or "risk_control",
+            self.RISK_CONTROL_COOLDOWN_SECONDS // 60)
+
+    #: 风控冷却秒数 = 上游 3012 惩罚第一档（30 分钟，DSH `zcode-identity.ts:42`）
+    RISK_CONTROL_COOLDOWN_SECONDS = 1800
+
+    #: 同供应商 failover 轮内最小间隔（P0-3；10-06 实测 2 秒横扫 13 个 zcode 号
+    #: = WAF 眼里的教科书级 "unusual activity"。DSH 同目的参数 `modelGapMs=350`）
+    FAILOVER_VENDOR_GAP_SECONDS = 0.5
+    #: 单请求对同一供应商的尝试上限（P0-3；防换号风暴烧穿整池）
+    FAILOVER_VENDOR_MAX_ATTEMPTS = 3
+
+    def _vendor_throttle(self, vendor: str, counts: dict[str, int],
+                         last: dict[str, float]) -> tuple[bool, str | None]:
+        """failover 轮内的同供应商节流（P0-3）；返回 (是否拦截, 原因)。
+
+        🔴 为什么在**供应商**粒度而不是资源粒度：2026-10-06 的事件 JSONL 实测，
+        3 条请求的 failover 在 2 秒内横扫 13 个 zcode 号（logid 秒级递增）——
+        同一出口 IP、同一 TLS 指纹、秒级连打十几个不同账号，正是 WAF 层
+        （405 + doctype HTML）与 3012 梯度加重的直接推手。上游风控看的是
+        **来源一致性**（同 IP 同指纹），供应商粒度才对得上这层风险。
+
+        拦截不产生失败记账（与承载避开同语义：不该把「没发出去」记成故障）。
+        """
+        n = counts.get(vendor, 0)
+        if n >= self.FAILOVER_VENDOR_MAX_ATTEMPTS:
+            return True, (f"已达单请求同供应商尝试上限"
+                          f"（{self.FAILOVER_VENDOR_MAX_ATTEMPTS} 次，防换号风暴）")
+        if n > 0:
+            gap = self.FAILOVER_VENDOR_GAP_SECONDS - (time.monotonic() - last.get(vendor, 0.0))
+            if gap > 0:
+                return True, (f"同供应商尝试间隔不足"
+                              f" {self.FAILOVER_VENDOR_GAP_SECONDS:.1f}s（防秒级连打触发风控）")
+        return False, None
+
     def _emit_switch(self, ctx: CallCtx, from_res: str, to_res: str | None,
                      reason_cls: str, err_summary: str | None, was_cooldown: bool) -> None:
         ev = {
@@ -425,6 +480,10 @@ class Scheduler:
         # 延迟落盘的切换事件（from_res, reason_cls, err, was_cooldown）——tech §4.8
         # to_resource = 实际补位资源，须等下一轮选路后才能确定
         pending_switch: tuple[str, str, str | None, bool] | None = None
+        # 🔴 P0-3 同供应商节流状态（防换号风暴；语义见 `_vendor_throttle`）：
+        #    与流式侧对称，两条路径各持一份（同请求内互不共享）
+        vendor_attempts: dict[str, int] = {}
+        vendor_last_try: dict[str, float] = {}
 
         while True:
             if await ctx.client_disconnected():
@@ -445,6 +504,23 @@ class Scheduler:
                     "ALL_OVER_CAPACITY" if (capacity_rejected and not attempted)
                     else "NO_RESOURCE")
                 break
+            # 🔴 P0-3 同供应商节流（防换号风暴）：拦截 = 归还这条、让它回到
+            #    `tried` 之外（不算失败、不进机器码集合 —— 与承载避开同语义：
+            #    「没发出去」不是故障）。间隔不足时**睡到间隔够**再打这条，
+            #    而不是浪费掉一次 pick（睡被断连打断则按断连处理）。
+            vendor = getattr(resource, "vendor", "") or ""
+            blocked, why = self._vendor_throttle(vendor, vendor_attempts, vendor_last_try)
+            if blocked and why and why.startswith("同供应商尝试间隔"):
+                await self._sleep_interruptible(self.FAILOVER_VENDOR_GAP_SECONDS, ctx)
+            elif blocked:
+                self.runtime.resources.release_quota(resource)
+                self.runtime.resources.release(resource)
+                logger.info("[选路] %s/%s：%s", ctx.system_model,
+                            resource.resource_id_str, why)
+                tried.add(resource.resource_id)
+                continue
+            vendor_attempts[vendor] = vendor_attempts.get(vendor, 0) + 1
+            vendor_last_try[vendor] = time.monotonic()
             tried.add(resource.resource_id)
             # 🔴 出站承载校验（债务 Q33-债6-②，tech §22.5-9 第①条）：已知这条资源装不下
             #    本次请求 ⇒ 立刻归还、换下一条，**不产生任何失败记账**（一次成功的避开
@@ -527,6 +603,38 @@ class Scheduler:
                                 resource, self.runtime.resources.cooldown_seconds_for(resource, snap))
                             exits.append("QUOTA")
                             switch = ("QUOTA", True)
+                            break
+                        # 🔴 资源级不可承接（2026-10-08）：上游明确否认**这条资源**对本模型
+                        #    有资格（未订阅/地域封锁）—— 请求本身没错，换号就能成。
+                        #    处置 = 立即换号 + 冷却这条 (资源, 模型)，但**不 disable**
+                        #    （该账号的其它模型照常可用）、**不计 C**（这不是健康度信号；
+                        #    与承载避开同语义：一条确定性的"这条不行"不该把号越用越窄）。
+                        #    为什么不在同资源重试：上游是确定性否认，重试只是多打一次
+                        #    （区别于 QUOTA 的 `quota_retry` 短退避）。
+                        #    冷却用既有 `cooldown_seconds_for`（api 档 60s）⇒ 自动恢复；
+                        #    不用 `invalidate` 那种终态（订阅/地域会变，且界面把 invalid
+                        #    显示成「模型名无效」会误导）。
+                        if cls is ErrorClass.RESOURCE_UNAVAILABLE:
+                            rec.errors.append(summary or "resource_unavailable")
+                            owned = self.runtime.resources.bench(
+                                resource, self.runtime.resources.cooldown_seconds_for(resource, snap))
+                            if owned:
+                                # `bench` 不变量三：只有**取得冷却所有权**的一方才有资格写
+                                # 「最近错误」（否则会覆盖更长的旧冷却的成因）。界面
+                                # 「最近错误」列读它 —— 空着等于把用户流放到一个不存在的地方。
+                                resource.last_error = summary or "resource_unavailable"
+                            exits.append("RESOURCE_UNAVAILABLE")
+                            switch = ("RESOURCE_UNAVAILABLE", True)
+                            break
+                        # 🔴 风控（P0-2，ZCode 3012/WAF）：首试即 30min bench + 不重试
+                        #    同资源（同资源再打 = 帮它多记一次 3012，梯度 3 次→24h/5 次→停用）。
+                        #    放在通用 RETRYABLE 之前 —— 语义是「这条通道被上游标记」，
+                        #    与普通可重试（网络抖动）的处置完全不同。换号语义保留。
+                        if getattr(e, "risk_control", False):
+                            rec.errors.append(summary or "risk_control")
+                            self._bench_risk_control(resource, snap, summary or "risk_control")
+                            exits.append("RISK_CONTROL")
+                            switch = ("RISK_CONTROL", True)
                             break
                         # RETRYABLE：计入 C（跨请求累计），y 先判定（§5.2）；
                         # no_failover（如 URL 下载失败）仅同资源重试，m 耗尽即终止（tech §4.2，INT-31）
@@ -683,6 +791,9 @@ class Scheduler:
         # 延迟落盘的切换事件（from_res, reason_cls, err, was_cooldown）——tech §4.8
         # to_resource = 实际补位资源，须等下一轮选路后才能确定
         pending_switch: tuple[str, str, str | None, bool] | None = None
+        # 🔴 P0-3 同供应商节流状态（防换号风暴；与非流式侧对称）
+        vendor_attempts: dict[str, int] = {}
+        vendor_last_try: dict[str, float] = {}
 
         try:
             logged = False  # 中途失败分支已先行落盘（yield ERROR_EVENT 前防竞态）
@@ -705,6 +816,20 @@ class Scheduler:
                         "ALL_OVER_CAPACITY" if (capacity_rejected and not attempted)
                         else "NO_RESOURCE")
                     break
+                # 🔴 P0-3 同供应商节流（与非流式同判；见 `_vendor_throttle` docstring）
+                vendor = getattr(resource, "vendor", "") or ""
+                blocked, why = self._vendor_throttle(vendor, vendor_attempts, vendor_last_try)
+                if blocked and why and why.startswith("同供应商尝试间隔"):
+                    await self._sleep_interruptible(self.FAILOVER_VENDOR_GAP_SECONDS, ctx)
+                elif blocked:
+                    self.runtime.resources.release_quota(resource)
+                    self.runtime.resources.release(resource)
+                    logger.info("[选路·流式] %s/%s：%s", ctx.system_model,
+                                resource.resource_id_str, why)
+                    tried.add(resource.resource_id)
+                    continue
+                vendor_attempts[vendor] = vendor_attempts.get(vendor, 0) + 1
+                vendor_last_try[vendor] = time.monotonic()
                 tried.add(resource.resource_id)
                 # 🔴 承载校验与**非流那条同一条判据**（`_capacity_reject`），不在此重复
                 #    规则；流式侧必须在**任何字节提交前**避开，否则失败无法回退。
@@ -856,6 +981,24 @@ class Scheduler:
                                     resource, self.runtime.resources.cooldown_seconds_for(resource, snap))
                                 exits.append("QUOTA")
                                 switch = ("QUOTA", True)
+                                break
+                            # 🔴 资源级不可承接（与非流式**同一条判据与处置**，2026-10-08）
+                            if cls is ErrorClass.RESOURCE_UNAVAILABLE:
+                                rec.errors.append(summary or "resource_unavailable")
+                                owned = self.runtime.resources.bench(
+                                    resource, self.runtime.resources.cooldown_seconds_for(resource, snap))
+                                if owned:
+                                    # 与非流式同判：只有取得冷却所有权才写「最近错误」
+                                    resource.last_error = summary or "resource_unavailable"
+                                exits.append("RESOURCE_UNAVAILABLE")
+                                switch = ("RESOURCE_UNAVAILABLE", True)
+                                break
+                            # 🔴 风控（P0-2，与非流式同判）：首试即 30min bench + 不重试同资源
+                            if getattr(e, "risk_control", False):
+                                rec.errors.append(summary or "risk_control")
+                                self._bench_risk_control(resource, snap, summary or "risk_control")
+                                exits.append("RISK_CONTROL")
+                                switch = ("RISK_CONTROL", True)
                                 break
                             rec.errors.append(summary or "retryable")
                             c = self.runtime.resources.note_failure(resource, summary or "retryable")

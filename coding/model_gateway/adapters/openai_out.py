@@ -197,14 +197,19 @@ class OpenAIOutAdapter:
             raise self._http_error(resp)
         return resp.json()
 
-    @staticmethod
-    def _http_error(resp: httpx.Response) -> UpstreamError:
-        text = resp.text
-        from model_gateway.core.errors import extract_error_type
-        return OpenAIOutAdapter._http_error_from_text(resp.status_code, text)
+    def _http_error(self, resp: httpx.Response) -> UpstreamError:
+        """非 200 → `UpstreamError`（**可覆写钩子**，产品层可在本层重解释状态码语义）。
 
-    @staticmethod
-    def _http_error_from_text(status_code: int, text: str) -> UpstreamError:
+        🔴 2026-10-08：本方法原为 `@staticmethod` 且**硬编码**调
+        `OpenAIOutAdapter._http_error_from_text` ⇒ 子类覆写 `_http_error_from_text`
+        对**非流式**路径不生效（流式路径 `:152` 是 `self.` 调用，能生效）——
+        「流式与非流式语义分叉」是同一条缝最危险的形态（cline 的 403 语义重解释
+        必须两条路径一致）。现改为实例方法并走 `self.`，钩子才真正多态。
+        """
+        return self._http_error_from_text(resp.status_code, resp.text)
+
+    def _http_error_from_text(self, status_code: int, text: str) -> UpstreamError:
+        """非 200（已读文本形态）→ `UpstreamError`；`error_type` 由通用提取器取值。"""
         from model_gateway.core.errors import extract_error_type
         return UpstreamError(
             f"upstream {status_code}",

@@ -162,9 +162,16 @@ class ErrorRule(BaseModel):
 
     type 为空表示该状态码全部错误体；type 精确匹配优先于 HTTP 通用映射。
     典型用例：商汤 failed_precondition_error 覆写为 RETRYABLE。
+
+    🔴 **`http=0` = 「无 HTTP 状态码」哨兵**（2026-10-08）：有些产品用
+    **`200 + 自有信封`** 表达业务错误（ZCode 的 `{"code":1005,…}`），出站层把它
+    标成 `status_code=None`（HTTP 状态本身没有信息量）。这类错误此前**无法被
+    `error_rules` 覆写**（规则要求 `http` 是 400-599）—— 而"用户配置必须能覆写
+    一切默认判断"是本项目的红线（铁律 4）。`0` 即那个哨兵：配 `http: 0` +
+    `type: "…"` 就能覆写信封类错误；既有 400-599 的配置行为一字不变。
     """
 
-    http: int = Field(ge=400, le=599)
+    http: int = Field(ge=0, le=599)
     type: str = ""
     error_class: ErrorClass = Field(alias="class")
 

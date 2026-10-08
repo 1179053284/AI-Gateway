@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import time
 
 import pytest
 from starlette.applications import Starlette
@@ -101,8 +102,17 @@ class FakeZcode:
             return JSONResponse(beh.get("payload") or {"code": 3012, "msg": "unusual activity"},
                                 status_code=beh["status"])
         if kind == "envelope200":
-            # 上游用 **200 + 自有信封** 表达风控（billing/product 两条腿读的正是这种）
-            return JSONResponse({"code": beh.get("code", 3012), "msg": "unusual activity"})
+            # 上游用 **200 + 自有信封** 表达业务错误（billing/product 两条腿读的正是这种）。
+            # 🔴 `msg` 按码给对应文案（2026-10-08）：原先一律写死 `"unusual activity"`，
+            #    而那是**风控文案**（`quota.looks_like_risk_control` 会命中）⇒
+            #    任何用本夹具的码（如 `2007` 上游异常）都会被误判成风控。
+            #    夹具的文案必须与它模拟的业务码语义一致，否则测的不是被测对象。
+            _code = beh.get("code", 3012)
+            _msgs = {3012: "request has been blocked due to unusual activity.",
+                     2007: "upstream internal error",
+                     1005: "exceed quota limit"}
+            return JSONResponse({"code": _code,
+                                 "msg": _msgs.get(_code, "envelope error")})
         if kind == "slow":
             await asyncio.sleep(beh["seconds"])
             return JSONResponse(_msg(body))
@@ -263,7 +273,14 @@ async def test_z3_3012_in_http_400_rotates_and_counts(zcode_upstream, make_gatew
     """**契约（修掉 D-1 之后）**：一个号回 `400 {"code":3012}` = **账号级风控状态**，
     与 429 同类 ⇒ 归一化成 `errors.RISK_CONTROL_TYPE` → RETRYABLE ⇒ 计 C、换号，客户端拿成功。
     旧读数（客户端 400、`switch_count=0`、`C=0`、其余 4 个健康号一次没试）作废，
-    见 `docs/changes/e2e-records/E2E-20261005-zcode-glm-flash-failover-test.md` §3 D-1。"""
+    见 `docs/changes/e2e-records/E2E-20261005-zcode-glm-flash-failover-test.md` §3 D-1。
+
+    🔴 **2026-10-07 P0-2 升级**：判据从「计 C」改为「**首试即 bench 30 分钟**」——
+    对齐上游 3012 惩罚第一档（DSH `zcode-identity.ts:42`：30min→24h 内 3 次→24h→
+    5 次→停用）。旧路径（计 C、C≥y=2 才 bench 5h plan 档）意味着同一号还会**再打
+    一次**（帮它向梯度第 2/3 档前进），且 5h 冷却把「30 分钟观察期」的账号整段
+    退出轮转 5 小时。风控不再走 `note_failure`，C 语义保留给普通可重试。
+    """
     _login_all()
     zcode_upstream.set_all("ok")
     zcode_upstream.behavior[MIDS["zc-1"]] = {"kind": "http", "status": 400,
@@ -276,7 +293,11 @@ async def test_z3_3012_in_http_400_rotates_and_counts(zcode_upstream, make_gatew
     assert len(zcode_upstream.hits) >= 2, zcode_upstream.mids_hit()
     assert zcode_upstream.mids_hit()[0] == MIDS["zc-1"]
     st = gw.resource("res-z1", VENDOR_MODEL)
-    assert st.C >= 1, f"风控未计 C：{st.C}"
+    # 🔴 新契约：首试即 30min bench（允许 100s 判据窗口漂移）
+    assert st.status == "cooldown", f"风控未冷却：{st.status}"
+    rem_s = st.cooldown_until - time.monotonic()
+    assert 1700 <= rem_s <= 1800, f"风控冷却应 ≈30min，实测 {rem_s:.0f}s"
+    assert st.C == 0, f"风控不应计 C（走 bench 而非 note_failure）：C={st.C}"
     ev = await _event(gw)
     assert ev["switch_count"] >= 1, ev
 
@@ -520,8 +541,11 @@ async def test_z17_risk_control_rotates_at_live_x_8(zcode_upstream, make_gateway
 
 
 async def test_z18_bad_account_gets_benched_and_stops(zcode_upstream, make_gateway, client):
-    """**契约（修 D-1 的稳态那一半）**：持续风控的号在累计到 y 之后**被移出生效集**，
-    不再每轮轮转再撞一次（旧读数：`C=0 status=active`，8 条里撞 ≥2 次、永远占名额）。"""
+    """**契约（2026-10-07 P0-2 升级后）**：持续风控的号**首试即被移出生效集**
+    （30min bench，对齐上游 3012 惩罚第一档，DSH `zcode-identity.ts:42`），
+    不再每轮轮转再撞一次。旧契约「累计到 y 之后移出」作废——风控不走
+    `note_failure`/C 计数（C 语义保留给普通可重试）；旧读数
+    （`C=0 status=active`，8 条里撞 ≥2 次、永远占名额）作废。"""
     _login_all()
     zcode_upstream.set_all("ok")
     zcode_upstream.behavior[MIDS["zc-1"]] = {"kind": "http", "status": 400,
@@ -531,8 +555,9 @@ async def test_z18_bad_account_gets_benched_and_stops(zcode_upstream, make_gatew
     for _ in range(8):
         assert (await _ask(client, gw)).status_code == 200
     st = gw.resource("res-z1", VENDOR_MODEL)
-    assert st.C >= 2 and st.status == "cooldown", (
+    assert st.status == "cooldown", (
         f"坏号未被移出：C={st.C} status={st.status}")
+    assert st.C == 0, f"风控不应计 C（走 bench 而非 note_failure）：C={st.C}"
     mid = MIDS["zc-1"]
     before = zcode_upstream.mids_hit().count(mid)
     for _ in range(4):
@@ -542,9 +567,14 @@ async def test_z18_bad_account_gets_benched_and_stops(zcode_upstream, make_gatew
 
 async def test_z19_envelope_counts_failure_instead_of_clearing(zcode_upstream, make_gateway, client):
     """**契约（修 D-2 的稳态那一半）**：200 空信封不再走成功支路 ⇒ **不会**把连续失败计数清零，
-    而是照计 C（旧读数：白盒把 C 置到 3，一次空信封就把它洗成 0 = 观测面永远健康）。"""
+    而是照计 C（旧读数：白盒把 C 置到 3，一次空信封就把它洗成 0 = 观测面永远健康）。
+
+    🔴 **2026-10-08 判据随实现前进**：原用 `code=3012`，而 3012 现在走**自己的通道处置**
+    （`risk_control` 标记 → 首试即 bench，**不进 C 计数**，见 `test_z3`/`test_z18`）。
+    本判据要守的原意是「**空信封不被洗白成成功**」⇒ 换用真正该计 C 的码（`2007`
+    上游异常，官方归因 `server_error` ⇒ RETRYABLE ⇒ 计 C），原意一字不改。"""
     _login_all()
-    zcode_upstream.set_all("envelope200", code=3012)
+    zcode_upstream.set_all("envelope200", code=2007)
     gw = await make_gateway(_cfg(zcode_upstream.port, x=1, y=9, m=0))
 
     st = gw.resource("res-z1", VENDOR_MODEL)
@@ -754,3 +784,52 @@ async def test_z27_above_floor_keeps_dispatching(zcode_upstream, make_gateway, c
     gw.runtime.resources._cursor[MODEL] = 0
     assert (await _ask(client, gw)).status_code == 200
     assert zcode_upstream.mids_hit()[0] == MIDS["zc-1"]
+
+
+# ============ ③ 同供应商节流（2026-10-07 P0-3：防换号风暴） ============
+
+async def test_z21_failover_vendor_gap_paces_account_switching(
+        zcode_upstream, make_gateway, client):
+    """**契约（P0-3）**：同请求 failover 换号时，同供应商连续两次出站之间
+    必有 ≥`FAILOVER_VENDOR_GAP_SECONDS`（0.5s）间隔 —— 2026-10-06 实盘 3 条请求
+    2 秒横扫 13 个 zcode 号（logid 秒级递增）= WAF 层 405 HTML 的直接推手；
+    DSH 同目的参数 `modelGapMs=350`。判据 = 假上游记录的前两次命中间隔。"""
+    _login_all()
+    # 全部 500（服务端错误 ⇒ RETRYABLE ⇒ 逐号换；m=0：一资源一试）
+    for mid in MIDS.values():
+        zcode_upstream.behavior[mid] = {"kind": "http", "status": 500,
+                                        "payload": {"error": "internal"}}
+    gw = await make_gateway(_cfg(zcode_upstream.port, x=1, y=99, m=0,
+                                 attempt_timeout=2, budget=60.0))
+
+    t0 = time.monotonic()
+    resp = await _ask(client, gw)
+    elapsed = time.monotonic() - t0
+    assert resp.status_code == 503, resp.text   # 全池 500 ⇒ 终局 503
+    hits = zcode_upstream.hits
+    # 打满 3 次（FAILOVER_VENDOR_MAX_ATTEMPTS=3）后同供应商拦截 ⇒ 不再横扫全池
+    assert 2 <= len(hits) <= 3, f"尝试数应被供应商上限钳制，实测 {len(hits)}"
+    # 多次命中之间必有节流间隔（≥0.5s×(n-1) 扣除上游处理时间）
+    if len(hits) >= 2:
+        assert elapsed >= 0.5 * (len(hits) - 1), (
+            f"换号无节流间隔：{len(hits)} 次出站仅 {elapsed:.2f}s")
+
+
+async def test_z22_risk_control_first_hit_benches_without_c(
+        zcode_upstream, make_gateway, client):
+    """**契约（P0-2 单元级钉）**：3012 风控**首试**即 30min bench —— 不等 C≥y。
+    m=0（一资源一试）、y=99（永不因计数触发 bench）下仍必须 cooldown ⇒ 证明
+    冷却来自风控标记分支而非通用 RETRYABLE 路径。"""
+    _login_all()
+    zcode_upstream.set_all("ok")
+    zcode_upstream.behavior[MIDS["zc-1"]] = {"kind": "http", "status": 405,
+                                             "payload": {"code": 3012, "msg": "unusual activity"}}
+    gw = await make_gateway(_cfg(zcode_upstream.port, x=1, y=99, m=0))
+
+    resp = await _ask(client, gw)
+    assert resp.status_code == 200, f"风控没被换号吸收：{resp.text[:200]}"
+    st = gw.resource("res-z1", VENDOR_MODEL)
+    assert st.status == "cooldown", f"首试未 bench：{st.status}"
+    rem_s = st.cooldown_until - time.monotonic()
+    assert 1700 <= rem_s <= 1800, f"应 bench 30min，实测 {rem_s:.0f}s"
+    assert st.C == 0, f"风控不应计 C：{st.C}"

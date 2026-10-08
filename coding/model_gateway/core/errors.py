@@ -101,6 +101,11 @@ class ErrorClass(str, Enum):
     NOT_FOUND = "NOT_FOUND"
     QUOTA = "QUOTA"
     CANCELED = "CANCELED"
+    #: **资源级不可承接**：上游明确否认**这条资源**对本模型有资格（未订阅 / 地域封锁），
+    #: 但请求本身没错 —— 换一条资源就能成。与 `BAD_REQUEST` 的分界是本质的：
+    #: `BAD_REQUEST` = 请求属性有问题（换谁都不行，如商汤 403「不支持当前语言」），
+    #: 故原样透传、不换号；本类 = 资源属性有问题，故**换号续跑**。
+    RESOURCE_UNAVAILABLE = "RESOURCE_UNAVAILABLE"
 
 
 #: 通道级风控的**归一化错误 type**（各上游自己那套信封里的码，由出站层翻译成这一个）。
@@ -109,6 +114,22 @@ class ErrorClass(str, Enum):
 #: 一条坏号永远占着活跃组名额、每轮轮转再把失败交给用户一次
 #: （2026-10-05 用户裁定：「没额度和多次请求失败，就应该排除到可用调用范围」）。
 RISK_CONTROL_TYPE = "zcode_risk_control"
+
+#: **资源级不可承接**的归一化错误 type（产品层翻译后交本分类器；2026-10-08）。
+#:
+#: 为什么需要它（缺陷取证，2026-10-07 实盘）：`glm-5.3-flash` 池里挂了一条 cline 资源
+#: （`cline-pass/glm-5.3-flash`），该账号**有余额但没订阅该模型计划**，上游恒回
+#: `403 {"error":{"code":"ENTITLEMENT_ERROR","message":"… not subscribed to required model plan"}}`。
+#: 而 403 在 `classify()` 里落到 `BAD_REQUEST` 兜底 ⇒ **不换号**、请求直接失败，
+#: 池里 8 条健康资源（zcode/loomy）全程闲置 —— 实测 cline 尝试 **5/5 全失败**、
+#: 6 次采样 **2 次**把 403 交给客户端。这与 qoder 已修复的
+#: 「402 落 BAD_REQUEST ⇒ 不冷却也不换号」（`upstream/qoder/out.py:180-182`）**是同一类缺陷**。
+#:
+#: 判据来源（逐字取证，不扩写）：DSH `isClineRegionForbidden`（`cline-adapter.ts:969-978`
+#: 的四个特征词）＋ `cline-rate-limit.ts:240-241` 的 `ENTITLEMENT_ERROR` 实录
+#: （同一账号 `/users/me/plan/usage-limits` 回 `404 no plan history found for user`
+#: ⇒ 确属**订阅状态**，不是凭据、也不是限流）。
+RESOURCE_UNAVAILABLE_TYPE = "resource_unavailable"
 
 # 商汤官方错误 type → 默认分类（PRD FR-1.8；UT-01 断言口径）
 VENDOR_TYPE_TABLE: dict[str, ErrorClass] = {
@@ -143,12 +164,27 @@ class UpstreamError(Exception):
         error_body: str | None = None,
         error_type: str | None = None,
         no_failover: bool = False,
+        risk_control: bool = False,
+        error_class: "ErrorClass | None" = None,
     ):
         super().__init__(scrub_upstream_text(message) if isinstance(message, str) else message)
         self.status_code = status_code
         self.error_body = scrub_upstream_text(error_body)
         self.error_type = error_type
         self.no_failover = no_failover
+        # 🔴 通道级风控标记（2026-10-07 P0-2，ZCode 3012/WAF 专用）：
+        # 由出站层 `_as_risk_control()` 置位（分类仍走 RETRYABLE——2026-10-05 用户
+        # 裁定「多次失败应排除出可用范围」的换号语义保留）。调度器据此走
+        # **梯度对齐处置**：首试即 bench 30min（上游 3012 惩罚第一档，DSH
+        # `zcode-identity.ts:42`）+ 不在同资源重试（同资源再打 = 帮它多记一次
+        # 3012，梯度 3 次/24h→24h、5 次→停用）。普通 429/超时**不带**此标记。
+        self.risk_control = risk_control
+        # 🔴 **出站层已定类别**（2026-10-08；自有信封业务码翻译的产物）：
+        # 产品层按**取证过的官方归因表**把业务码翻成类别（如 ZCode `1005` 额度耗尽
+        # ⇒ QUOTA —— 它走 `200 + 信封`，HTTP 状态本身无信息量）。
+        # `ErrorClassifier.classify()` 第 1.5 步采信它（用户的 `error_rules` 覆写仍更优先）；
+        # `None` = 出站层没判断，交回既有 HTTP/type 逻辑。
+        self.error_class = error_class
 
     @property
     def retryable_hint(self) -> bool:
@@ -187,29 +223,49 @@ class ErrorClassifier:
                 self._by_http[r.http] = cls
 
     def classify(self, err: UpstreamError) -> ErrorClass:
-        # 1) 网络类异常（无状态码）：超时/连接失败/流中断 → RETRYABLE
-        if err.status_code is None:
-            return ErrorClass.RETRYABLE
-
         status = err.status_code
         etype = err.error_type or extract_error_type(err.error_body)
+        # 🔴 规则的匹配键：`status_code=None`（自有信封 / 网络类）用哨兵 `0` 表示
+        #    —— 否则「用户配置覆写一切默认判断」这条红线对信封类错误**结构性失效**
+        #    （2026-10-08 自测抓到：`1005` 的规则覆写被跳过，配置形同不存在）。
+        rule_status = 0 if status is None else status
 
-        # 2) error_rules 覆写（type 精确匹配优先于仅 HTTP 匹配）
-        if etype and (status, etype) in self._typed:
-            return self._typed[(status, etype)]
-        if status in self._by_http:
-            return self._by_http[status]
+        # 1) error_rules 覆写（type 精确匹配优先于仅 HTTP 匹配）—— **永远最高**
+        #    （铁律 4：用户的显式配置是唯一可覆写面；出站层的判断也不得越过它）。
+        if etype and (rule_status, etype) in self._typed:
+            return self._typed[(rule_status, etype)]
+        if rule_status in self._by_http:
+            return self._by_http[rule_status]
 
-        # 3) 商汤/供应商错误 type 表
+        # 2) 出站层已定类别（2026-10-08；自有信封业务码翻译的产物）。
+        #    为什么排在网络兜底**之前**：出站层知道的事实比"无状态码 = 网络问题"
+        #    更具体 —— ZCode 的业务错误走 `200 + 信封`，`status_code=None` 是**形状**
+        #    决定的，不是网络故障（`1005` 额度耗尽被当成网络抖动，就会用短冷却反复打
+        #    一条已经没额度的号；官方 `providerBusinessError.ts` 明写它要"刷新配额"）。
+        if err.error_class is not None:
+            return err.error_class
+
+        # 3) 网络类异常（无状态码）：超时/连接失败/流中断 → RETRYABLE
+        if status is None:
+            return ErrorClass.RETRYABLE
+
+        # 4) 商汤/供应商错误 type 表
         if etype and etype in VENDOR_TYPE_TABLE:
             return VENDOR_TYPE_TABLE[etype]
 
-        # 3b) 通道级风控（出站层归一化后的 type）⇒ 可重试：换号 + 计 C + y 次后冷却。
-        #     `error_rules` 的精确覆写仍排在前面（上面第 2 步）⇒ 某产品要改判据不必动代码。
+        # 4b) 通道级风控（出站层归一化后的 type）⇒ 可重试：换号 + 计 C + y 次后冷却。
+        #     `error_rules` 的精确覆写仍排在前面（上面第 1 步）⇒ 某产品要改判据不必动代码。
         if etype == RISK_CONTROL_TYPE:
             return ErrorClass.RETRYABLE
 
-        # 4) HTTP 通用映射（UT-02）
+        # 4c) 资源级不可承接（出站层归一化后的 type）⇒ 换号续跑 + 冷却该条 (资源, 模型)。
+        #     为什么不是 RETRYABLE：本类**不该在同一条资源上重试**（上游是确定性否认，
+        #     重试只是多打一次）；为什么不是 BAD_REQUEST：请求本身没错，换一条资源就能成
+        #     （判据与取证见 `RESOURCE_UNAVAILABLE_TYPE` 的常量注释）。
+        if etype == RESOURCE_UNAVAILABLE_TYPE:
+            return ErrorClass.RESOURCE_UNAVAILABLE
+
+        # 5) HTTP 通用映射（UT-02）
         if status == 401:
             return ErrorClass.AUTH
         if status == 404:
