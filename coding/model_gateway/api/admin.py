@@ -1,6 +1,7 @@
 """管理 API（tech-design §4.1/§4.4；M1 骨架 → M2 完整化，design-spec §3）。
 
-- GET  /admin/api/overview：总览一次取齐（状态 + 今日聚合 + 资源健康 + 最近切换 + 调用地址）
+- GET  /admin/api/overview：总览一次取齐（状态 + 今日聚合 + 资源健康 + 最近切换 + 调用地址
+        + 账号资源额度 accounts_quota（每产品可用余额合计，2026-10-07））
 - GET  /admin/api/stats?days=：看板聚合（daily 快照 + 当日实时双段合并，含按天趋势序列；
        五维 by_model/by_resource/by_token/by_provider/by_account + dimensions 可用维度键）
 - GET  /admin/api/presets：供应商预设注册表（接入向导下拉数据源，含 billing_display 展示值）
@@ -22,6 +23,8 @@ import asyncio
 import contextlib
 import datetime as dt
 import json
+import logging
+import math
 import os
 import secrets
 import socket
@@ -35,7 +38,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
 from model_gateway import __version__
+from model_gateway.accounts import registry as account_registry
+from model_gateway.accounts import store as accounts_store
 from model_gateway.adapters import build_adapter
+from model_gateway.api.admin_accounts import _enabled_of
 from model_gateway.api.admin_accounts import router as accounts_router
 from model_gateway.api.admin_zcode import router as zcode_admin_router
 from model_gateway.config.loader import ConfigError, load_config, save_config
@@ -46,6 +52,8 @@ from model_gateway.enums.matcher import BUILTIN_ENTRIES, EnumEntry
 from model_gateway.stats.events import error_summary
 from model_gateway.stats.aggregate import aggregate_day
 from model_gateway.stats.events import error_summary, mask_key
+
+logger = logging.getLogger("model_gateway.api.admin")
 
 # ---------- 写方法来源校验（M6-6 / R3-P4：CSRF 收敛）----------
 
@@ -242,6 +250,147 @@ def ops_runner_unread(usage_dir) -> int:
         return 0
 
 
+# ---------- 账号资源额度（总览「账号资源额度」板块；2026-10-07 用户指令）----------
+#
+# 需求原话：「把接入的所有账号资源每个产品一个小卡片，显示这个产品维度可用的总额度，
+# 积分制的显示积分余额，token 制的显示 token 余额。这个数据每次刷新查询当前数据。」
+# ⇒ 每个产品一行汇总，**每次请求重算**（进程不缓存；页面刷新即读到最新落盘快照）。
+# 数据源 = 各账号 `runtime.json` 的 `quota` 快照（与「接入账号资源」页额度格**同一个**
+# 快照、同一把尺）——额度查询本身仍按既有纪律（cron 腿受 `quota_net` 约束、手动腿
+# 在账号页），本板块**不发起任何出站**，只读已有数据。
+
+def _quota_unit_class(unit) -> str:
+    """额度量纲归类：`token` / `credits` / `""`（未取证单位，不编单位词）。
+
+    🔴 判据与账号页额度格的 `quotaUnitWord` / `fmtQuotaNum` **逐字同源**
+    （`accounts.js`：`token*` → token 量纲；`积分|credit|credits` → 积分类；其余无名）。
+    两处必须一致：产品卡上的「积分余额 / token 余额」与账号页画的是同一类东西，
+    不能一边叫积分一边裸印数字。
+    """
+    u = str(unit or "").strip().lower()
+    if u.startswith("token"):
+        return "token"
+    if u in ("积分", "credit", "credits"):
+        return "credits"
+    return ""
+
+
+def _quota_is_number(v) -> bool:
+    """`remaining` 能不能进合计（🔴 三件事分开判，别让边界值把整条总览端点打穿）。
+
+    - `bool` 排除：Python 里 `True` 是 `int` 的实例，不排除会把 JSON 的 `true` 当 1 累加；
+    - `NaN` / `Infinity` 排除：`json.loads` 默认收得下这两个字面量（外来或手改的
+      `runtime.json` 可能带进来），它们进合计会把整张卡洗成不可读；
+    - 天文整数（超出 float 范围）：`math.isfinite` 对它**抛 `OverflowError`**（本轮实测），
+      而 Python 整数本身有限可加 ⇒ 不算坏值（前端 `isFinite` 那一层自会退回「—」）。
+    """
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return False
+    try:
+        return math.isfinite(v)
+    except OverflowError:
+        return True
+
+
+def _account_quota_facts(quota: dict) -> tuple[dict[str, float], str]:
+    """单账号额度快照 → (按量纲类别的可用余量求和, 数据时刻)；无任何数值余量时 `({}, "")`。
+
+    口径 = 账号页额度格（`quotaCell`）对 items 的同一把尺：
+    - **只计 `active is not False` 的包**（失效包不计入，照抄 `it.active !== false`）；
+    - **只计数值型 `remaining`**：`None` / 缺键 = 「上游没给数字」⇒ 不累加、**绝不当 0**
+      （「没给数字」与「数字是 0」是两件事，§22.3 未知不当零）；坏值判定见
+      `_quota_is_number`（`bool`/`NaN`/`Infinity` 都不进合计）；
+    - 数据时刻取 `data_at || checked_at`（上游数据时刻优先，与额度格 meta 行同源）。
+    """
+    items = quota.get("items") if isinstance(quota, dict) else None
+    sums: dict[str, float] = {}
+    for it in items or []:
+        if not isinstance(it, dict) or it.get("active") is False:
+            continue
+        rem = it.get("remaining")
+        if not _quota_is_number(rem):
+            continue
+        cls = _quota_unit_class(it.get("unit"))
+        sums[cls] = sums.get(cls, 0.0) + float(rem)
+    if not sums:
+        return {}, ""
+    return sums, str(quota.get("data_at") or quota.get("checked_at") or "")
+
+
+def _accounts_quota() -> list[dict]:
+    """按产品汇总账号额度（`/admin/api/overview` 的 `accounts_quota`；每次请求重算）。
+
+    参与方 = 注册表里**有账号**的产品（按注册表顺序）；账号 = 该产品**全部**账号，
+    含停用（额度是只读视图——停用的号也要看得见还剩多少，Q32 纪律；启用数单独给）。
+
+    逐账号分桶（互斥、合计 = 账号数）：
+    - `counted`：快照里有可累加的数值余量（含 0 与「已耗尽」）；
+    - `no_plan`：上游明确回了「无套餐」（`reason == "no_plan"`，照抄额度格第五档）；
+    - `no_snapshot`：运行态里根本没有 `quota` 块（尚未刷新——额度格第四态同词）；
+    - `unknown`：其余取不到数值的（读取失败 / 网络失败 / 熔断…）+ **单账号读不动**。
+
+    🔴 fail-closed：任何单账号读取异常只计入 `unknown` 并留日志，**绝不冒穿**整个
+    总览端点（总览一行读不动不该让整页看不见）。
+    """
+    out: list[dict] = []
+    for pid in account_registry.PRODUCT_IDS:
+        meta = account_registry.PRODUCTS[pid]
+        try:
+            names = accounts_store.list_accounts(pid)
+        except Exception as e:  # noqa: BLE001 — 账号根读不动 → 本产品按无账号跳过（留痕）
+            logger.warning("账号枚举读不动（%s → 本产品跳过）：%s: %s",
+                           pid, type(e).__name__, e)
+            continue
+        if not names:
+            continue
+        enabled_n = counted = unknown = no_plan = no_snapshot = 0
+        totals: dict[str, float] = {}
+        oldest = ""
+        for name in names:
+            try:
+                snapshot = accounts_store.read_runtime(pid, name)
+                enabled = _enabled_of(accounts_store.load_meta(accounts_store.product_root(pid), name))
+            except Exception as e:  # noqa: BLE001 — 单账号读不动 → 未知桶（不冒穿总览）
+                logger.warning("账号运行态读不动（%s/%s → 按未知呈现）：%s: %s",
+                               pid, name, type(e).__name__, e)
+                unknown += 1
+                continue
+            if enabled:
+                enabled_n += 1
+            quota = snapshot.get("quota")
+            if not isinstance(quota, dict) or not quota:
+                no_snapshot += 1
+                continue
+            if str(quota.get("reason") or "") == "no_plan":
+                no_plan += 1
+                continue
+            sums, ts = _account_quota_facts(quota)
+            if not sums:
+                unknown += 1
+                continue
+            counted += 1
+            for cls, v in sums.items():
+                totals[cls] = totals.get(cls, 0.0) + v
+            if ts and (not oldest or ts < oldest):
+                oldest = ts
+        out.append({
+            "product": pid,
+            "title": meta.title,
+            "accounts": len(names),
+            "enabled": enabled_n,
+            "counted": counted,
+            "unknown": unknown,
+            "no_plan": no_plan,
+            "no_snapshot": no_snapshot,
+            # 按量纲类别的合计（正常一个产品只有一个类别）；排序取确定性（大额在前）
+            "totals": [{"unit": cls, "remaining": v}
+                       for cls, v in sorted(totals.items(), key=lambda kv: -kv[1])],
+            # 计入合计的账号里**最旧**的数据时刻（合计的"最弱一环"；全部未取到时为 null）
+            "oldest_checked_at": oldest or None,
+        })
+    return out
+
+
 @router.get("/admin/api/overview")
 async def overview(request: Request):
     runtime = request.app.state.runtime
@@ -274,6 +423,10 @@ async def overview(request: Request):
         },
         "today_by_hour": _today_hourly(runtime),
         "resources": runtime.resources.snapshot_by_resource(cfg),
+        # 账号资源额度板块（2026-10-07 用户指令）：每产品 = 该产品全部账号的可用余额合计。
+        # 🔴 每次请求重算、不在进程内缓存 —— 页面每次刷新读到的就是当前落盘的最新快照；
+        #    本项**不发起任何出站**（额度查询仍走既有 cron 腿 / 账号页手动腿）。
+        "accounts_quota": _accounts_quota(),
         "recent_switch_events": list(runtime.switch_ring)[-20:],
         "today_switch_count": len(switches),
         "call_addresses": {
