@@ -7,6 +7,11 @@
 ③ **孤儿资产**（改了渲染分派却忘了删旧文件）⇒ 目录里留死文件。
 
 `ICON_SVG` 从 `accounts.js` 里**解析**而不是在本测试里重抄一份：重抄 = 测试与页面各信一套。
+
+2026-10-07 追加：总览页「账号资源额度」板块也要画同一枚官方图标，而页面模块之间不互相
+import（账号页那份被账号静态门的 realm 钉在 `accounts.js` 里）⇒ 分派表是**两份实现**。
+本文件因此把两处一起解析并**要求逐字相等**：任一份漂移（改了扩展名、漏了产品）当场红，
+不会出现「账号页是官方图标、总览是破图」这种两个屏幕两种读数的形状。
 """
 from __future__ import annotations
 
@@ -20,16 +25,32 @@ from model_gateway.accounts.registry import PRODUCT_IDS
 STATIC = Path(__file__).resolve().parents[2] / "model_gateway" / "web" / "static"
 ICON_DIR = STATIC / "img" / "products"
 ACCOUNTS_JS = STATIC / "js" / "pages" / "accounts.js"
+DASHBOARD_JS = STATIC / "js" / "pages" / "dashboard.js"
 
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 MIN_RASTER_EDGE = 64          # 官方资产最小 128px；64 是"不许再退回 32px 占位"的底线
 
 
-def _icon_svg_set() -> set[str]:
-    src = ACCOUNTS_JS.read_text(encoding="utf-8")
+def _icon_svg_set(src_path: Path = ACCOUNTS_JS) -> set[str]:
+    src = src_path.read_text(encoding="utf-8")
     m = re.search(r"const ICON_SVG = new Set\(\[(.*?)\]\)", src, re.S)
-    assert m, "accounts.js 里找不到 `const ICON_SVG = new Set([...])`（分派表被改名？）"
+    assert m, f"{src_path.name} 里找不到 `const ICON_SVG = new Set([...])`（分派表被改名？）"
     return set(re.findall(r'"([a-z0-9_-]+)"', m.group(1)))
+
+
+def _img_template(src_path: Path) -> str:
+    """取该页拼图标 URL 的那一行（分派出口），供两处一致性判据使用。"""
+    m = re.search(r'"[^"]*?/img/products/[^"\n]*"', src_path.read_text(encoding="utf-8"))
+    assert m, f"{src_path.name} 里没有 `/img/products/...` 的图标分派出口（板块改用别的取图方式？）"
+    return m.group(0)
+
+
+def test_two_dispatch_tables_are_identical() -> None:
+    """🔴 账号页与总览页的扩展名分派表**必须逐字相同**（两份实现漂移 = 一边好图一边破图）。"""
+    a = _icon_svg_set(ACCOUNTS_JS)
+    d = _icon_svg_set(DASHBOARD_JS)
+    assert a == d, f"两份 ICON_SVG 漂移：accounts.js={sorted(a)} dashboard.js={sorted(d)}"
+    assert "/img/products/" in _img_template(DASHBOARD_JS)
 
 
 def _png_size(path: Path) -> tuple[int, int]:

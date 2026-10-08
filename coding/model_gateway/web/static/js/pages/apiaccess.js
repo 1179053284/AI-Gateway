@@ -53,7 +53,9 @@ function draw(root) {
     </span>`;
   root.innerHTML = `
     <p class="page-desc">
-      工具端（Trae / Cursor / Cherry Studio 等）接入本网关所需的地址与密钥都在本页；不同工具可用不同密钥，便于区分调用。</p>
+      工具端（Trae / Cursor / Cherry Studio 等）接入本网关所需的地址与密钥都在本页；不同工具可用不同密钥，便于区分调用。
+      模型清单怎么取、推理强度与参数怎么设，见
+      <a href="#/apidocs" style="color:var(--cool);font-weight:600;text-decoration:none">对接说明</a>。</p>
 
     <div class="card flush" style="margin-bottom:12px">
       <div class="card-head inset">
