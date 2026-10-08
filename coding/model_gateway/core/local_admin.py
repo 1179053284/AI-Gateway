@@ -18,6 +18,19 @@ import urllib.request
 from pathlib import Path
 
 
+def _local_opener() -> urllib.request.OpenerDirector:
+    """🔴 禁用代理的 opener（铁律 1 纯本地运行；2026-10-08 实盘抓修）。
+
+    `urllib.request.urlopen` 默认读环境代理（`urllib.request.getproxies()`）——
+    本机开着系统代理（如 `http_proxy=127.0.0.1:7890`）时，对 `127.0.0.1:<port>`
+    的请求会被**代理转发**：空端口打过去得到 `HTTPError 502`（落 "timeout"/
+    "http-502" 而非 "not-running"），真在跑的网关也可能被代理挡成超时 ⇒
+    「未运行 / 超时 / 401」三态判据全失真。本模块只对本机回环发请求，
+    代理永远不该出现在这条路上。
+    """
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 def admin_post(path: str, *, port: int | None = None, timeout: float = 3.0,
                payload: dict | None = None,
                config_path: Path | None = None) -> dict | None:
@@ -40,7 +53,7 @@ def admin_post(path: str, *, port: int | None = None, timeout: float = 3.0,
     try:
         req = urllib.request.Request(f"http://127.0.0.1:{port}{path}",
                                      data=body, method="POST", headers=headers)
-        raw = urllib.request.urlopen(req, timeout=timeout).read()
+        raw = _local_opener().open(req, timeout=timeout).read()
         data = json.loads(raw) if raw else {}
     except (OSError, ValueError):  # 未运行 / 网络错误 / 非 JSON 响应
         return None
@@ -93,7 +106,7 @@ def admin_get_detail(path: str, *, port: int | None = None, timeout: float = 3.0
     try:
         req = urllib.request.Request(f"http://127.0.0.1:{port}{path}",
                                      method="GET", headers=dict(headers or {}))
-        data = json.loads(urllib.request.urlopen(req, timeout=timeout).read())
+        data = json.loads(_local_opener().open(req, timeout=timeout).read())
     except urllib.error.HTTPError as e:
         return None, {401: "unauthorized", 403: "forbidden",
                       404: "http-404", 500: "http-500", 502: "http-502",
