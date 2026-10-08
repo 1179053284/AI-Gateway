@@ -10,7 +10,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-171b22" alt="License: Apache-2.0">
   <img src="https://img.shields.io/badge/python-3.12%2B-171b22" alt="Python 3.12+">
-  <img src="https://img.shields.io/badge/tests-2242%2F2242-188038" alt="Tests: 2242/2242">
+  <img src="https://img.shields.io/badge/tests-2338%2F2338-188038" alt="Tests: 2336/2336">
   <img src="https://img.shields.io/badge/runtime-100%25%20local-188038" alt="100% local runtime">
 </p>
 
@@ -28,7 +28,7 @@ Point Trae, Cursor, Cherry Studio or any OpenAI-compatible client at `http://127
 
 | Area | What you get |
 | --- | --- |
-| Unified inbound API | `/v1/chat/completions` (streaming + non-streaming), `/v1/images/generations`, `/v1/messages` (native Anthropic, bidirectional conversion), `/v1/models` |
+| Unified inbound API | `/v1/chat/completions` (streaming + non-streaming), `/v1/images/generations`, `/v1/messages` (native Anthropic, bidirectional conversion), `/v1/responses` (OpenAI Responses API, streaming SSE — for Codex-style clients; stateless forwarding), `/v1/models` |
 | Outbound adapters | OpenAI-compatible, Anthropic and Gemini protocol families |
 | Scheduling | `x`/`y`/`m` concurrency-aware routing (see below) |
 | Failover-continue | When retries are exhausted, the same request resumes on the next available resource — tools never see the error as long as one resource works |
@@ -179,7 +179,7 @@ Supplier presets pre-fill protocol and endpoints (SenseNova ships both `api` and
 
 > **Note:** This project is under continuous development and provided for personal research use only. The feature set is still simple — it primarily targets the maintainer's own use cases. Ideas and feedback are welcome in [Issues](https://github.com/1179053284/AI-Gateway/issues).
 
-Current version: **v0.2.0** — matches `mgw --version` and `pyproject.toml`. Test suite: **2242 passed / 3 skipped** as of 2026-10-06; the count is refreshed with each tree (reproduce with `.venv/bin/python -m pytest -q`; the `test_v2_readme_claims.py` guard pins it to reality). Live-provider calls are verified for the OpenAI path; ZCode / Anthropic-path items that need real credentials remain **not yet verified**.
+Current version: **v0.2.0** — matches `mgw --version` and `pyproject.toml`. Test suite: **2338 passed / 3 skipped** as of 2026-10-08; the count is refreshed with each tree (reproduce with `.venv/bin/python -m pytest -q`; the `test_v2_readme_claims.py` guard pins it to reality). Live-provider calls are verified for the OpenAI path; ZCode / Anthropic-path items that need real credentials remain **not yet verified**.
 
 Planned next:
 

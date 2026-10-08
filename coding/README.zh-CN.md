@@ -10,7 +10,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-171b22" alt="协议：Apache-2.0">
   <img src="https://img.shields.io/badge/python-3.12%2B-171b22" alt="Python 3.12+">
-  <img src="https://img.shields.io/badge/tests-2242%2F2242-188038" alt="测试：2242/2242">
+  <img src="https://img.shields.io/badge/tests-2338%2F2338-188038" alt="测试：2336/2336">
   <img src="https://img.shields.io/badge/runtime-100%25%20local-188038" alt="100% 本地运行">
 </p>
 
@@ -28,7 +28,7 @@
 
 | 领域 | 内容 |
 | --- | --- |
-| 统一入站 API | `/v1/chat/completions`（流式 + 非流式）、`/v1/images/generations`、`/v1/messages`（Anthropic 原生，双向转换）、`/v1/models` |
+| 统一入站 API | `/v1/chat/completions`（流式 + 非流式）、`/v1/images/generations`、`/v1/messages`（Anthropic 原生，双向转换）、`/v1/responses`（OpenAI Responses API，流式 SSE —— 供 Codex 类客户端直连，无状态转发）、`/v1/models` |
 | 出站适配 | OpenAI 兼容、Anthropic、Gemini 三大协议族 |
 | 调度 | `x`/`y`/`m` 并发感知路由（见下文） |
 | 切换续跑 | 重试耗尽后，同一请求自动换到下一个可用资源继续执行——只要有可用资源，工具端无感 |
@@ -169,7 +169,7 @@ models:                      # 对工具端暴露的网关模型
 
 > **说明**：项目仍在持续更新优化，仅供个人研究使用。功能目前还比较简单，主要适配作者自身的使用场景；有好的意见欢迎在 [Issues](https://github.com/1179053284/AI-Gateway/issues) 交流。
 
-当前版本：**v0.2.0**（与 `mgw --version`、`pyproject.toml` 一致）—— 测试 **2242 passed / 3 skipped**（截至 2026-10-06；S-4 收编 verify_v*_repro 后条数随提交树更新，复现命令 `.venv/bin/python -m pytest -q`，`test_v2_readme_claims.py` 钉住数字不漂移）。OpenAI 路径已做真实供应商调用验证；需要真实凭据的 ZCode / Anthropic 路径项**尚未验证**。
+当前版本：**v0.2.0**（与 `mgw --version`、`pyproject.toml` 一致）—— 测试 **2338 passed / 3 skipped**（截至 2026-10-08；S-4 收编 verify_v*_repro 后条数随提交树更新，复现命令 `.venv/bin/python -m pytest -q`，`test_v2_readme_claims.py` 钉住数字不漂移）。OpenAI 路径已做真实供应商调用验证；需要真实凭据的 ZCode / Anthropic 路径项**尚未验证**。
 
 接下来计划：
 

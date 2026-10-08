@@ -34,6 +34,7 @@ from model_gateway.api.admin_accounts import cron_enabled_of
 from model_gateway.api.anthropic import router as anthropic_router
 from model_gateway.api.auth import AuthMiddleware
 from model_gateway.api.openai_compat import router as openai_router
+from model_gateway.api.responses_compat import router as responses_router
 from model_gateway.config.loader import ConfigError, load_config
 from model_gateway.core.resources import display_label
 from model_gateway.config.schemas import AppConfig
@@ -1086,6 +1087,7 @@ def create_app(config_path: Path | None = None, *,
     app.state.config_file_loaded = config_path.exists()
 
     app.include_router(openai_router)
+    app.include_router(responses_router)
     app.include_router(anthropic_router)
     app.include_router(admin_router)
 

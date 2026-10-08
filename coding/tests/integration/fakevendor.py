@@ -26,6 +26,9 @@ class Ok:
     usage: bool = True
     reasoning: str = ""  # 非流式思考文本（thinking_content 风格）
     thinking_style: str = "thinking_content"  # thinking_content | reasoning_content | reasoning
+    # 工具调用（INT-121 起）：[{"id","name","arguments"}]；给了就把 finish_reason 设成 tool_calls
+    tool_calls: list[dict] | None = None
+    usage_extra: dict | None = None  # 并入 usage 的附加字段（cached_tokens / reasoning_tokens）
 
 
 @dataclass
@@ -45,6 +48,9 @@ class StreamOk:
     err_after: Err | None = None  # 输出全部 chunk 后返回错误体（中途失败·不可重试类）
     reasoning_chunks: list[str] | None = None  # 思考片段（INT-30）
     thinking_style: str = "thinking_content"
+    # 工具调用增量帧（按序下发）：[{"index","id"?,"name"?,"arguments"?}]
+    tool_call_chunks: list[dict] | None = None
+    usage_extra: dict | None = None
 
 
 @dataclass
@@ -148,12 +154,21 @@ class FakeVendor:
         message: dict = {"role": "assistant", "content": step.content}
         if step.reasoning:
             message[step.thinking_style] = step.reasoning
+        finish = "stop"
+        if step.tool_calls:
+            message["tool_calls"] = [
+                {"id": tc.get("id") or f"call_{i}", "type": "function",
+                 "function": {"name": tc.get("name", ""), "arguments": tc.get("arguments", "")}}
+                for i, tc in enumerate(step.tool_calls)]
+            finish = "tool_calls"
         data = {
             "id": "chatcmpl-fake", "object": "chat.completion", "model": "vendor-model",
-            "choices": [{"index": 0, "message": message, "finish_reason": "stop"}],
+            "choices": [{"index": 0, "message": message, "finish_reason": finish}],
         }
         if step.usage:
-            data["usage"] = {"prompt_tokens": 10, "completion_tokens": 5}
+            usage = {"prompt_tokens": 10, "completion_tokens": 5}
+            usage.update(step.usage_extra or {})
+            data["usage"] = usage
         return data
 
     def _stream_response(self, step, rec) -> StreamingResponse:
@@ -174,7 +189,13 @@ class FakeVendor:
             if isinstance(s, Ok):
                 s = StreamOk(chunks=[s.content], delay_first=s.delay,
                              reasoning_chunks=([s.reasoning] if s.reasoning else None),
-                             thinking_style=s.thinking_style)
+                             thinking_style=s.thinking_style,
+                             tool_call_chunks=([
+                                 {"index": i, "id": tc.get("id"), "name": tc.get("name"),
+                                  "arguments": tc.get("arguments")}
+                                 for i, tc in enumerate(s.tool_calls)]
+                                 if s.tool_calls else None),
+                             usage_extra=s.usage_extra)
             if s.delay_first:
                 await asyncio.sleep(s.delay_first)
             first = {"id": "chatcmpl-fake", "object": "chat.completion.chunk", "model": "vendor-model",
@@ -211,11 +232,30 @@ class FakeVendor:
                 async for ev in send_event(err):
                     yield ev
                 return
+            for tc in s.tool_call_chunks or []:
+                entry: dict = {"index": tc.get("index", 0)}
+                if tc.get("id"):
+                    entry["id"] = tc["id"]
+                fn: dict = {}
+                if tc.get("name"):
+                    fn["name"] = tc["name"]
+                if tc.get("arguments"):
+                    fn["arguments"] = tc["arguments"]
+                if fn:
+                    entry["function"] = fn
+                chunk = {"id": "chatcmpl-fake", "object": "chat.completion.chunk",
+                         "choices": [{"index": 0, "delta": {"tool_calls": [entry]},
+                                      "finish_reason": None}]}
+                async for ev in send_event(chunk):
+                    yield ev
             final = {"id": "chatcmpl-fake", "object": "chat.completion.chunk",
-                     "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+                     "choices": [{"index": 0, "delta": {},
+                                  "finish_reason": "tool_calls" if s.tool_call_chunks else "stop"}]}
             async for ev in send_event(final):
                 yield ev
-            usage = {"id": "chatcmpl-fake", "usage": {"prompt_tokens": 10, "completion_tokens": 5}}
+            usage_payload = {"prompt_tokens": 10, "completion_tokens": 5}
+            usage_payload.update(s.usage_extra or {})
+            usage = {"id": "chatcmpl-fake", "usage": usage_payload}
             async for ev in send_event(usage):
                 yield ev
             async for ev in send_event("[DONE]"):
