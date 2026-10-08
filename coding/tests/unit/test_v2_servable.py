@@ -189,12 +189,19 @@ def test_admin_post_targets_mg_config_port(monkeypatch, tmp_path):
         def read(self):
             return b'{"ok": true}'
 
-    def fake_req(url, **kw):
+    def fake_req(url, data=None, method=None, headers=None):
         seen.append(url)
         return url
 
+    class _Opener:
+        def open(self, req, timeout=None):
+            return _Resp()
+
     monkeypatch.setattr(la.urllib.request, "Request", fake_req)
-    monkeypatch.setattr(la.urllib.request, "urlopen", lambda req, timeout=None: _Resp())
+    # 2026-10-08 起走 `_local_opener()`（空代理表 opener，禁环境代理），
+    # 打桩点从模块级 `urlopen` 换成 `_local_opener` —— 桩只换传输层，
+    # 「必须打到 MG_CONFIG 那个端口」这条契约不变。
+    monkeypatch.setattr(la, "_local_opener", lambda: _Opener())
     assert la.admin_post("/admin/api/zcode/bench") == {"ok": True}
     assert ":9999/admin/api/zcode/bench" in seen[0], seen
 
