@@ -86,6 +86,9 @@ for (const p of [...walkFiles(join(ROOT, "coding/model_gateway"), (x) => x.endsW
 //    （键 = copy: + 相对路径，手写清单漏文件正是第八/九轮的假绿成因），而 apiaccess.js /
 //    resources.js 早在具名键里 —— 拿 copy: 前缀去取会取到 undefined（本轮实测撞过一次）。
 const COMP_SRC = "copy:coding/model_gateway/web/static/js/components.js";
+// 账号资源板块的交叉断言侧（Q13）与变异 MQ-acct 都要走这个键：同样**不另立具名键**
+// （具名键会让 J2 的 `copySources` 漏掉 accounts.js，第十轮 B10-7 同族）
+const ACCT_SRC = "copy:coding/model_gateway/web/static/js/pages/accounts.js";
 
 // HTML 转义口径与前端 `esc()` 一致
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
@@ -1992,6 +1995,181 @@ async function runChecks(root, overviewPath) {
     return bad.length === 0;
   }, () => __k10);
 
+  /* ---------- Q · 账号资源额度板块（2026-10-07 用户指令「每个产品一个小卡片，显示这个
+   * 产品维度可用的总额度，积分制的显示积分余额，token 制的显示 token 余额」）----------
+   * 数据 = 载荷 `accounts_quota`（fixture 已播种 buddy/zcode/raccoon 三个产品 ——
+   * 「无对象的判据就是空判据」，空表时整块不渲染，K/Q 段都测不到东西）。
+   * Q1~Q3 判「板块真的挂进页面且每产品一卡、图标走分派出口」；
+   * Q4~Q12 判卡片的取值/状态词/meta/证据条/转义（直接调抽出的渲染函数喂判别性样例）；
+   * Q13 = dashboard 与 accounts.js **两份同规格格式化**的交叉断言（防漂移；
+   *       不抽成共享模块的原因见 dashboard.js 里那段注释）。 */
+  const aqGrabFn = (src, name) => {
+    const m = src.match(new RegExp(`function ${name}\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}`));
+    return m ? m[0] : "";
+  };
+  // 🔴 一律收成**字符串**（不混 match 数组）：`x[0]` 对数组是全文、对字符串是首字母，
+  //    混用时 realm 里编进去的就是 `c`/`f` 这种单字符（本轮实测撞过：门直接 ReferenceError）
+  const aqGrab = (src, re) => { const m = src.match(re); return m ? m[0] : ""; };
+  const aqParts = [
+    aqGrab(dashSrc, /const ICON_SVG = new Set\(\[[^\]]*\]\);/),
+    aqGrabFn(dashSrc, "productMark"),
+    aqGrab(dashSrc, /const trimTail = \(s\) => [^;]+;/),
+    aqGrabFn(dashSrc, "fmtQuotaNum"),
+    aqGrabFn(dashSrc, "quotaUnitWord"),
+    aqGrab(dashSrc, /const shortTime = \(v\) => [^;]+;/),
+    aqGrabFn(dashSrc, "agoShort"),
+    aqGrabFn(dashSrc, "accountQuotaSection"),
+    aqGrabFn(dashSrc, "quotaCard"),
+  ];
+  const aqMissing = aqParts.map((x, i) => (x ? "" : `#${i + 1}`)).filter(Boolean).join(",");
+  if (aqMissing) errors.push(`未能从 dashboard.js 抽齐账号资源板块的构件（漏 ${aqMissing}，改名/删除？）`);
+  const aqReady = !aqMissing;
+  const aqBlock = aqParts.join("\n");
+  // 每个出口单独取（与 A/B/C 段同一姿势：realm 返回**函数本身**，不返回对象 ——
+  // 返回对象要再过一层 __guard Proxy，多此一举且容易踩副本语义）
+  const aqMk = (name, label) => safePageFn(label, browserFn("esc", `${aqBlock}\nreturn ${name};`)(esc));
+  const aqSection = aqReady ? aqMk("accountQuotaSection", "accountQuotaSection(items)") : null;
+  const aqCardFn = aqReady ? aqMk("quotaCard", "quotaCard(q)") : null;
+  const aqFmt = aqReady ? aqMk("fmtQuotaNum", "dash.fmtQuotaNum(v,unit)") : null;
+  const aqWord = aqReady ? aqMk("quotaUnitWord", "dash.quotaUnitWord(unit)") : null;
+  // 交叉断言的另一侧：账号页自己的那两份（键 = 目录自动入面产生的 `copy:` 键，
+  // 不另立具名键 —— 具名键会让 J2 的 `copySources` 漏掉 accounts.js，第十轮 B10-7 同族）
+  const acctSrc = read(ACCT_SRC);
+  const acctParts = [
+    aqGrab(acctSrc, /const trimTail = \(s\) => [^;]+;/),
+    aqGrabFn(acctSrc, "fmtQuotaNum"),
+    aqGrabFn(acctSrc, "quotaUnitWord"),
+  ];
+  if (acctParts.some((x) => !x)) errors.push("未能从 accounts.js 抽齐额度格式化（V10'-④ 钉的就是这两份）");
+  const acctBlock = acctParts.every((x) => !!x) ? acctParts.join("\n") : "";
+  const acctFmt = acctBlock ? safePageFn("acct.fmtQuotaNum",
+    browserFn(`${acctBlock}\nreturn fmtQuotaNum;`)()) : null;
+  const acctWord = acctBlock ? safePageFn("acct.quotaUnitWord",
+    browserFn(`${acctBlock}\nreturn quotaUnitWord;`)()) : null;
+  // 卡根 title 里那串时刻的期望值（页面口径 = `shortTime`：ISO 空格化取到分钟）
+  const shortTimeOf = (v) => String(v ?? "").replace("T", " ").slice(0, 16);
+  let __q1 = "", __q2 = "", __q3 = "", __q4 = "", __q5 = "", __q6 = "", __q7 = "";
+  let __q8 = "", __q9 = "", __q10 = "", __q11 = "", __q12 = "", __q13 = "";
+
+  // 判别性样例：六张卡各自钉住一条读法（数值/量纲/状态词/耗尽/启用位/新鲜度）
+  const twoDaysAgo = new Date(Date.now() - 2 * 86400 * 1000).toISOString().slice(0, 19);
+  const AQ = {
+    credits: { product: "buddy", title: "CodeBuddy", accounts: 2, enabled: 1, counted: 2,
+      unknown: 0, no_plan: 0, no_snapshot: 0,
+      totals: [{ unit: "credits", remaining: 640.5 }], oldest_checked_at: twoDaysAgo },
+    token: { product: "zcode", title: "ZCode", accounts: 16, enabled: 0, counted: 11,
+      unknown: 0, no_plan: 5, no_snapshot: 0,
+      totals: [{ unit: "token", remaining: 1011158306 }], oldest_checked_at: twoDaysAgo },
+    tokenSmall: { product: "zcode", title: "ZCode", accounts: 1, enabled: 1, counted: 1,
+      unknown: 0, no_plan: 0, no_snapshot: 0,
+      totals: [{ unit: "token", remaining: 12345 }], oldest_checked_at: twoDaysAgo },
+    svgIcon: { product: "trae", title: "Trae", accounts: 2, enabled: 2, counted: 2,
+      unknown: 0, no_plan: 0, no_snapshot: 0,
+      totals: [{ unit: "credits", remaining: 3822.1548 }], oldest_checked_at: twoDaysAgo },
+    allUnknown: { product: "raccoon", title: "Raccoon", accounts: 2, enabled: 2, counted: 0,
+      unknown: 2, no_plan: 0, no_snapshot: 0, totals: [], oldest_checked_at: null },
+    noPlan: { product: "zcode", title: "ZCode", accounts: 3, enabled: 3, counted: 0,
+      unknown: 0, no_plan: 3, no_snapshot: 0, totals: [], oldest_checked_at: null },
+    never: { product: "newp", title: "Newp", accounts: 1, enabled: 1, counted: 0,
+      unknown: 0, no_plan: 0, no_snapshot: 1, totals: [], oldest_checked_at: null },
+    zero: { product: "qoder", title: "Qoder", accounts: 1, enabled: 1, counted: 1,
+      unknown: 0, no_plan: 0, no_snapshot: 0,
+      totals: [{ unit: "credits", remaining: 0 }], oldest_checked_at: twoDaysAgo },
+  };
+  const aqCard = (k) => (aqCardFn ? aqCardFn(AQ[k]) : PAGE_THREW);
+
+  check("Q1", "账号资源额度板块挂进总览页且**可见**，每产品一张小卡（空列表则整块不渲染）", () => {
+    const shown = visibleText(pageHtml);
+    const wantN = (overview.accounts_quota || []).length;
+    const cards = (pageHtml.match(/class="aqcard/g) || []).length;
+    const grid = (pageHtml.match(/class="aqgrid"/g) || []).length;
+    __q1 = `标题可见=${shown.includes("账号资源额度")} 卡=${cards} 期望=${wantN} 网格=${grid} 空表渲染长度=${aqSection ? aqSection([]).length : -1}`;
+    return shown.includes("账号资源额度") && grid === 1 && wantN > 0 && cards === wantN
+      && !!aqSection && aqSection([]) === "" && aqSection(undefined) === "";
+  }, () => __q1);
+  check("Q2", "板块头 = 标题 + 弱化描述（.card-head.block-head 单行制），描述不另起一行", () => {
+    const h = aqSection ? aqSection([AQ.credits]) : PAGE_THREW;
+    __q2 = `block-head=${h.includes('class="card-head block-head"')} bh-t=${h.includes('card-title bh-t')} bh-d=${h.includes('class="bh-d"')}`;
+    return h.includes('class="card-head block-head"') && h.includes('card-title bh-t')
+      && h.includes('class="bh-d"') && h.includes("账号资源额度");
+  }, () => __q2);
+  check("Q3", "产品图标走官方资产分派（png/svg 按扩展名表，写死 png = 界面破图）", () => {
+    __q3 = `buddy=${/\/img\/products\/buddy\.png/.test(aqCard("credits"))} trae=${/\/img\/products\/trae\.svg/.test(aqCard("svgIcon"))}`;
+    return /src="\/img\/products\/buddy\.png"/.test(aqCard("credits"))
+      && /src="\/img\/products\/trae\.svg"/.test(aqCard("svgIcon"));
+  }, () => __q3);
+  check("Q4", "积分制余额 = 数值 + 「积分」单位词（照账号页 fmtQuotaNum/quotaUnitWord 同规格）", () => {
+    const h = aqCard("credits");
+    __q4 = `值槽=${(h.match(/<div class="aqv">([\s\S]*?)<\/div>/) || [])[1] || "(取不到)"}`;
+    return h.includes(">640.5</b> 积分") && !h.includes("亿") && !h.includes("Token");
+  }, () => __q4);
+  check("Q5", "token 制余额用中文量纲（≥1e8→亿、≥1e4→万），单位词不重复缀", () => {
+    const big = aqCard("token"); const small = aqCard("tokenSmall");
+    __q5 = `大数=${(big.match(/<div class="aqv">([\s\S]*?)<\/div>/) || [])[1] || "—"}`
+      + ` 小数=${(small.match(/<div class="aqv">([\s\S]*?)<\/div>/) || [])[1] || "—"}`;
+    return big.includes(">10.11亿</b>") && !big.includes(" 积分")
+      && small.includes(">1.2万</b>") && !small.includes("Token");
+  }, () => __q5);
+  check("Q6", "全部账号都没取到数值 ⇒ 值槽出状态词「未知」，**绝不印 0**（未知不当零 §22.3）", () => {
+    const h = aqCard("allUnknown");
+    __q6 = `值槽=${(h.match(/<div class="aqv">([\s\S]*?)<\/div>/) || [])[1] || "—"}`;
+    return h.includes('<span class="aqnone">未知</span>') && !/>\s*0\s*<?/.test(h)
+      && h.includes("2 个未取到");
+  }, () => __q6);
+  check("Q7", "「无套餐」与「尚未刷新」各归各档（上游明说没有 ≠ 从没查过）", () => {
+    const p = aqCard("noPlan"); const n = aqCard("never");
+    __q7 = `无套餐卡=${/无套餐/.test(p)} 尚未刷新卡=${/尚未刷新/.test(n)}`;
+    return p.includes('<span class="aqnone">无套餐</span>') && p.includes("3 个无套餐")
+      && n.includes('<span class="aqnone">尚未刷新</span>') && n.includes("1 个尚未刷新");
+  }, () => __q7);
+  check("Q8", "取到数但合计为 0 ⇒ 整**值槽** is-warn + 「已耗尽」；有余量时不许误报", () => {
+    const z = aqCard("zero"); const c = aqCard("credits");
+    __q8 = `耗尽卡 is-warn=${z.includes("aqcard is-warn")} 已耗尽=${z.includes("已耗尽")}`
+      + `｜正常卡 is-warn=${c.includes("is-warn")} 已耗尽=${c.includes("已耗尽")}`;
+    return z.includes('class="aqcard is-warn"') && z.includes("已耗尽")
+      && !c.includes("is-warn") && !c.includes("已耗尽");
+  }, () => __q8);
+  check("Q9", "「N 启用」只在启用数 < 账号数时出现（全启用不刷屏，停用位不能隐身）", () => {
+    const p = aqCard("credits"); const t = aqCard("token"); const k = aqCard("svgIcon");
+    __q9 = `buddy=${/1 启用/.test(p)} zcode=${/0 启用/.test(t)} trae(全启用)=${/启用/.test(k)}`;
+    return p.includes("1 启用") && t.includes("0 启用") && !k.includes("启用");
+  }, () => __q9);
+  check("Q10", "新鲜度读**最旧**数据时刻（`X 前查`）；没有时刻就不编「刚刚查」", () => {
+    const p = aqCard("credits"); const n = aqCard("never");
+    __q10 = `两天前→${(p.match(/([\d一二三四五六七八九十百]+ 天前查)/) || ["—"])[0]}`
+      + `｜无时刻卡含「查」=${n.includes("查")}`;
+    return p.includes("2 天前查") && !n.includes("查");
+  }, () => __q10);
+  check("Q11", "证据条（口径 + 计入账号数 + 最旧数据时刻）挂在**卡根** title，不是内部某个词", () => {
+    const h = aqCard("credits");
+    const root = h.match(/^<div class="aqcard[^>]*\btitle="([^"]*)"/);
+    __q11 = `卡根 title=${root ? root[1] : "(没挂在卡根)"}`;
+    return !!root && root[1].includes("只计未失效") && root[1].includes("2 个账号计入合计")
+      && root[1].includes(shortTimeOf(twoDaysAgo));
+  }, () => __q11);
+  check("Q12", "后端下发的产品名经转义（title 里的 HTML 不得原样进产出，与 K9 同一课）", () => {
+    const evil = { ...AQ.credits, title: `<img src=x onerror=alert(1)>"哨兵"` };
+    const h = aqCardFn ? aqCardFn(evil) : PAGE_THREW;
+    __q12 = `原样 img=${h.includes("<img src=x")} 转义=${h.includes("&lt;img src=x")} 哨兵=${h.includes("&quot;哨兵&quot;")}`;
+    return !h.includes("<img src=x onerror") && h.includes("&lt;img src=x onerror")
+      && h.includes("哨兵");
+  }, () => __q12);
+  check("Q13", "🔴 额度格式化**两份不漂移**：dashboard 与 accounts.js 对同一批样本输出逐字一致", () => {
+    if (!aqFmt || !aqWord || !acctFmt || !acctWord) return false;
+    const vals = [0, 1, 9999, 10000, 12345, 100000000, 1011158306, 640.5, 472.2328];
+    const units = ["token", "credits", "积分", "credit", ""];
+    const bad = [];
+    for (const u of units) {
+      if (aqWord(u) !== acctWord(u)) bad.push(`word(${u})="${aqWord(u)}"≠"${acctWord(u)}"`);
+      for (const v of vals) {
+        const a = aqFmt(v, u), b = acctFmt(v, u);
+        if (a !== b) bad.push(`fmt(${v},${u})="${a}"≠"${b}"`);
+      }
+    }
+    __q13 = `样本=${vals.length * units.length}；漂移=${bad.length ? bad.slice(0, 3).join(" | ") : "0 处"}`;
+    return bad.length === 0;
+  }, () => __q13);
+
   /* ---------- L · 共享行为层真跑（api.js + components.js，面板 ix B12-1 / S-46 第一半） ----------
    * 与 K 段的分工：K 段跑的是 dashboard.js 这一个页面；L 段跑的是**六个页面共用的那批函数**。
    * 场景先 await 求值再判（与 A/B/C 段同一口径）—— check 的 detail 是在登记时求值的，
@@ -3727,6 +3905,49 @@ const MUTATIONS = [
     to: '          + `${toModuleBody(read(COMPONENTS_KEY))}\\n${mEnv(extra)}\\n`;',
     kills: ["M0", "M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10", "M11", "M12", "M13",
       "M14", "M15", "M16", "M17"] },
+  /* ---------- 2026-10-07 总览「账号资源额度」板块（Q1~Q13）配套变异 15 条 ---------- */
+  { why: "MQ-call：板块没挂进总览页（后端有数据、界面一块空白 —— K 段同族的调用点逃逸）", file: "dash",
+    from: "    ${accountQuotaSection(data.accounts_quota)}\n", to: "", kills: ["Q1"] },
+  { why: "MQ-aqgrid：网格类名改掉（样式失配，卡片堆成一列 = 板块形同没做）", file: "dash",
+    from: 'class="aqgrid"', to: 'class="aqgrid-x"', kills: ["Q1"] },
+  { why: "MQ-empty：空账号时也画一个空板块外壳（未接入账号的实例上多一张谁也不住的卡）", file: "dash",
+    from: 'if (!items.length) return "";',
+    to: 'if (!items.length) return "<div class=\\"aqgrid\\"></div>";', kills: ["Q1"] },
+  { why: "MQ-blockhead：板块头退回无分界的旧形态（标题与描述糊成一句 —— 用户实拍那一刀的回归面）", file: "dash",
+    from: 'class="card-head block-head"', to: 'class="card-head"', kills: ["Q2"] },
+  { why: "MQ-ext：图标扩展名写死 png（qoder/trae/raccoon 是 svg ⇒ 界面三枚破图）", file: "dash",
+    from: 'const ext = ICON_SVG.has(q.product) ? "svg" : "png";', to: 'const ext = "png";',
+    kills: ["Q3"] },
+  { why: "MQ-word：积分单位词丢掉（积分制余额裸印数字，用户要的「积分余额」读不出来）", file: "dash",
+    from: 'if (u === "积分" || u === "credit" || u === "credits") return " 积分";',
+    to: 'if (u === "积分" || u === "credit" || u === "credits") return "";', kills: ["Q4", "Q13"] },
+  { why: "MQ-dash-yi：token 不再用中文量纲（1011158306 原样上屏 = 读不出位数）", file: "dash",
+    from: 'return trimTail((n / 1e8).toFixed(2)) + "亿";', to: 'return trimTail(String(n));',
+    kills: ["Q5", "Q13"] },
+  { why: "MQ-word0：拿占位符冒充状态词（「未知」被洗成一个横杠 = 未取到与取到 0 两种事都读不出）", file: "dash",
+    from: 'const word = q.unknown ? "未知" : (q.no_plan ? "无套餐" : "尚未刷新");',
+    to: 'const word = "—";', kills: ["Q6", "Q7"] },
+  { why: "MQ-merge：「无套餐」并入「尚未刷新」（上游明说没有 ≠ 从没查过，两件事不许合档）", file: "dash",
+    from: '? "无套餐" : "尚未刷新"', to: '? "尚未刷新" : "尚未刷新"', kills: ["Q7"] },
+  { why: "MQ-warn：合计 0 不再标已耗尽也不着色（额度见底必须看得出来）", file: "dash",
+    from: 'warn = totals.reduce((a, t) => a + (Number(t.remaining) || 0), 0) <= 0;',
+    to: 'warn = false;', kills: ["Q8"] },
+  { why: "MQ-enabled：停用位常驻显示（全部启用时也每卡挂一句「2 启用」= 零信息量噪音）", file: "dash",
+    from: 'if (enabled < accounts) bits.push(`${enabled} 启用`);', to: 'bits.push(`${enabled} 启用`);',
+    kills: ["Q9"] },
+  { why: "MQ-fresh：新鲜度不画（8 小时前的数据看着像刚查的 —— 「每次刷新读最新」那条失去凭据）", file: "dash",
+    from: 'if (totals.length && q.oldest_checked_at) bits.push(`${agoShort(q.oldest_checked_at)}查`);',
+    to: 'if (false && q.oldest_checked_at) bits.push(`${agoShort(q.oldest_checked_at)}查`);',
+    kills: ["Q10"] },
+  { why: "MQ-tip：证据条口径文本被删（悬停只剩计数，用户读不出「只计未失效包 / 最旧时刻」这条口径）", file: "dash",
+    from: 'const tip = "账号资源额度：只计未失效额度包的数值余量，每次刷新读取账号最新落盘数据"',
+    to: 'const tip = ""', kills: ["Q11"] },
+  { why: "MQ-esc：产品名不转义（后端下发串原样进 DOM = 注入面，K9 同一课）", file: "dash",
+    from: '<span class="aqt">${esc(q.title || q.product)}</span>',
+    to: '<span class="aqt">${q.title || q.product}</span>', kills: ["Q12"] },
+  { why: "MQ-acct：🔴 账号页那份格式化改了而总览这份没跟着改（两份实现漂移 = 两个屏幕两种读数）",
+    file: ACCT_SRC, from: 'return trimTail((n / 1e8).toFixed(2)) + "亿";',
+    to: 'return trimTail(String(n));', kills: ["Q13"] },
 ];
 
 /* ==================== 变异自证 ==================== */

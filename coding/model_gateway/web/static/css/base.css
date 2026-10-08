@@ -1297,3 +1297,26 @@ body.rail-resizing .split-handle::after { background: var(--text-tertiary); }
 .param-err { grid-column: 1 / -1; margin-top: -2px; font-size: 12px; font-weight: 600; color: var(--err); }
 @media (max-width: 1080px) { .param-list { grid-template-columns: minmax(0, 420px); } }
 
+
+/* ================= 账号资源额度（总览板块 · 2026-10-07 用户指令「每个产品一个小卡片」）=================
+   板块 = 一张满宽卡（卡头走既有 `.card-head.block-head` 单行制）+ 内层 `.aqgrid` 每产品一卡。
+   取色全部走令牌（双主题自适应）；meta/状态词用 --text-muted（不用 2.32:1 的 --text-faint，
+   与系统设置页同一条处置）。字重档：每卡只许数值一处 700（标签 12/600、meta 12/500）。
+   卡底用 --surface-muted：内层卡住在外层 .card（--surface）里，必须与宿主有可辨的分层。 */
+.aqgrid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+.aqcard { display: grid; gap: 4px; padding: 10px 12px; border: 1px solid var(--border);
+  border-radius: var(--radius-md); background: var(--surface-muted); }
+.aqtop { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.aqtop .aqt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12px; font-weight: 600; color: var(--text-tertiary); }
+/* 数值是主读数（唯一 700）：外壳 `.aqv` 让单位词与数字同档；内层 b 只作语义、不另加字重。
+   数值槽不设 nowrap/省略号 —— 数字永不裁字（挤就让它换行）。 */
+.aqv { font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums;
+  line-height: 24px; letter-spacing: -.01em; min-width: 0; }
+.aqv b { font-weight: inherit; }
+.aqtier { font-size: 12px; font-weight: 600; }
+/* 已耗尽：整**值槽**着色（不只染一个词），与额度格「整格 is-warn」同一条读法 */
+.aqcard.is-warn .aqv { color: var(--warn); }
+/* 无任何数值余量时的状态词（未知 / 无套餐 / 尚未刷新）：同词汇，降一档字号、不用醒目色 */
+.aqcard .aqnone { font-size: 15px; font-weight: 600; color: var(--text-muted); }
+.aqm { font-size: 12px; font-weight: 500; color: var(--text-muted); }
