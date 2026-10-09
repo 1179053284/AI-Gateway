@@ -19,6 +19,9 @@ let selected = null;      // 当前选中网关模型名
 
 const SHOW_DELETE = false; // Q24-④：删除按钮暂时隐藏（恢复 = 改 true；后端能力保留）
 const TRASH = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>`;
+/* 置顶/置底（2026-10-09 用户需求：↑/↓ 相邻交换改直接置顶/置底）。Lucide arrow-up-to-line / arrow-down-to-line */
+const PIN_TOP = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h14"/><path d="m18 9-6-6-6 6"/><path d="M12 3v14"/></svg>`;
+const PIN_BOTTOM = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21h14"/><path d="m18 13-6 6-6-6"/><path d="M12 3v16"/></svg>`;
 const EP_TEXT = { chat: "chat 对话（流式 + 非流式）", images: "images 图像生成" };
 
 export async function renderModels(root) {
@@ -122,7 +125,18 @@ function draw(root) {
       /* 参数配置两列栅格：单元格不继承 .list-row 兄弟分割线（网格中左右线错位），
          行距对齐 12px 节奏；窄屏回退单列。🔴 下段「网关自动代发的 2 个参数」同网格 ⇒ 同一课一起覆写 */
       #md-params .list-row + .list-row, #md-injected .list-row + .list-row { border-top: 0; }
-      @media (max-width: 1080px) { #md-params, #md-injected { grid-template-columns: minmax(0,1fr) !important; } }
+      @media (max-width: 1080px) { #md-params, #md-injected { grid-template-columns: minmax(0,1fr) !important; }
+        /* 窄屏一行放不下 ⇒ 允许资源池行折行（拖拽把手/序号与内容不再挤同行） */
+        #md-pool .pool-row { height: auto; flex-wrap: wrap; padding: 6px 0; } }
+      /* 资源池行拖拽（2026-10-09）：把手常驻但弱化，行本身整行可拖；
+         dragging = 拖起行降透明，drag-over = 松手落点行描边提示。 */
+      #md-pool .pool-row { cursor: grab; }
+      #md-pool .pool-row.dragging { opacity: .45; }
+      #md-pool .pool-row.drag-over { outline: 2px dashed var(--brand); outline-offset: -2px; }
+      #md-pool .drag-handle { flex: none; width: 16px; height: 20px; display: inline-grid; place-items: center;
+        color: var(--text-faint); cursor: grab; margin-left: 2px; }
+      #md-pool .drag-handle svg { pointer-events: none; }
+      #md-pool .pool-row select, #md-pool .pool-row button { cursor: auto; }
     </style>
     <div class="panel-split">
       <aside class="subnav">
@@ -514,7 +528,7 @@ function drawDetail(root) {
           <div style="font-size:12px;font-weight:500;color:var(--text-faint)">顺序 = 优先级：生效集 top-x 承接、失败切换按序补位</div>
         </div>
         <div id="md-pool" style="display:flex;flex-direction:column">${poolRows(m)}</div>
-        <p class="form-hint" style="margin-top:12px">新增 / 调整映射：Key 接入在「接入模型资源」页编辑对应资源，账号接入在「接入账号资源」页用「模型映射」（产品 × 模型）${isChat ? "；行内 effort 为该资源推理默认（请求级指定优先，空 = 不注入）" : ""}。</p>
+        <p class="form-hint" style="margin-top:12px">新增 / 调整映射：Key 接入在「接入模型资源」页编辑对应资源，账号接入在「接入账号资源」页用「模型映射」（产品 × 模型）${isChat ? "；行内 effort 为该资源推理默认（请求级指定优先，空 = 不注入）" : ""}。排序：整行拖动到目标位置，或用行尾「置顶 / 置底」直接挪到最前 / 最后（置顶 = 最优先生效）；每次调整即时保存。</p>
       </section>
 
       <!-- 参数配置：工具传参 > 网关设置 > 供应商通道默认（Q24，仅 chat 注入）。
@@ -610,11 +624,6 @@ function poolRows(m) {
   const all = m.resources || [];
   const units = poolUnits(m);
   const live = units.map((u, k) => ({ u, k })).filter(({ u }) => !u.off);
-  const prevLive = new Map(), nextLive = new Map();
-  live.forEach(({ k }, n) => {
-    if (n > 0) prevLive.set(k, live[n - 1].k);
-    if (n < live.length - 1) nextLive.set(k, live[n + 1].k);
-  });
   return live.map(({ u, k }, n) => {
     const r = all[u.idxs[0]];
     const isAcc = u.kind === "account";
@@ -639,9 +648,11 @@ function poolRows(m) {
       + (isAcc ? "；改一次作用于该组全部账号" : "")
       + (mixed ? "；⚠ 组内当前档位不一致，改动会统一成所选值" : "");
     const idxs = u.idxs.join(",");
-    const up = prevLive.get(k), down = nextLive.get(k);
     return `
-      <div class="list-row" style="padding:0;height:46px;gap:10px;${n ? "border-top:1px solid var(--border);" : ""}">
+      <div class="list-row pool-row" style="padding:0;height:46px;gap:10px;${n ? "border-top:1px solid var(--border);" : ""}"
+        draggable="true" data-unit="${k}" data-idxs="${idxs}"
+        title="拖动整行调整优先级（账号供给行整组一起动）；或用右侧置顶/置底">
+        <span class="drag-handle" title="拖动排序" aria-hidden="true"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="6" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="18" r="1"/></svg></span>
         <span style="width:20px;text-align:right;color:var(--text-faint);font-variant-numeric:tabular-nums;flex:none">${n + 1}.</span>
         <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
           <span class="mono" style="font-weight:700">${esc(label)}</span>
@@ -655,8 +666,8 @@ function poolRows(m) {
           ${levels.map((lv) => `<option value="${esc(lv)}" ${lv === curEffort ? "selected" : ""}>${esc(EFFORT_LABEL[lv] || lv)}</option>`).join("")}
         </select>` : ""}
         <span style="display:flex;gap:4px;flex:none;margin-right:12px">
-          <button class="btn btn-sm" data-up="${k}" data-with="${up === undefined ? "" : up}" ${up === undefined ? "disabled" : ""} title="上移（提高优先级）">↑</button>
-          <button class="btn btn-sm" data-down="${k}" data-with="${down === undefined ? "" : down}" ${down === undefined ? "disabled" : ""} title="下移（降低优先级）">↓</button>
+          <button class="btn btn-sm" data-top="${k}" ${n === 0 ? "disabled" : ""} title="置顶（最优先生效）">${PIN_TOP}</button>
+          <button class="btn btn-sm" data-bottom="${k}" ${n === live.length - 1 ? "disabled" : ""} title="置底（最后生效）">${PIN_BOTTOM}</button>
           <button class="icon-btn sm danger" data-rmres="${idxs}" title="${isAcc ? `移除该组 ${u.idxs.length} 个账号的映射` : "移除该映射"}">${TRASH}</button>
         </span>
       </div>`;
@@ -753,24 +764,79 @@ function bindDetail(root, m, e) {
       for (const i of idxs) m.resources[i].reasoning = effort ? { enabled: true, effort } : null;
       await persist(root, idxs.length > 1 ? `推理默认已更新（该组 ${idxs.length} 个账号）` : "推理默认已更新");
     }));
-  /* 优先级 = 数组顺序，而一行可能代表**一组**条目 ⇒ 移动必须按"块"整组搬：
-   * 两个单元在它们共同占据的那段下标里换位置，组内相对顺序不动、组外条目一个字节都不受影响。
-   * （旧实现按相邻下标交换，遇到组/隐藏条目会把用户的"上移"变成"什么都没发生"或静默改到别人头上。） */
-  const swapUnits = async (a, b) => {
-    const u = poolUnits(m);
-    const ua = u[a], ub = u[b];
-    if (!ua || !ub || ua.off || ub.off) return;
-    const arr = m.resources.slice();
-    const span = [...ua.idxs, ...ub.idxs].sort((x, y) => x - y);
-    const moved = [...ub.idxs, ...ua.idxs].map((i) => arr[i]);
-    span.forEach((pos, k) => { arr[pos] = moved[k]; });
-    m.resources = arr;
-    await persist(root, "优先级已更新");
+  /* 优先级 = 数组顺序，而一行可能代表**一组**条目 ⇒ 所有移动按"块"整组搬：组内相对顺序
+   * 不动、组外条目（含进池开关关掉但还占着优先级位的隐藏单元）一个字节都不受影响。
+   * 🔴 2026-10-09 重写：旧的 `swapUnits` 从引入起就有方向 bug —— `moved` 固定按
+   *    `[ub, ua]` 排，↑（ua=本行、ub=上一行）落出来是恒等交换（点 ↑ 什么都不发生），
+   *    只有 ↓ 生效；被"保存后重渲染看不出没变"掩盖至今。本需求（置顶/置底 + 拖拽）
+   *    整体换成**重排存活单元、再物化回数组**的 `moveUnit`：在可见行序里把拖起块挪到
+   *    目标位，隐藏单元原地留在自己的世界位上 —— 用户拖的是看到的行，动的也只是看到的行。 */
+  const moveUnit = async (unitK, pos) => {
+    const units = poolUnits(m);
+    const u = units[unitK];
+    if (!u || u.off || (pos !== Infinity && !Number.isInteger(pos))) return;
+    const live = units.filter((x) => !x.off);
+    const from = live.indexOf(u);
+    const to = pos === Infinity ? live.length - 1 : Math.max(0, Math.min(pos, live.length - 1));
+    if (from < 0 || from === to) return;
+    live.splice(from, 1);
+    live.splice(to, 0, u);
+    /* 🔴 off（不进池）单元不进重排，但**必须留在数组里**：它们仍占优先级位（账号页
+     * 映射弹窗按全量下标读写）。丢了它们 = 界面一拖把别人的映射静默删掉。
+     * 物化顺序 = 可见单元的新序（live），off 单元跟在末尾（调度只看存活序，位次无歧义）。 */
+    m.resources = [
+      ...live.flatMap((x) => x.idxs.map((i) => (m.resources || [])[i])),
+      ...units.filter((x) => x.off).flatMap((x) => x.idxs.map((i) => (m.resources || [])[i])),
+    ];
+    await persist(root, "优先级已保存");
   };
-  root.querySelectorAll("[data-up]").forEach((btn) =>
-    btn.onclick = () => { const w = +btn.dataset.with; if (w >= 0) swapUnits(+btn.dataset.up, w); });
-  root.querySelectorAll("[data-down]").forEach((btn) =>
-    btn.onclick = () => { const w = +btn.dataset.with; if (w >= 0) swapUnits(+btn.dataset.down, w); });
+  root.querySelectorAll("[data-top]").forEach((btn) =>
+    btn.onclick = () => { if (!btn.disabled) moveUnit(+btn.dataset.top, 0); });
+  root.querySelectorAll("[data-bottom]").forEach((btn) =>
+    btn.onclick = () => { if (!btn.disabled) moveUnit(+btn.dataset.bottom, Infinity); });
+  /* 拖拽排序（2026-10-09 用户需求）：行间拖 = 在存活单元之间改位，松手即 PUT 落库 + toast。
+   * dragover 在哪行上，拖起块就落到哪行的位置（可见行序，moveUnit 内部再折算回世界下标）；
+   * 拖到列表容器空白处 = 置底。落库成功/失败由 persist 统一 toast（成功重渲染、失败也重渲染回真值）。 */
+  const pool = root.querySelector("#md-pool");
+  if (pool) {
+    let dragK = null;
+    pool.querySelectorAll(".pool-row").forEach((row) => {
+      row.addEventListener("dragstart", (ev) => {
+        dragK = +row.dataset.unit;
+        ev.dataTransfer.effectAllowed = "move";
+        try { ev.dataTransfer.setData("text/plain", row.dataset.unit); } catch { /* Safari 私有模式 */ }
+        row.classList.add("dragging");
+      });
+      row.addEventListener("dragend", () => {
+        row.classList.remove("dragging");
+        pool.querySelectorAll(".pool-row").forEach((r) => r.classList.remove("drag-over"));
+      });
+      row.addEventListener("dragover", (ev) => {
+        ev.preventDefault();
+        ev.dataTransfer.dropEffect = "move";
+        pool.querySelectorAll(".pool-row").forEach((r) => r.classList.remove("drag-over"));
+        row.classList.add("drag-over");
+      });
+      row.addEventListener("drop", async (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const k = dragK;
+        if (k === null || k === +row.dataset.unit) { dragK = null; return; }
+        dragK = null;
+        const units = poolUnits(m);
+        const liveKs = units.map((x, i) => (x.off ? -1 : i)).filter((i) => i >= 0);
+        await moveUnit(k, liveKs.indexOf(+row.dataset.unit));
+      });
+    });
+    pool.addEventListener("dragover", (ev) => ev.preventDefault());
+    pool.addEventListener("drop", async (ev) => {
+      if (dragK === null || ev.target !== pool) return;
+      ev.preventDefault();
+      const k = dragK;
+      dragK = null;
+      await moveUnit(k, Infinity);
+    });
+  }
   root.querySelectorAll("[data-rmres]").forEach((b) =>
     b.onclick = async () => {
       const idxs = b.dataset.rmres.split(",").map(Number);
