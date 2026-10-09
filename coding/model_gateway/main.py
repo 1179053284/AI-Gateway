@@ -313,6 +313,13 @@ class Runtime:
         #: 不带的旧客户端保持兼容。闭合「多页签旧快照整份覆盖」这条静默还原路径的
         #: 机器可判形态（锁管住服务端读写竞争，version 管住客户端间的旧快照竞争）。
         self.config_version: int = 0
+        #: 已吃进的配置文件 mtime（2026-10-09 双计次修复）：mtime 轮询与
+        #: `reload_from_file`（管理端 PUT / 显式 reload 走它）**共用这本账** ——
+        #: 自己写盘的 mtime 变化由 reload 当场记账，轮询看到"已见过的 mtime"
+        #: 不再二次重载。原先轮询私有 `last_mtime`，导致界面每次 PUT 成功后
+        #: 1s 内被轮询再 `_apply` 一次：`config_version` 多 +1，界面刚重取的
+        #: 快照立刻过期，下一次保存必撞 409 乐观锁（连续保存第三下起全被拒）。
+        self._seen_config_mtime: float | None = None
         # 🔴 熔断的"读时重判"判据在这里接线（2026-09-29 用户裁决）：
         #    `core/` 不 import `upstream/zcode/`，所以由装配侧把「熔断此刻是否仍成立」
         #    注入运行态读路径（出快照 / 选路两处共用）。与 `sync_circuit()` 的启动对齐
@@ -681,6 +688,10 @@ class Runtime:
                                "%s: %s", type(e).__name__, e)
                 self._apply_error = f"{type(e).__name__}: {e}"
                 return False, [self._apply_error]
+            # 双计次修复（2026-10-09）：吃进的 mtime 当场记账 —— mtime 轮询
+            # 看到这本账上"已见过的 mtime"就不再把这次落盘当外部改动二次重载。
+            with contextlib.suppress(OSError):
+                self._seen_config_mtime = self.config_path.stat().st_mtime
             return True, []
 
     def reload_dialects(self) -> None:
@@ -1178,13 +1189,15 @@ async def _reload_watcher(app: FastAPI) -> None:
     不会按 1Hz 刷屏重试。
     """
     runtime: Runtime = app.state.runtime
-    last_mtime: float | None = None
     initialized = False
     while True:
         mtime: float | None = None
         try:
             mtime = runtime.config_path.stat().st_mtime if runtime.config_path.exists() else None
-            if initialized and mtime != last_mtime:
+            # 双计次修复（2026-10-09）：以 Runtime 的共享 mtime 账为准 —— 管理端 PUT
+            # 落盘后 `reload_from_file` 已当场记账，这里看到"已见过的 mtime"就不重载
+            # （旧账私有 `last_mtime` 不知道 PUT 吃进过哪个 mtime ⇒ 同一次写盘吃两次）。
+            if initialized and mtime != runtime._seen_config_mtime:
                 ok, errors = await runtime.reload_from_file()
                 if ok:
                     print(f"[hot-reload] 配置已重载：{runtime.config_path}")
@@ -1195,7 +1208,7 @@ async def _reload_watcher(app: FastAPI) -> None:
         except Exception as e:  # noqa: BLE001 — 兜底（B-1）：异常只终结本轮，循环不死
             logger.warning("[hot-reload] 本轮重载异常，循环继续（后续配置改动仍会生效）："
                            "%s: %s", type(e).__name__, e, exc_info=True)
-        last_mtime = mtime
+        runtime._seen_config_mtime = mtime
         initialized = True
         await asyncio.sleep(1.0)
 

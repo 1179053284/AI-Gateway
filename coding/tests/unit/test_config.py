@@ -448,3 +448,87 @@ class TestConfigVersionOptimisticLock:
         assert _extract_client_version(body3) == -1      # bool 排除
         body4 = {"version": -5}
         assert _extract_client_version(body4) == -1
+
+    def test_reload_books_mtime_shared_with_poller(self, tmp_path):
+        """双计次修复（2026-10-09）：reload 吃进的 mtime 必须记账进
+        `Runtime._seen_config_mtime` —— mtime 轮询与 reload 共用这本账。
+
+        坏形态（资源池排序轮真机实拍）：界面 PUT 成功 → 管理端 reload（version+1）
+        → 1s 轮询看到 mtime 变化**再** reload（version+1）→ 界面刚重取的快照过期，
+        连续第二次保存必撞 409 乐观锁（置顶/置底/拖拽这类高频连点全被拒）。
+        """
+        import asyncio
+
+        rt, f = self._runtime(tmp_path)
+        from model_gateway.config.loader import load_config
+
+        before = rt.config_version
+        ok, errors = asyncio.run(rt.reload_from_file())
+        assert ok, errors
+        assert rt.config_version == before + 1           # reload 本体 +1（这一条不变）
+        assert rt._seen_config_mtime == f.stat().st_mtime  # 但 mtime 已被当场记账
+        # 轮询口径：同一 mtime 不再触发二次重载（生产在 _mtime_watcher 里读这本账）
+        assert rt._seen_config_mtime == f.stat().st_mtime
+
+    def test_mtime_watcher_skips_reload_already_seen(self, tmp_path):
+        """轮询循环真的按共享账本跳过自己写盘引发的 mtime（B-1 兜底路径不覆盖本判据）。"""
+        import asyncio
+        import contextlib
+        import unittest.mock as mock
+
+        from model_gateway.config.loader import load_config
+        from model_gateway.main import Runtime, _reload_watcher
+
+        f = tmp_path / "config.yaml"
+        f.write_text(yaml.safe_dump({"gateway": {"host": "127.0.0.1"}}), encoding="utf-8")
+        rt = Runtime(load_config(f), f, usage_dir=tmp_path / "usage")
+
+        class _App:
+            state = type("S", (), {})()
+
+        app = _App()
+        app.state.runtime = rt
+
+        reloads = {"n": 0}
+        real_reload = rt.reload_from_file
+
+        async def counting_reload():
+            reloads["n"] += 1
+            return await real_reload()
+
+        rt.reload_from_file = counting_reload
+
+        async def drive(n_rounds: int, mutate_at: int | None = None) -> None:
+            """跑 n 轮 watcher：sleep 换成计数哨兵，第 n 轮结束退出。
+
+            `mutate_at` = 第几轮 sleep 后改写配置文件 —— 模拟"外部改动发生在
+            两次轮询之间"（watcher 的 initialized 只在第一轮记账，改动放启动前
+            会被首轮直接吃进，测不到触发路径）。"""
+
+            class _Stop(Exception):
+                pass
+
+            count = {"n": 0}
+
+            async def fast_sleep(_s):
+                count["n"] += 1
+                if mutate_at and count["n"] == mutate_at:
+                    # 🔴 safe_dump 带 encoding 参数 = 返回 bytes（PyYAML 语义），
+                    #   不带才是 str —— 这里要 str。
+                    dump = yaml.safe_dump(
+                        {"gateway": {"host": f"0.0.0.{count['n']}.{count['n'] + 1}"}})
+                    f.write_text(dump, encoding="utf-8")
+                if count["n"] >= n_rounds:
+                    raise _Stop
+
+            with mock.patch("asyncio.sleep", fast_sleep):
+                with contextlib.suppress(_Stop):
+                    await _reload_watcher(app)
+
+        # ① 首轮记账后、轮询间隙里外部改动文件 ⇒ 必须重载恰好一次（重载已把新 mtime 记账）
+        asyncio.run(drive(4, mutate_at=2))
+        assert reloads["n"] == 1, f"外部改动应触发 1 次重载，实际 {reloads['n']}"
+        # ② 账本已记同一 mtime（含重载自己写盘被当场记账的情形）⇒ 零重载
+        rt._seen_config_mtime = f.stat().st_mtime
+        asyncio.run(drive(3))
+        assert reloads["n"] == 1, f"已见 mtime 不得再重载，实际 {reloads['n']}"
