@@ -294,11 +294,18 @@ function __refl(el, prop, attr, isFlag) {
 function __mk(tag) {
   const el = { tagName: String(tag || "div").toUpperCase(), attrs: {}, children: [],
     parent: null, ownText: "", listeners: {}, hidden: false, style: {} };
+  /* models.js 的 switchEl 用原生 setAttribute 写 ARIA 三件套（§7.16）—— 假 DOM
+     一律落进 attrs（与 __parse 的属性解析同一去处），否则页面在 realm 里直接
+     TypeError、资源池三场景全灭（2026-10-09 轮首跑教训）。 */
+  el.setAttribute = (k, v) => { el.attrs[k] = String(v); };
   __refl(el, "value", "value", false);
   __refl(el, "name", "name", false);
   __refl(el, "type", "type", false);
   __refl(el, "title", "title", false);
   __refl(el, "disabled", "disabled", true);
+  /* draggable 同为原生反射属性（models.js 资源池行整行拖拽，2026-10-09）。
+     特性存在（值 "true"/"false"）按字符串读 —— 布尔属性走 disabled 那套 isFlag。 */
+  __refl(el, "draggable", "draggable", false);
   Object.defineProperty(el, "dataset", {
     get() {
       return new Proxy({}, {
@@ -727,6 +734,21 @@ const PUT_400_BUDGET = ["gateway: Value error, request_total_budget_seconds(1) �
 // 同一条 PUT 路由对**密钥改动**的真回包（把两条 access_tokens 的 id 改成重复时端点的原样返回）
 const PUT_400_TOKEN = ["Value error, gateway.access_tokens[].id 重复：'tok-1'"];
 
+/* ---- 网关模型管理 · 资源池判别 fixture（2026-10-09 置顶/置底/拖拽轮）----
+ * 4 条存活映射 + 1 条 off（不进池但占位）—— off 条目是「拖一拖把别人映射静默删掉」
+ * 这类坏改动的判别器；模型给 chat 端点让 effort 下拉在行内（结构最满）。 */
+const POOL_FIXTURE = {
+  models: [{
+    name: "ok-model", group: "", endpoint: "chat", enabled: true, params: {},
+    resources: [
+      { resource: "res-a", model: "vm-a", reasoning: null, enabled: true },
+      { resource: "res-b", model: "vm-b", reasoning: null, enabled: true },
+      { resource: "res-c", model: "vm-c", reasoning: null, enabled: true },
+      { resource: "res-c", model: "vm-c", reasoning: null, enabled: false },
+      { resource: "res-d", model: "vm-d", reasoning: null, enabled: true },
+    ], caps_overrides: {} }],
+};
+
 /* ---- 页面真跑的场景体（服务端假件 env 由 runChecks 侧的 mEnv 注入） ---- */
 const M_SCEN = {
   a_render: `
@@ -1010,6 +1032,75 @@ return { title: (mask.querySelector(".modal-head") || {}).textContent,
   sent: SRV.reqs.map((x) => x.m + " " + x.path), toasts: __toasts(),
   waiting: box ? box.style.opacity : null, timers: __timers.length,
   follow: await __follow(p, 20) };
+`,
+  /* ---- 网关模型管理 · 资源池置顶/置底/拖拽（2026-10-09 用户需求）----
+   * SRV.cfg 会被 mEnv 的 fixtureWith 改成带多映射的形状（mPool extra 注入 POOL_FIXTURE）。
+   * 场景覆盖：置底⇒落库序、置顶⇒落库序、拖拽 drop⇒落库序、off 条目保全、
+   * 首末行禁用态、图标不是旧箭头字符。 */
+  mo_pool: `
+const root = __mk("div");
+let err = "";
+try { await renderModels(root); }
+catch (e) { err = String(e && e.name) + ": " + String(e && e.message); }
+const pool = root.querySelector("#md-pool");
+/* 🔴 假 DOM 的 __match 只认单片段选择器（class/id/attr/标签），复合的
+   "#md-pool .pool-row" 永远空集 —— 先锚 #md-pool 再在其上查类。 */
+const rows = pool ? pool.querySelectorAll(".pool-row") : [];
+const rowInfo = () => [...rows].map((r) => ({
+  unit: r.dataset.unit, idxs: r.dataset.idxs, draggable: r.draggable,
+  label: (r.querySelector(".mono") || {}).textContent,
+  top: !!r.querySelector("[data-top]"), bottom: !!r.querySelector("[data-bottom]"),
+  topDis: r.querySelector("[data-top]") ? r.querySelector("[data-top]").disabled : null,
+  botDis: r.querySelector("[data-bottom]") ? r.querySelector("[data-bottom]").disabled : null,
+  handle: !!r.querySelector(".drag-handle"),
+  oldArrow: /↑|↓/.test(r.textContent) }));
+return { err, rows: rowInfo(),
+  server: SRV.cfg.models[0].resources.map((r) => r.resource + (r.enabled === false ? "(off)" : "")),
+  toasts: __toasts(), reqs: reqLines() };
+`,
+  mo_pin: `
+const root = __mk("div");
+await renderModels(root);
+const out = { steps: [] };
+const order = () => SRV.cfg.models[0].resources.map((r) => r.resource + (r.enabled === false ? "(off)" : ""));
+const labels = () => [...root.querySelectorAll("#md-pool .pool-row")].map((r) => (r.querySelector(".mono") || {}).textContent);
+/* ① 置底第 1 行（unit=0）：可见序 A B C E → B C E A；off 的 D 必须留在数组里 */
+const row0 = root.querySelectorAll(".pool-row")[0];
+const p1 = __fire(row0.querySelector("[data-bottom]"), "click");
+await settle(() => SRV.reqs.filter((r) => r.m === "PUT").length >= 1, 300);
+out.steps.push({ op: "pinBottom-first", order: order(), labels: labels(), toasts: __toasts() });
+/* ② 置顶末行（A 此时在末行）→ 回到行首 */
+const last = root.querySelectorAll(".pool-row")[root.querySelectorAll(".pool-row").length - 1];
+const p2 = __fire(last.querySelector("[data-top]"), "click");
+await settle(() => SRV.reqs.filter((r) => r.m === "PUT").length >= 2, 300);
+out.steps.push({ op: "pinTop-last", order: order(), labels: labels(), toasts: __toasts() });
+/* ③ 连续保存必须零失败（乐观锁体面与否不在此判；PUT 全 200 = persist 链健康） */
+out.puts = SRV.reqs.filter((r) => r.m === "PUT").map((r) => r.path);
+out.putCount = SRV.reqs.filter((r) => r.m === "PUT").length;
+return out;
+`,
+  mo_drag: `
+const root = __mk("div");
+await renderModels(root);
+const out = {};
+const order = () => SRV.cfg.models[0].resources.map((r) => r.resource + (r.enabled === false ? "(off)" : ""));
+/* 拖第 3 行（unit=2，通道C）到第 1 行（unit=0）上 ⇒ C A B E（off D 保全） */
+const rows = root.querySelectorAll(".pool-row");
+const src = rows[2], dst = rows[0];
+const mkEv = (type, target) => {
+  const e = __ev(type, target);
+  e.dataTransfer = { dropEffect: "move", effectAllowed: "move", setData() {}, getData: () => src.dataset.unit };
+  return e;
+};
+(src.listeners.dragstart || []).forEach((fn) => fn(mkEv("dragstart", src)));
+(dst.listeners.dragover || []).forEach((fn) => fn(mkEv("dragover", dst)));
+(dst.listeners.drop || []).forEach((fn) => fn(mkEv("drop", dst)));
+(src.listeners.dragend || []).forEach((fn) => fn(mkEv("dragend", src)));
+await settle(() => SRV.reqs.filter((r) => r.m === "PUT").length >= 1, 300);
+out.order = order();
+out.toasts = __toasts();
+out.rowsAfter = [...root.querySelectorAll("#md-pool .pool-row")].map((r) => (r.querySelector(".mono") || {}).textContent);
+return out;
 `,
 };
 
@@ -2549,6 +2640,17 @@ fetch = (p, init) => {
     return Promise.resolve(__resp(true, 200, { status: "ok", message: "配置已保存并生效" }));
   }
   if (path === "/admin/api/config" && m === "GET") return Promise.resolve(__resp(true, 200, cloneOf(SRV.cfg)));
+  if (path === "/admin/api/presets" && m === "GET")
+    return Promise.resolve(__resp(true, 200, { presets: [] }));
+  if (path === "/admin/api/enums" && m === "GET")
+    /* models.js 建目录索引用：entries[].name/vendor/endpoint/effort_levels。
+       一个 DeepSeek 厂商 + 两个 chat 模型足够（fixture 的模型都不在册 → 归「自定义」卡）。 */
+    return Promise.resolve(__resp(true, 200, { entries: [
+      { name: "ds-chat", vendor: "DeepSeek", endpoint: "chat", group: "g1",
+        effort_levels: null, param_fields: {}, params_default: {} },
+      { name: "ds-reasoner", vendor: "DeepSeek", endpoint: "chat", group: "g1",
+        effort_levels: ["low", "high"], param_fields: {}, params_default: {} },
+    ] }));
   if (path === "/admin/api/overview" && m === "GET") return Promise.resolve(__resp(true, 200, cloneOf(OV)));
   if (m === "POST" && (path === "/admin/api/system/stop" || path === "/admin/api/system/restart"))
     return Promise.resolve(__resp(true, 200, { status: "ok", message: "已受理" }));
@@ -2604,6 +2706,13 @@ const rowView = (root, i) => {
     `const FAIL = ${JSON.stringify(PUT_400_BUDGET)};`);
   const sStop = await pageRun("settings", "stop", M_SCEN.s_stop);
   const sRe = await pageRun("settings", "restart", M_SCEN.s_restart);
+  /* 资源池三场景共用一份改过 models 的 fixture（mEnv 的 SRV.cfg 由 extra 前置注入；
+     🔴 extra 跑在 mEnv 里 `cloneOf` 定义**之前**，不能用 cloneOf —— 自带深拷贝）。 */
+  const moExtra = `SRV.cfg = (function(){ const c = JSON.parse(JSON.stringify(SRV.cfg));
+    c.models = ${JSON.stringify(POOL_FIXTURE.models)}; return c; })();`;
+  const moR = await pageRun("models", "pool", M_SCEN.mo_pool, moExtra);
+  const moP = await pageRun("models", "pin", M_SCEN.mo_pin, moExtra);
+  const moD = await pageRun("models", "drag", M_SCEN.mo_drag, moExtra);
   check("M0", "API 接入页能在 realm 里真跑：首屏发出的就是两条生产端点 GET（7 个页内函数齐备）", () => {
     if (aR.threw) return false;
     const o = aR.out || {};
@@ -3098,6 +3207,74 @@ const rowView = (root, i) => {
       + `· id 重复 ${ids.length - idSet.size} · 残留 form-row ${legacy}；${bad.join(" | ") || "逐行一对一且关联在"}`;
     return bad.length === 0;
   }, () => MNOTE.m18);
+
+  /* ---- M19~M21 · 网关模型管理资源池（2026-10-09 置顶/置底/拖拽轮）----
+   * 判据对象 = 需求原文的三件事：① 按钮换成置顶/置底（不再是 ↑/↓）且首末行禁用；
+   * ② 点击即落库（PUT 发出、服务端收到新序）+ toast 回执；③ 每行可拖，drop 即落库，
+   * off 条目全程保全（拖一拖把别人的映射静默删掉 = 这张表最坏的一类谎）。 */
+  check("M19", "资源池行 = 置顶/置底两颗按钮（非旧 ↑/↓）+ 整行 draggable + 拖拽把手；首行置顶、末行置底禁用", () => {
+    if (moR.threw) { MNOTE.m19 = `realm 抛错 ${moR.threw}`; return false; }
+    const o = moR.out || {};
+    if (o.err) MNOTE.m19 = `页面抛错 ${o.err}`;
+    if (o.dbg) MNOTE.m19 += ` ｜dbg ${JSON.stringify(o.dbg)}`;
+    const rows = o.rows || [];
+    const bad = [];
+    if (rows.length !== 4) bad.push(`可见行 ${rows.length} 条（fixture 4 存活 + 1 off，off 不进池）`);
+    rows.forEach((r, i) => {
+      if (!r.top || !r.bottom) bad.push(`第 ${i + 1} 行缺置顶/置底钮`);
+      if (r.oldArrow) bad.push(`第 ${i + 1} 行文本里还有旧 ↑/↓ 字符`);
+      if (!r.draggable) bad.push(`第 ${i + 1} 行不可拖（draggable=false）`);
+      if (!r.handle) bad.push(`第 ${i + 1} 行没有拖拽把手`);
+    });
+    if (rows.length && (!rows[0].topDis || !rows[rows.length - 1].botDis))
+      bad.push(`首行置顶=${rows[0].topDis} 末行置底=${rows[rows.length - 1].botDis}（已在首位/末位还点得动 = 假按钮）`);
+    if (rows.length && (rows[0].botDis || rows[rows.length - 1].topDis))
+      bad.push(`首行置底=${rows[0].botDis} 末行置顶=${rows[rows.length - 1].topDis}（还有位可挪就被禁）`);
+    MNOTE.m19 = `${rows.length} 行 · ${bad.join(" | ") || "钮/把手/禁用态逐项在"}`
+      + `｜服务端序 ${(o.server || []).join(",")}`;
+    return bad.length === 0;
+  }, () => MNOTE.m19);
+
+  check("M20", "置底/置顶点击即落库：PUT 发出、服务端序变为目标序（off 条目保全）、toast 给保存回执", () => {
+    if (moP.threw) return false;
+    const o = moP.out || {};
+    const bad = [];
+    const steps = o.steps || [];
+    if (steps.length !== 2) bad.push(`只跑出 ${steps.length} 步（应置底+置顶两步）`);
+    const s1 = steps[0] || {}, s2 = steps[1] || {};
+    /* fixture：A a, B b, C c, C off, D d → 置底 A ⇒ b c d a + off 保全（4 存活 + off） */
+    const exp1 = ["res-b", "res-c", "res-d", "res-a", "res-c(off)"];
+    if (JSON.stringify(s1.order) !== JSON.stringify(exp1))
+      bad.push(`置底后服务端序 ${JSON.stringify(s1.order)} ≠ 期望 ${JSON.stringify(exp1)}`);
+    /* 置顶（A 回行首）⇒ a b c d + off */
+    const exp2 = ["res-a", "res-b", "res-c", "res-d", "res-c(off)"];
+    if (JSON.stringify(s2.order) !== JSON.stringify(exp2))
+      bad.push(`置顶后服务端序 ${JSON.stringify(s2.order)} ≠ 期望 ${JSON.stringify(exp2)}`);
+    if (o.putCount !== 2) bad.push(`PUT 发了 ${o.putCount} 次（两步各一次）`);
+    const toasts = (o.toasts || []).concat(...(steps.map((s) => s.toasts || [])));
+    if (!toasts.some((t) => /优先级已保存/.test(t.text || t)))
+      bad.push(`toast 里没有「优先级已保存」：${JSON.stringify(toasts)}`);
+    MNOTE.m20 = `${bad.join(" | ") || "置底/置顶两步序、off 保全、PUT×2、toast 全对"}`
+      + `｜${steps.map((s) => `${s.op}→[${(s.order || []).join(",")}]`).join("；")}`;
+    return bad.length === 0;
+  }, () => MNOTE.m20);
+
+  check("M21", "拖拽 drop 即落库：拖到目标行 ⇒ 服务端序变为以目标行开头的序，off 条目保全，PUT 已发出", () => {
+    if (moD.threw) return false;
+    const o = moD.out || {};
+    const bad = [];
+    /* fixture：a b c off d → 拖第 3 行（res-c 存活行）到第 1 行 ⇒ c a b d + off 保全 */
+    const exp = ["res-c", "res-a", "res-b", "res-d", "res-c(off)"];
+    if (JSON.stringify(o.order) !== JSON.stringify(exp))
+      bad.push(`drop 后服务端序 ${JSON.stringify(o.order)} ≠ 期望 ${JSON.stringify(exp)}`);
+    if (!(o.toasts || []).some((t) => /优先级已保存/.test(t.text || t)))
+      bad.push(`toast 里没有「优先级已保存」：${JSON.stringify(o.toasts)}`);
+    if (JSON.stringify(o.rowsAfter || []) === JSON.stringify(["res-c"]))
+      bad.push("重渲染后行集合异常");
+    MNOTE.m21 = `${bad.join(" | ") || "drop 序 / off 保全 / toast 全对"}｜服务端序 [${(o.order || []).join(",")}]`
+      + `｜重渲染行 ${(o.rowsAfter || []).join(",")}`;
+    return bad.length === 0;
+  }, () => MNOTE.m21);
 
 
   // 🔴 Z 段 = **门自己的**语义自测：可见性判据必须按属性语义走，
@@ -3898,6 +4075,24 @@ const MUTATIONS = [
     kills: ["H4"] },
   { why: "M18：参数行名称的 for 丢了（点名称不再聚焦，关联那条腿专用）", file: "settings",
     from: 'class="pk" for="p-${section}-${name}"', to: 'class="pk"', kills: ["M18"] },
+  /* ---------- 2026-10-09 资源池置顶/置底/拖拽（M19~M21）配套变异 ---------- */
+  { why: "M19：行不再可拖（draggable 摘掉 ⇒ 拖拽功能整个消失，界面还画着把手骗人）", file: "models",
+    from: 'draggable="true" data-unit="${k}"', to: 'data-unit="${k}"', kills: ["M19"] },
+  { why: "M19：首末行禁用态丢了（已在首位/末位还点得动 = 假按钮）", file: "models",
+    from: '<button class="btn btn-sm" data-top="${k}" ${n === 0 ? "disabled" : ""}',
+    to: '<button class="btn btn-sm" data-top="${k}"', kills: ["M19"] },
+  { why: "M19：拖拽把手被删（没有视觉抓手，用户不知道能拖）", file: "models",
+    from: '<span class="drag-handle" title="拖动排序" aria-hidden="true">',
+    to: '<span aria-hidden="true">', kills: ["M19"] },
+  { why: "M20/M21：置顶/置底/拖拽不再落库（moveUnit 只改本地不 PUT = Q33 消灭的假态）", file: "models",
+    from: 'm.resources = [\n      ...live.flatMap((x) => x.idxs.map((i) => (m.resources || [])[i])),\n      ...units.filter((x) => x.off).flatMap((x) => x.idxs.map((i) => (m.resources || [])[i])),\n    ];\n    await persist(root, "优先级已保存");',
+    to: 'await renderModels(root);', kills: ["M20", "M21"] },
+  { why: "M20：置底把 off 条目挤丢（拖一下别人的映射被静默删除 —— 最坏的一类谎）", file: "models",
+    from: '...units.filter((x) => x.off).flatMap((x) => x.idxs.map((i) => (m.resources || [])[i])),',
+    to: '', kills: ["M20", "M21"] },
+  { why: "M21：drop 监听没挂（拖拽事件没人接，松手什么也不发生）", file: "models",
+    from: "row.addEventListener(\"drop\", async (ev) => {",
+    to: "row.addEventListener(\"dropnever\", async (ev) => {", kills: ["M21"] },
   { why: "🔴 门自己：M 段不再把页面源码编进 realm —— 页面判据失去对象（用的是共享层复制品）",
     self: true, file: "gate",
     from: '          + `${toModuleBody(read(COMPONENTS_KEY))}\\n${mEnv(extra)}\\n`\n'
