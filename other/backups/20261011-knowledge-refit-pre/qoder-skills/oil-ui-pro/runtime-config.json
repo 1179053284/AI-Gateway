@@ -1,0 +1,15 @@
+{
+  "fileUploadUrl": "https://aigw.alipay.com/api/file/upload",
+  "publicFiles": [
+    ".gitignore",
+    "assets/style-explorer.html",
+    "scripts/build_explorer.py",
+    "tests/test_build_explorer.py"
+  ],
+  "publicPathLayout": "source-relative",
+  "queryMode": "polling",
+  "queryUrl": "https://aigw.alipay.com/api/agent/pollquery",
+  "remoteUrl": "https://agentpay.alipay.com/ai-pay/proxy/2088022260532460/S0806000208846460",
+  "schemaVersion": "skillhide.near-runtime-config.v1",
+  "skuId": "S0806000208846460"
+}

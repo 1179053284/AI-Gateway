@@ -1,0 +1,33 @@
+---
+description: Model-Gateway 唯一信息源、目录分流与 AI 工具目录边界
+alwaysApply: true
+---
+
+# Model-Gateway 目录与信息源（硬规则）
+
+## 唯一信息源
+- 项目根：`/Users/w/Desktop/Model-Gateway`。相对路径均相对此根。
+- **AI 工具目录边界（2026-10-11 扩定版）**：项目规则/经验/场景手册唯一真相源 = **`.cursor/`**（rules / memory / skills，用户维护）；项目内 `.claude/`、`.trae/`、`.workbuddy/` 等其它 `.xxx` 工具目录，以及**用户家目录下的工具目录**（`~/.qoder-cn/`、`~/.claude/`、`~/.codex/` 等）都不是项目内容源——一律不维护、不更新、不写入。skill 真身唯一住址 = `.cursor/skills/`（入口 `INDEX.md`），任何 AI 工具经根 `AGENTS.md` 到达。
+- 需求真相：`docs/specs/**`（PRD 为主；架构/契约按域）；活跃工作：`docs/changes/ACTIVE.md`（并行任务时建立）。
+
+## 目录分流
+
+> 结构定版与迁移映射真相源 = 根 `项目目录说明.md`（2026-10-01 对齐 codex-coding）。
+| 目录 | 只允许 | 禁止 |
+|------|--------|------|
+| Python 包根（`coding/model_gateway/`） | 项目源码（纯明文） | 过程文档、密钥、测试脚本、调试说明 |
+| `coding/`（2026-10-01 结构定版） | 源码唯一区：`model_gateway/`、`tests/`、`pyproject.toml`、`config.example.yaml`、双语 README、`data/`（运行时明文，.gitignore） | 过程文档、一次性探针/诊断脚本、转储文件 |
+| `bianyiandhuanjing/`（2026-10-01） | 运行与验收环境：`启动网关.command` + `scripts/**`（ship-gate / verify_* / probe_* / fixtures） | 产品源码、过程文档 |
+| `docs/` | 需求/架构/设计真相（specs）+ 活跃任务（changes） | 源码、编译产物 |
+| `tests/` | 自动化测试 | 源码 |
+| `scripts/` | 开发/构建/运维脚本（含元数据头） | 源码、过程文档 |
+| `.cursor/` | 规则 + 记忆 + skills（真身唯一住址） | 源码 |
+
+- **禁止**：根目录堆 md；密钥/令牌文件入库（须 `.gitignore` 或本地隔离）；过程坟场（无用的过程材料迁出项目或直接删，明确需要的进 docs/changes/ 归档说明）。
+- **密钥纪律**：所有供应商 API Key 只出现在本地明文配置文件（如 `config.yaml`）或环境变量；源码内禁止硬编码密钥默认值。
+
+## 锚定文档（按需引用，不全文搬运）
+- 需求：`docs/specs/prd.md`（需求讨论后产出）
+- 架构：`docs/specs/architecture.md`（定稿后产出）
+- 当前任务：`docs/changes/ACTIVE.md`（有并行任务时建立）
+- 规则与记忆索引：本目录 + `.cursor/memory/`

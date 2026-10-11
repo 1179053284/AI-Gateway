@@ -11,10 +11,17 @@ model_gateway/_wiring_canary_pkg_*
 coding/model_gateway/_wiring_canary_pkg_*
 
 # ===== AI 工具管理过程文件（内部工作区，不上传）=====
-# AGENTS.md = AI 导航总文件（项目管理入口）
-AGENTS.md
-# 规则 + 项目长期记忆（runbook/decisions/pitfalls）
-.cursor/
+# 2026-10-11 知识层入 git 白名单（decisions 2026-10-11 ④，用户授权批 5）：
+# AGENTS.md 与 .cursor/{rules,memory,skills}、docs/specs 升级为跟踪面——
+# 误写可回滚、「存证不改写」可用 git diff 机器验证、skill 版本戳可查；
+# 工具家目录与其余 AI 状态目录维持忽略。反转触发：用户叫停即回滚本块。
+# AGENTS.md = AI 导航总文件（项目管理入口）—— 2026-10-11 起跟踪
+# 规则 + 项目长期记忆（runbook/decisions/pitfalls）+ skills 真身 —— 跟踪；
+# .cursor 其余内容（.DS_Store 等杂物）维持忽略
+.cursor/*
+!.cursor/rules/
+!.cursor/memory/
+!.cursor/skills/
 .trae/
 .zcode/
 .claude/
@@ -22,7 +29,10 @@ CLAUDE.md
 .cursorrules
 
 # ===== 实测过程记录（内部开发证据，不上传）=====
-docs/
+# 2026-10-11：docs/specs（需求真相）升级为跟踪面；changes/research 等实测证据维持忽略
+# （其防漂移由「开/完结记录生命周期」+ other/backups 备份承担）
+docs/*
+!docs/specs/
 
 # ===== 诊断脚本输出（历史调试日志，不上传）=====
 bianyiandhuanjing/scripts/diag_out*.txt
