@@ -182,13 +182,24 @@ def token_poll_headers(profile: ProductProfile) -> dict[str, str]:
 def account_headers(profile: ProductProfile, token: dict) -> dict[str, str]:
     """`login/account` 头（Bearer + 两个 `X-No-*`，`buddy-oauth.ts:246-252`）。
 
-    与 DSH 的差异（有意）：`X-Domain` 取**产品基址主机名**而非 `token.domain`
+    🔴 `Authorization: Bearer <access_token>` **必须发**（2026-10-10 修，凭据漏发的根因）：
+       这是**带凭据**的账户信息端点 —— DSH `buddy-oauth.ts:246-252` 逐字带
+       「Authorization: Bearer <token.accessToken>」，不是免鉴权端点；
+       免鉴权的是**前两步**（`auth/state` 与 `auth/token`，它们才发
+       `X-No-Authorization: true`，见 `state_headers` / `token_poll_headers`）。
+       本实现此前只发两个 `X-No-*` + `X-Domain` + UA，且函数体里 `del token`
+       把刚换到的令牌**整个扔掉** —— 与本函数 docstring 自述的「Bearer」也不一致。
+       后果是登录第二步被上游按缺凭据处理 ⇒ 现象就是「浏览器授权走完了、
+       网关侧却始终收不到账号」。
+
+    与 DSH 的差异（**有意保留**）：`X-Domain` 取**产品基址主机名**而非 `token.domain`
     —— `token.domain` 可能为空，且请求 baseURL 恒为本产品基址，两者必须一致
-    （`credits.ts:222-228` 对同类错配的实测复盘）。
+    （`credits.ts:222-228` 对同类错配的实测复盘）。国际版下两者同为
+    `www.workbuddy.ai`，无实际分歧。
     """
-    del token  # 形参保留：DSH 该端点用 token.domain；本实现按上面注释统一取产品域名
     return {
         HEADER_DOMAIN: profile.api_domain,
+        "Authorization": f"Bearer {access_token_of(token)}",
         HEADER_NO_USER_ID: "true",
         HEADER_NO_ENTERPRISE_ID: "true",
         "User-Agent": profile.user_agent,
@@ -242,6 +253,9 @@ def identity_headers(profile: ProductProfile, cred: dict, *, domain: str = "") -
 _ATTRIBUTION_BY_PRODUCT: dict[str, tuple[str, str]] = {
     "buddy": ("CodeBuddy", "1.106.1"),
     "workbuddy": ("WorkBuddy", "5.5.2"),
+    # Q44：中国版 app.asar 逐字取证 X-IDE-Type/Name = "WorkBuddy"、版本取 DSH
+    # `WORKBUDDY.clientVersion`（`product.ts:71` 的 UA_CN 同源，方案 §4.4）。
+    "workbuddycn": ("WorkBuddy", "5.5.2"),
 }
 
 

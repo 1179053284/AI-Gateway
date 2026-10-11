@@ -109,7 +109,7 @@ _SYSTEM_FIRST = (
 
 _PROFILE = ProductProfile(
     id=PRODUCT,
-    platform="workbuddy-ai",                              # product.ts:383
+    platform="cli",                                       # 🔴 不是 product.ts:383 的 workbuddy-ai，见下
     product_code="workbuddy",                             # product.ts:387
     user_agent="WorkBuddy/5.5.2 WorkBuddy AI/5.5.2 CLI/5.5.2",  # product.ts:70,389
     fallback_models=_WORKBUDDY_FALLBACK_MODELS,
@@ -117,6 +117,44 @@ _PROFILE = ProductProfile(
     plugin_version="5.5.2",                               # product.ts:406
     system_first_text=_SYSTEM_FIRST,                      # 通道要求首条 system（见上注）
 )
+
+# ── 登录 platform 为什么是 `cli` 而不是客户端的 `workbuddy-ai`（2026-10-10 修）──
+#
+# 🔴 根因：`platform` 是登录页判断「**登录后把控制权交还给谁**」的唯一开关，不是
+#    渠道标识。官方 web 登录页（`LoginSuccess-*.js`）登录成功后按 platform 做一次
+#    **深链跳转**：
+#      {ide:'codebuddy://getStarted', workbuddy:'workbuddy://',
+#       workbuddy-ai:'workbuddy-ai://', learnbuddy:'learnbuddy://'}，缺省 'vscode://'
+#    而 `/login/started` 的判定是 `!l && !f && (window.location.href = S)`，其中
+#      `l = (platform === 'cli')`  ← **唯一**被短路（不深链）的平台。
+#    本机实测 `/Applications/WorkBuddy AI.app` 的 Info.plist 注册的正是
+#    `workbuddy-ai` 协议 ⇒ 用 `workbuddy-ai` 登录后浏览器会把控制权交给本地 App
+#    （用户报障「不是回调到网关，是直接打开本地程序」）。
+#
+# 🔴 为什么照抄 DSH 的 `workbuddy-ai` 是错的：`workbuddy-ai` 是**桌面客户端**
+#    （`/Applications/WorkBuddy AI.app/.../cli/product.json` 的
+#    `applicationName` / `authentication.attributes.platform`）自己的平台值。
+#    网关与 DSH 插件都不是那个桌面客户端 —— DSH 之所以"看起来没弹本地 App"，
+#    是因为它把登录页开在**宿主受控窗口**（Electron 窗口默认不把未知协议交给
+#    系统 shell）里把那一跳吞掉了，**不是**它的登录逻辑做了处理
+#    （`jet-hub.js:2355` 就是一句 `window.open`，与网关逐字同形）。
+#    网关用系统浏览器弹窗，没有宿主可吞 ⇒ 必须改用语义相符的平台值。
+#    `cli` 是官方为「**没有可交还的客户端**」准备的分支：换 token 的
+#    `/console/auth/login` 照常执行（登录照常完成、轮询照常取到凭据），
+#    只是不再深链，页面上显示「返回 CLI 继续使用」。
+#
+# 🔴 已验证（2026-10-10 实机）：
+#    · `POST /v2/plugin/auth/state?platform=cli` 返回 `code:0` 与正常 authUrl；
+#    · 无头 Chrome 渲染 `?platform=cli` → 与 `?platform=workbuddy-ai` **同一套
+#      国际版登录页**（`login-iframe` 承载 OIDC，DOM 结构一致）⇒ 登录交互不变；
+#    · `profile.platform` 全仓**只**用于 `auth/state` 查询串
+#      （`buddy/hooks.py::start_login`），不影响 UA / X-Product-Code / 出站链路。
+# ⚠️ 未端到端验证：完整登录（需真实 WorkBuddy 国际版账号在浏览器完成授权）
+#    —— 换 token 仍走同一条 `/console/auth/login`，待真机复核。
+# 🟡 同型待办：buddy（CodeBuddy）的 `platform="ide"` 同样会深链
+#    `codebuddy://getStarted`；本机**没有** App 注册 `codebuddy`（CodeBuddy CN
+#    注册的是 `codebuddycn`）⇒ 当前静默失败、无感。换过 platform 会动到已在跑的
+#    中国版账号归因，本轮不动，单独报备。
 
 
 def meta() -> ProductMeta:

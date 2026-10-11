@@ -23,7 +23,7 @@ from model_gateway.upstream.workbuddy import product as workbuddy
 
 ACCESS = "header.payload.sig"          # 非 JWT 也可（解析失败一律回退空，不抛）
 REFRESH = "WB-REFRESH-TOKEN"
-AUTH_URL = "https://www.workbuddy.ai/login/?platform=workbuddy-ai&state=ST-9"
+AUTH_URL = "https://www.workbuddy.ai/login/?platform=cli&state=ST-9"
 
 LOGIN_ROUTES: dict = {
     "/v2/plugin/auth/state": (200, {"code": 0, "data": {"state": "ST-9", "authUrl": AUTH_URL}}),
@@ -81,8 +81,11 @@ async def test_login_url_is_decorated_with_session_params(tmp_path, monkeypatch)
 
     url = session.challenge.url
     assert url.startswith(AUTH_URL) and "version=5.5.2" in url and "loginSessionId=" in url
-    # platform 随产品（workbuddy-ai，而非 buddy 的 ide）
-    assert seen[0].url.params["platform"] == "workbuddy-ai"
+    # 🔴 platform 是 `cli`（不是客户端的 `workbuddy-ai`）：登录页对**非 cli** 平台在
+    #    登录成功后会深链交还控制权（`workbuddy-ai://` → 本机 WorkBuddy AI App），
+    #    网关是无 GUI 的本机服务，不该冒充桌面客户端。取证与反转条件见
+    #    `upstream/workbuddy/product.py::_PROFILE` 上方注释。
+    assert seen[0].url.params["platform"] == "cli"
     assert seen[0].headers["User-Agent"].startswith("WorkBuddy/5.5.2 WorkBuddy AI")
 
 

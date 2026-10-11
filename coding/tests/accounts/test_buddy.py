@@ -136,6 +136,27 @@ async def test_login_start_returns_external_link_and_keeps_state_private(tmp_pat
     assert request.headers["X-No-Authorization"] == "true"       # buddy-oauth.ts:145
 
 
+async def test_login_account_poll_carries_bearer_token(tmp_path, monkeypatch):
+    """`login/account` 是**带凭据**端点，必须发 `Authorization: Bearer <刚换到的令牌>`
+    （`buddy-oauth.ts:246-252`；2026-10-10 修的漏发根因）。
+
+    🔴 免鉴权的只有**前两步**（`auth/state` / `auth/token` 发 `X-No-Authorization: true`，
+    由相邻用例钉住）。第二步漏发凭据 ⇒ 上游按缺凭据处理 ⇒ 现象是「浏览器授权走完了、
+    网关侧始终收不到账号」，而凭据交换本身是成功的 —— 极难从界面上看出来。
+    """
+    seen = _install_http(monkeypatch, LOGIN_ROUTES)
+    engine = LoginEngine(root=tmp_path / "accounts")
+    session = await engine.start(buddy.PRODUCT)
+    assert (await engine.poll(buddy.PRODUCT, session.id)).state == "success"
+
+    by_path = {request.url.path: request for request in seen}
+    token_req = by_path["/v2/plugin/auth/token"]
+    account_req = by_path["/v2/plugin/login/account"]
+    assert token_req.headers["X-No-Authorization"] == "true"          # 第一步免鉴权
+    assert account_req.headers["Authorization"] == f"Bearer {ACCESS}"  # 第二步带令牌
+    assert account_req.headers["X-Domain"] == "copilot.tencent.com"    # 与本产品基址同源
+
+
 async def test_login_poll_pending_then_success_and_commits_credential(tmp_path, monkeypatch):
     """11217=token 未就绪（**非 200** 响应体业务码）→ `pending`（**不是错误**）；
     就绪后 success 且凭据落盘。"""
