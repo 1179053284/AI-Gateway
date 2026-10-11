@@ -9,7 +9,7 @@
 | 鉴权 | `Authorization: Bearer workos:<access_token>`（**前缀不可剥**） | `cline-product.ts:96-115`；`cline.ts:159-182` | 复用 `protocol.auth_headers`（内含 `bearer_value` 幂等补齐） |
 | 客户端标识头 | `HTTP-Referer` / `X-Title` / `X-IS-MULTIROOT` / `X-CLIENT-TYPE` | `cline-product.ts:269-274`（`DEFAULT_CLINE_REQUEST_HEADERS`） | 同上（`protocol.CLIENT_HEADERS`） |
 | `Accept` | `text/event-stream` | `cline-adapter.ts:571-577` | `protocol.auth_headers` 的 `extra` 覆写 |
-| 请求体 | 标准 OpenAI（**唯一一家推理体无自有塑形**） | `cline-product.ts:13` 的协议表 | 不写 `prepare_body`（基类默认只落供应商模型名） |
+| 请求体 | 标准 OpenAI；**`max_tokens` 下限 16**（P1-4，2026-10-11） | `api/admin.py` 探测注释同源取证：cline/Vercel 路把 `max_tokens` 映成 `max_output_tokens` 并要求 `>= 16`，小值回 400「integer below minimum」（2026-10-08 gpt-6 系 14 次失败同因） | 写 `prepare_body`：落模型名（基类）+ 小值抬到 16，其余一字不动 |
 | **非流式响应** | **`{success, data:{choices…}, model}` 信封** | **2026-10-01 :8300 实网实测**（顶层键 = `["data","success","model"]`，`choices/usage` 全在 `data` 内） | `_shape_response` 解包（仅"顶层无 `choices` 且内层 `data` 含 `choices`"时；流式帧实测无信封，不受影响） |
 
 🔴 **`workos:` 前缀**（`cline.ts:159-182`，实测坑位）：前缀只在**解码 JWT** 时被剥，
@@ -68,6 +68,13 @@ _REGION_FORBIDDEN_MARKERS: tuple[str, ...] = (
 #: 「有余额但没订阅该模型计划」的业务码（DSH `cline-rate-limit.ts:240-241` 实录）。
 _ENTITLEMENT_CODE = "ENTITLEMENT_ERROR"
 
+#: cline/Vercel 路的输出预算下限（与 `api/admin.py` 探测注释同源取证）：上游把
+#: `max_tokens` 映成 `max_output_tokens` 并要求 `>= 16`，客户端发小值即 400
+#: 「integer below minimum」⇒ 模型可用却报"不可用"（2026-10-08 12:51–12:53 的
+#: gpt-6 系 14 次失败同因）。该约束此前只做在**探测侧**（探测预算写死 64），
+#: 转发侧没有任何保护 —— P1-4 把它下沉到本产品的出站塑形（2026-10-11）。
+_MIN_OUTPUT_TOKENS = 16
+
 
 def _is_resource_scoped_403(text: str) -> bool:
     """这条 403 是「**资源级不可承接**」而不是凭据问题吗？
@@ -110,6 +117,24 @@ class ClineOut(FamilyOpenAIOut):
             raise UpstreamError(
                 f"Cline 账号 {self.account_ref} 的凭据缺少 access_token（请重新登录该账号）")
         return protocol.auth_headers(token, {"Accept": "text/event-stream"})
+
+    def prepare_body(self, body: dict, *, vendor_model: str, cred: dict,
+                     meta: dict, device: dict) -> dict:
+        """体塑造：落供应商模型名（基类）+ **输出预算下限**（P1-4，2026-10-11）。
+
+        - 取证：`_MIN_OUTPUT_TOKENS` 注释（上游约束 `>= 16`，此前只护探测不护转发）；
+        - 只上钳不注入：客户端没发 `max_tokens` 就不加（上游默认值是它自己的事）；
+          发 `>= 16` 原样透传；发小值抬到 16 —— 只放宽**上限**不改语义（模型到
+          EOS 即停，多给的预算不改变内容），且仅限本产品（其它通道无此取证不扩）；
+        - 其余字段一字不动（本产品推理体无自有塑形，`cline-product.ts:13` 协议表）。
+        """
+        out = super().prepare_body(body, vendor_model=vendor_model,
+                                   cred=cred, meta=meta, device=device)
+        asked = out.get("max_tokens")
+        if isinstance(asked, (int, float)) and not isinstance(asked, bool) \
+                and asked < _MIN_OUTPUT_TOKENS:
+            out["max_tokens"] = _MIN_OUTPUT_TOKENS
+        return out
 
     # —— 响应整形钩子 ——
 

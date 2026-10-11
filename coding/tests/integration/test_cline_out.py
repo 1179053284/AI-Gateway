@@ -406,3 +406,40 @@ async def test_401_disables_the_resource_end_to_end(make_gateway, client):
     assert gw.runtime.resources.registry.get(("res-cl", VENDOR_MODEL)).status == "disabled"
     assert gw.read_switches()[0]["reason_cls"] == "AUTH"
     assert len(seen_a) == 1 and len(seen_b) == 1
+
+
+# ============ 输出预算下限（P1-4，2026-10-11）============
+
+
+async def test_small_max_tokens_is_raised_to_vercel_floor(make_gateway, client):
+    """客户端发 `max_tokens=1` ⇒ 出站体抬到 16。
+
+    取证 = `api/admin.py` 探测注释同源：cline/Vercel 路把 `max_tokens` 映成
+    `max_output_tokens` 并要求 `>= 16`，小值回 400「integer below minimum」
+    （2026-10-08 gpt-6 系 14 次失败同因）—— 该约束此前只护探测（预算 64），
+    转发侧裸奔。抬上限不改语义：模型到 EOS 即停。"""
+    seen: list[httpx.Request] = []
+    store.commit_login("cline", ACCOUNT, {"access_token": TOKEN_BARE}, {})
+    gw = await make_gateway(_cfg())
+    await _install(gw, "res-cl", _handler(seen, mode="json"))
+
+    resp = await _chat(client, gw, _body(max_tokens=1))
+    assert resp.status_code == 200, resp.text
+    assert json.loads(seen[0].content)["max_tokens"] == 16
+
+
+async def test_healthy_or_absent_max_tokens_pass_through_untouched(make_gateway, client):
+    """`>=16` 原样透传；客户端没发就不注入（上游默认值是它自己的事，不替它做主）。"""
+    seen: list[httpx.Request] = []
+    store.commit_login("cline", ACCOUNT, {"access_token": TOKEN_BARE}, {})
+    gw = await make_gateway(_cfg())
+    await _install(gw, "res-cl", _handler(seen, mode="json"))
+
+    resp = await _chat(client, gw, _body(max_tokens=100))
+    assert resp.status_code == 200, resp.text
+    assert json.loads(seen[0].content)["max_tokens"] == 100
+
+    seen.clear()
+    resp = await _chat(client, gw, _body())
+    assert resp.status_code == 200, resp.text
+    assert "max_tokens" not in json.loads(seen[0].content)

@@ -182,6 +182,27 @@ def test_unknown_unit_never_gets_a_threshold():
                                         reason="unreachable")) is None
 
 
+def test_negative_balance_drains_regardless_of_unit():
+    """🔴 P2-6（2026-10-11）：**负余量（透支）与量纲无关** —— 实盘 cline-8881b795 的
+    余额包 `{remaining: -33270.0, unit: ""}` 旧逻辑因"认不出量纲 ⇒ 无权判定"落到三态
+    `exhausted=True`，闸门开着放行、靠上游 403 ENTITLEMENT_ERROR 兜底白跑往返。
+    负数在任何量纲下都不可能达标 ⇒ 直接计触底；`reason_of` 要把这件事说成
+    "负余量"而不是沉默。0 与正数仍不判（无换算依据不编造，宽松方向不变）。"""
+    drained = [_pkg("余额", "", -33270.0)]
+    assert quota_policy.entitled_for(_s(drained, state="exhausted")) is False
+    assert quota_policy.entitled_for(_s(drained, state="available")) is False
+    assert "余量为负" in quota_policy.reason_of(_s(drained))
+    # 阈值触底与负余量两种证据并存时原因分开写，不揉成一句"额度不足"
+    mixed_reason = [_pkg("余额", "", -1.0), _pkg("包", "credits", 3)]
+    text = quota_policy.reason_of(_s(mixed_reason))
+    assert "余量为负" in text and "credits<50" in text
+    # 多包时 = 至少一个活着就保留（与阈值条同判向）
+    assert quota_policy.entitled_for(
+        _s([_pkg("余额", "", -10.0), _pkg("包", "credits", 60)])) is True
+    # 0 与正数仍走三态（负数才动位）
+    assert quota_policy.entitled_for(_s([_pkg("余额", "", 0.0)], state="available")) is True
+
+
 def test_remaining_none_is_not_below_floor():
     """包在、余量没给 ⇒ 这条包**无权判定**（与 `remaining_units()` 的「未知不当 0」同纪律），
     同样回落到三态。"""

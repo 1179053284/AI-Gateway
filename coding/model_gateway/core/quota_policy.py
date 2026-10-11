@@ -9,7 +9,9 @@
 
 1. **上游明确否认**（`reason == "no_plan"`：`200 + code=0 + plans/balances 皆空`）⇒ `False`。
 2. **逐包阈值触底**（下面的"量纲阈值"表）⇒ 全部在册包都低于各自阈值 ⇒ `False`；
-   只要有一个包没触底（含余量未知）⇒ `True`。
+   只要有一个包没触底（含余量未知）⇒ `True`。**余量为负（透支）与量纲无关，直接计触底**
+   （2026-10-11 P2-6：实盘 cline「余额」包 `remaining=-33270, unit=""`，旧逻辑因"认不出
+   量纲 ⇒ 无权判定"落到第 ③ 条放行，靠上游 403 兜底白跑往返）。
 3. **正向三态**：`state ∈ {available, exhausted}` 且没有第 1/2 条证据 ⇒ `True`
    （`exhausted` = 上游给了包但这一窗口用完，仍是"有承接资格"的账号，`remaining=0` 那条
    既有闸门会挡它，不在这里重复判定）。
@@ -30,7 +32,8 @@
 - 包上 `active=False`（已失效/已过期）**不参与**"全部触底"的计算 —— 一个号只剩过期包
   等于没有包，走第 1/3/4 条，不该由阈值说了算。
 - 认不出量纲时**不设阈值**：这是刻意的宽松方向。反过来（把认不出的当积分）会拿 50 去卡
-  一个单位是"次"或"美元"的号，属于编造事实。
+  一个单位是"次"或"美元"的号，属于编造事实。唯一例外 = **负余量**：透支不需要认识单位
+  （任何量纲下都不可能达标，2026-10-11 P2-6）。
 - 已知的**呈现缺口**（登记为债，见台账 §7 债 Q39-债1）：总览的 `available` 是
   `status == "active"` 的视图位，不含资格与额度 ⇒ 被本闸门剔出的号在界面上仍显示「可用」。
   补这一格要动 `snapshot_by_resource` 的聚合与界面文案，属独立一刀。
@@ -84,8 +87,17 @@ def below_floor(snap: Any) -> bool | None:
             continue                     # 已失效的包不贡献"还有余量"，也不参与触底判定
         floor = unit_floor(p.get("unit"))
         rem = p.get("remaining")
-        if floor is None or rem is None:
-            continue                     # 认不出量纲或上游没给余量 ⇒ 这条包无权判定
+        if floor is None:
+            # 🔴 2026-10-11 P2-6：负余量（透支）与量纲无关 —— rem<0 在任何量纲下都
+            #    不可能达标，不需要认识单位就能下结论。实盘根因（cline-8881b795）：
+            #    余额包 {name:"余额", remaining:-33270.0, unit:""}，旧逻辑因"认不出
+            #    量纲 ⇒ 无权判定"落到第③条 exhausted=True，闸门开着放行，靠上游
+            #    403 兜底白跑往返。0 与正数仍不判（无换算依据不编造），宽松方向不变。
+            if isinstance(rem, (int, float)) and not isinstance(rem, bool) and rem < 0:
+                judged += 1
+            continue
+        if rem is None:
+            continue                     # 上游没给余量 ⇒ 这条包无权判定
         judged += 1
         if rem >= floor[1]:
             return False                 # 有一个没触底就够了
@@ -95,19 +107,27 @@ def below_floor(snap: Any) -> bool | None:
 def reason_of(snap: Any) -> str:
     """资格被关闭时的**原因串**（进日志用；界面那一格是债 Q39-债1，不在这里造新档位）。
 
-    只说这一条判据真的知道的事，两种关闭原因分开写 —— 混成一句"额度不足"会把
-    "上游说这号没有套餐"与"包快见底"两种完全不同的处置揉成一团。
+    只说这一条判据真的知道的事，各关闭原因分开写 —— 混成一句"额度不足"会把
+    "上游说这号没有套餐"、"包快见底"与"余额透支为负"几种完全不同的处置揉成一团。
     """
     if str(getattr(snap, "reason", "") or "") == "no_plan":
         return "上游明确回复无套餐（200 + code=0 + plans/balances 皆空）"
     pairs: set[str] = set()
+    negs: set[str] = set()
     for pkg in _packages(snap):
         found = unit_floor(pkg.get("unit"))
         rem = pkg.get("remaining")
-        if found is not None and rem is not None and rem < found[1]:
-            pairs.add(f"{found[0]}<{found[1]}")
-    return (f"全部在册额度包均低于量纲阈值（{'、'.join(sorted(pairs))}）"
-            if pairs else "")
+        if found is not None:
+            if rem is not None and rem < found[1]:
+                pairs.add(f"{found[0]}<{found[1]}")
+        elif isinstance(rem, (int, float)) and not isinstance(rem, bool) and rem < 0:
+            negs.add(f"余量为负（{rem:g}）")
+    parts: list[str] = []
+    if pairs:
+        parts.append(f"全部在册额度包均低于量纲阈值（{'、'.join(sorted(pairs))}）")
+    if negs:
+        parts.append("、".join(sorted(negs)))
+    return "；".join(parts)
 
 
 def entitled_for(snap: Any) -> bool | None:
