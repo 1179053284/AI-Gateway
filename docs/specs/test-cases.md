@@ -1,4 +1,5 @@
-> 版本：**v1.25（2026-10-08 归档 `/v1/responses` 兼容端点（PRD FR-11 P2「OpenAI Responses API 透传」，
+> 版本：**v1.26（2026-10-11 · P1-4/P2-6 收口回填：新增 **UT-184**（承接资格闸门：负余量（透支）与量纲无关=触底，`tests/unit/test_zcode_entitlement_gate.py`）+ **INT-131/132**（cline 输出预算下限：小值抬 16 / ≥16 透传·缺省不注入，`tests/integration/test_cline_out.py`）；判据与双向撤证见 `docs/changes/e2e-records/E2E-20261011-p14-p26-quota-floor-and-output-floor.md`）**
+> 上一版：**v1.25（2026-10-08 归档 `/v1/responses` 兼容端点（PRD FR-11 P2「OpenAI Responses API 透传」，
 > 用户 2026-10-07 直接指令）：新增 **UT-127~183**（57 例请求翻译/响应组装/SSE 编码，`tests/unit/test_v2_responses_compat.py`）
 > 与 **INT-121~130**（10 条编号 / 18 个测试函数，端到端，`tests/integration/test_int_v2_responses.py`，假上游 + 真调度链）。
 > 口径三档：能 1:1 表达的忠实翻译 / 纯提示类接受并忽略 / 🔴 语义会变又做不到的明确 400 + 可操作话术（零出站）。
@@ -434,3 +435,6 @@
 | INT-130 | integration | **取消透传**：流式中途断连 → 上游取消、`aborted`、`C=0`、不切换（同 INT-08/INT-28 语义） | 摘掉 `_watch_disconnects` ⇒ `vendor.cancelled_keys` 空 ⇒ 红 |
 | UT-127~183 | unit | `/v1/responses` 翻译层三组判据（57 例，`tests/unit/test_v2_responses_compat.py`）：**① 请求翻译** —— `input` 字符串/数组/图片/工具结果、`developer`→system、**连续 assistant 项合并成一条**（否则经 anthropic 协议资源出站会被拒）、namespace 摊平 + 还原表、`custom`/`tool_search`/内置工具丢弃+上报、重名先到先得且不进还原表、空名不产生幽灵工具、`tool_choice` 四态、**三档字段处置**（12 个「接受并忽略」字段参数化）、`text.format`→`response_format`、`reasoning.effort` 走 `ir.lift` 口径；**② 响应组装** —— 可空字段一个都不能少、usage 官方口径、`length`→`incomplete`、namespace 还原且扁平名不漏、空 `output[]` 补空 message；**③ SSE 编码** —— 事件生命周期、`sequence_number` 连续、`item_id` 稳定、无 `[DONE]`、失败先关项再 `response.failed`、零内容仍出 created/completed | 逐条撤证：摘 `_restore_namespace` / `total` 直接采信 / 去掉 `item_id` 复用 / 发 `[DONE]` / 不合并连续 assistant 各自对应断言红 |
 | 探针 | — | `bianyiandhuanjing/scripts/probe_zcode_live_shape.py` 轮 5：三个互不相交的号各验三条腿（阈值前被派到 / 5000 token 后 0 次 / 回到 10000 又被派到） | 🔴 号集与轮 2/轮 3（已把 `ok_accts[:3]` 打进 5h 冷却）**必须不相交**，否则判据空转 —— 本轮第一版就是这么错的 |
+| UT-184 | unit | **负余量（透支）与量纲无关 = 触底**（v1.26）：`{remaining:-33270, unit:""}` 两态都 `False`；`reason_of` 说「余量为负」且与「阈值触底」分开表述；多包一活即保留；0 与正数仍不动位（宽松方向不变） | 摘掉负数分支 ⇒ 三条断言红（`test_zcode_entitlement_gate.py::test_negative_balance_drains_regardless_of_unit`，撤证实测 1 failed） |
+| INT-131 | integration | cline/Vercel 路输出预算下限（P1-4）：客户端 `max_tokens=1` ⇒ 出站体抬到 16（上游把 `max_tokens` 映成 `max_output_tokens` 并要求 `>=16`，小值 400「integer below minimum」） | 钳制恒假 ⇒ 假上游收到 1 ⇒ 红（`test_cline_out.py::test_small_max_tokens_is_raised_to_vercel_floor`，撤证实测 1 failed） |
+| INT-132 | integration | 下限**只上钳不注入**：`>=16` 原样透传；客户端没发不注入（不替上游做主、不改客户端意图） | 注入缺省键 / 下移大值 ⇒ 红（`test_cline_out.py::test_healthy_or_absent_max_tokens_pass_through_untouched`） |

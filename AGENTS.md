@@ -27,17 +27,18 @@
 
 ## 目录速览
 - **结构定版**：`coding/` 源码唯一区（源码/测试/配置样例/双语 README）；`bianyiandhuanjing/` 运行与验收环境（ship-gate 机械门 + verify_* 验收门）；**权威说明 = 根 `项目目录说明.md`**（结构细节与追补史不在此展开）；交接单 `docs/handoffs/`（六节必填 + 判轨理由行，完成移 `done/`）、时点备份 `docs/backups/`。
-- 🔴 **持续待用户点头两项**（2026-10-08 收口轮起，跨轮有效；叙事原文见 status-archive「2026-10-11 三次出栈」）：① 推送 origin（本地领先 60+ 提交）；② 重启 :8300（3012 防线 / cline-403 换号 / responses 端点 / 总览额度板块 / 资源池排序乐观锁修复等含后端改动**线上未生效**；未重启前资源池连续第二次保存撞 409，刷新页面可临时避开）。
+- 🔴 ~~持续待用户点头两项~~ **两项已于 2026-10-11 完成**（收口轮，用户授权「逐项解决+二次检验+落 main」）：① 推送 origin（75 笔 `5158cbc→d784749`，本地=远端）；② 重启 :8300（隔离冒烟 → config md5 跑前=跑后 → config_version=1 回执新键；复核 = 日志时间戳 / responses 端点 / 总览额度板块 / glm-5.3 实盘 200/1.7s）。**当前待点头**：workbuddycn 轮提交 `6d6feff`（1 笔未推）。
 - `.cursor/rules/` — 项目规则；`.cursor/memory/` — 长期记忆（runbook / decisions / pitfalls）；`.cursor/skills/` — 场景手册（入口 INDEX，装配第 4 步）
 - `docs/` — `specs/` 需求真相 / `handoffs/` 待用户表态 / `backups/` 时点备份 / `changes/` 实测台账（**开/完结分离**：进行中住 `open/`、完结自主迁 `e2e-records/`，日期+内容 grep 可查；待办 ACTIVE.md 并行协调）
 - 近况（只留提炼；叙事原文一律在 `docs/changes/status-archive.md`）：
-  - 2026-10-11 · **WorkBuddy（中国版）接入已实现**（第 11 产品 `workbuddycn`，同族参数化；PRD Q44 用户拍板 D1–D5；方案 v2 = `docs/changes/plans/20261011-workbuddycn-integration-plan.md`；台账 `open/E2E-20261011-workbuddycn.md`；**登录/签到/推理真机验收待用户驱动**）+ 同轮修账号静态门 V15 时间炸弹（fixtures 写死日期 10-09 起误红）+ README 双语 2388
+  - 2026-10-11 · **WorkBuddy（中国版）接入已实现**（第 11 产品 `workbuddycn`，同族参数化；PRD Q44 用户拍板 D1–D5；方案 v2 = `docs/changes/plans/20261011-workbuddycn-integration-plan.md`；台账 `open/E2E-20261011-workbuddycn.md`；**登录/签到/推理真机验收待用户驱动**）+ 同轮修账号静态门 V15 时间炸弹（fixtures 写死日期 10-09 起误红）+ README 双语 2396
+  - 2026-10-11 · **收口+修复轮已交付**（用户授权「逐项解决+二次检验+落 main」）：4 条在飞线三批落 main（错误链 P0-1/P1-2/P1-3 + buddy 400 换号 / workbuddy 回调 / 向导确认钮；D 线补台账 `E2E-20261011-error-path-hardening.md`）+ P1-4/P2-6 根治（`a2139dd`，台账 `E2E-20261011-p14-p26-quota-floor-and-output-floor.md`）+ T13 横幅文案（`d784749`）+ `:8300` 重启复核全绿（glm-5.3 实盘 200/1.7s）+ 75 笔推 origin
   - 2026-10-11 · **知识体系重构落地**（skill 归家 `.cursor/skills/` + 入口通用化 + 门禁分级 T0/T1/T2 + 开/完结生命周期 + 知识层入 git；台账 `E2E-20261011-knowledge-refit.md`）
   - 2026-10-09 · **资源池排序改版已交付**（置顶/置底 + 整行拖拽；台账 `E2E-20261009-pool-pin-drag.md`，交接单 `docs/handoffs/20261009-pool-pin-drag.md` 待验收；未生效事项见上 🔴）
-  - 2026-09-30 · **M6 多产品账号接入已交付**（全文/面板证据/仍开放决策 = qoder wasm 转发三选一、zcode 转发 D1，见 status-archive「2026-10-11 出栈」节）
-  - **当前生效版本表**（spec 头行是本体，本表是入口速查；核对于 2026-10-11）：PRD **v1.32** · tech-design **v2.11** · test-cases **v1.25** · design-spec **v2.53** · frontend-spec **v2.57**。用法：开工前以本表定位各 spec 当前版本；版本间演进链在 spec 头部版本史行，不要在 AGENTS.md 里再堆版本引用。
+  - 2026-09-30 · **M6 多产品账号接入已交付**（全文/面板证据/仍开放决策 = qoder wasm 转发三选一；~~zcode 转发 D1~~ 已于 2026-10-07 实测关闭（3012 台账 §5），见 status-archive「2026-10-11 出栈」节）
+  - **当前生效版本表**（spec 头行是本体，本表是入口速查；核对于 2026-10-11）：PRD **v1.32** · tech-design **v2.12** · test-cases **v1.26** · design-spec **v2.53** · frontend-spec **v2.57**。用法：开工前以本表定位各 spec 当前版本；版本间演进链在 spec 头部版本史行，不要在 AGENTS.md 里再堆版本引用。
   - 🔴 **归档指针（2026-10-11 定版，decisions ⑤）**：已出栈叙事与历史证据链一律走 `docs/changes/status-archive.md` → 对应台账；**早于 2026-10-01 的台账/评审/调研文本**已迁 `docs/backups/20261011-pre-october-archive/`（原图像画面证据经用户指令清理；读法声明见 pitfalls 头部与归档 README）；入口快照只保留**带未决线程**的条目，纯完结条目由交付轮自主出栈（存证不改写）。
-  - 2026-09-30 · **M6 多产品账号接入与模型转接已交付**（全文叙事 + 未实测清单 + 面板证据已出栈至 `status-archive.md`「2026-10-11 出栈」节）：仍开放 = qoder wasm 转发路线三选一、zcode 模型转发 D1。
+  - 2026-09-30 · **M6 多产品账号接入与模型转接已交付**（全文叙事 + 未实测清单 + 面板证据已出栈至 `status-archive.md`「2026-10-11 出栈」节）：仍开放 = qoder wasm 转发路线三选一（zcode 模型转发 D1 已于 2026-10-07 实测关闭，`E2E-20261007-zcode-3012-defense.md` §5）。
 
 ## 验收约定（简版，细则见 mg-11）
 - 完成 = 行为实测证据 + 与需求点逐条对应；`SHELL` = 可跟踪未完成项，禁止打 ✅。
