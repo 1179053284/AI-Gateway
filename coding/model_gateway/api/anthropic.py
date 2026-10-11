@@ -12,16 +12,19 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from model_gateway.core.cancel import DisconnectWatcher
+from model_gateway.core.errors import scrub_upstream_text
 from model_gateway.core.ir import IRRequest, ReasoningSpec
 from model_gateway.core.scheduler import ERROR_EVENT, CallCtx, GatewayError
 from model_gateway.enums.matcher import resolve_request_model
 
 router = APIRouter()
+logger = logging.getLogger("model_gateway")
 
 _STOP_REASON_MAP = {
     "stop": "end_turn",
@@ -38,6 +41,24 @@ def _anthropic_error(status: int, err_type: str, message: str,
     if code is not None:
         err["code"] = code
     return JSONResponse(status_code=status, content={"type": "error", "error": err})
+
+
+def _unattributed_error(e: BaseException, endpoint: str) -> JSONResponse:
+    """未归因异常的统一出口（2026-10-10 P1-2）。
+
+    🔴 为什么必须有：本模块此前只 `except GatewayError`，任何非 GatewayError
+    （`TypeError` / `KeyError` / `AttributeError`…）都直接穿到 ASGI 变成**裸 500** ——
+    客户端拿不到可读信息、事件里也留不下原因。
+    实盘：2026-10-08 分类器的 `TypeError` 正是这样变成 `/v1/messages` 14 次 500 的
+    （末帧原文 `gateway.log:194088`；分析见
+    `docs/changes/20261010-call-log-audit-1008-1009.md`）。
+
+    处置：`logger.exception` 留全栈（**不吞**），回一个带**异常类型名**的 500。
+    """
+    logger.exception("[端点] 未归因异常 endpoint=%s", endpoint)
+    return _anthropic_error(500, "api_error",
+                            f"网关内部错误（{type(e).__name__}），详见服务日志",
+                            code="UNATTRIBUTED_ERROR")
 
 
 # —— 请求转换：Anthropic → OpenAI 形 ——
@@ -366,7 +387,9 @@ async def messages(request: Request):
         raise
     except GatewayError as e:
         return _anthropic_error(e.status_code, _gw_error_type(e),
-                                str(e.args[0]) if e.args else "请求失败")
+                                _gw_error_message(e))
+    except Exception as e:  # noqa: BLE001 — 未知异常不得裸奔成 500（P1-2）
+        return _unattributed_error(e, "messages")
     finally:
         watcher.cancel_sync()
         runtime.cancel_registry.unregister(ctx.request_id)
@@ -382,6 +405,39 @@ def _gw_error_type(e: GatewayError) -> str:
     if e.status_code == 400:
         return "invalid_request_error"
     return "api_error"
+
+
+#: 透传给 Anthropic 客户端的**上游错误体**上限（字符）。
+#: 上游错误体通常 < 300 字；这个上限只防病态情形（WAF 整页 HTML 等）把客户端响应撑大，
+#: **不是"摘要"** —— 正常诊断字段（`code` / `requestId` / `TraceID`）全量保留。
+_UPSTREAM_BODY_LIMIT = 4000
+
+
+def _gw_error_message(e: GatewayError) -> str:
+    """网关错误的可读消息 —— **优先透传上游完整（已脱敏）错误体**。
+
+    🔴 2026-10-10 修（用户报「只看到被截断的报错、看不到 requestId/TraceID」）：
+    旧实现用 `str(e.args[0])`，而 `BAD_REQUEST` / `CANCELED` 路径的 `args[0]` 是
+    `stats.events.error_summary(...)` —— **截断 160 字**（`stats/events.py:33-54` 的
+    既有口径）。实测后果：上游
+    `400 {"code":11128,"msg":"Illegal API invocation from an unapproved channel",
+    "requestId":"…","displayMsg":{…"TraceID":…}}` 到客户端只剩
+    `…"displayMsg":{"en":"Request blocked.` 就被切断 ⇒ 无法向上游报障、无法自查。
+
+    OpenAI 入站本就透传完整 body（`GatewayError.to_openai_error` 把上游体原样放进
+    `error`），Anthropic 入站与之**不对称**；本函数补齐该不对称。
+
+    取值顺序：`error_body`（上游原文；`UpstreamError` 构造时已 `scrub_upstream_text`
+    脱敏，这里再兜一次——本函数是**新的客户端出口**，凭据回显红线要求出口自带脱敏）
+    → 兜底 `args[0]`（网关自产文案，如「无可用资源」）。
+    """
+    body = e.error_body
+    if body is not None:
+        text = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False)
+        text = (scrub_upstream_text(text) or "").strip()
+        if text:
+            return text[:_UPSTREAM_BODY_LIMIT]
+    return str(e.args[0]) if e.args else "请求失败"
 
 
 async def _messages_stream(request: Request, scheduler, ir, ctx, model_def, watcher):
@@ -401,7 +457,10 @@ async def _messages_stream(request: Request, scheduler, ir, ctx, model_def, watc
     except GatewayError as e:
         watcher.cancel_sync()
         return _anthropic_error(e.status_code, _gw_error_type(e),
-                                str(e.args[0]) if e.args else "请求失败")
+                                _gw_error_message(e))
+    except Exception as e:  # noqa: BLE001 — 未知异常不得裸奔成 500（P1-2）
+        watcher.cancel_sync()
+        return _unattributed_error(e, "messages(stream-first-frame)")
 
     watcher.cancel_sync()
 

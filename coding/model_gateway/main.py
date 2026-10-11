@@ -1065,7 +1065,13 @@ def configure_logging() -> logging.Logger:
     log.setLevel(getattr(logging, level_name, logging.INFO))
     if not log.handlers:
         handler = logging.StreamHandler(sys.stderr)
-        handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
+        # 🔴 2026-10-10 P1-3：补时间戳。此前格式无 `%(asctime)s`，`gateway.log`
+        #    里所有应用日志都没有时刻 —— 按天审计只能靠"尾部 /v1 调用归零 + daily
+        #    计数"交叉推断，排障成本极高（2026-10-08/09 排查实测，见
+        #    `docs/changes/20261010-call-log-audit-1008-1009.md`）。
+        #    uvicorn 的 access log 自带时刻，缺的正是我们这层。
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s:%(name)s:%(message)s"))
         log.addHandler(handler)
         # 🔴 不动 `propagate`：caplog 的 handler 挂在 root 上，靠的就是向上传播
         #    （现有判据 `caplog.at_level(..., logger="model_gateway.zcode")` 若干条依赖这条链，

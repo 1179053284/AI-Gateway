@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from model_gateway.config.schemas import ErrorRule
-from model_gateway.core.errors import ErrorClass, ErrorClassifier, UpstreamError
+from model_gateway.core.errors import (
+    ErrorClass,
+    ErrorClassifier,
+    UpstreamError,
+    coerce_status_code,
+)
 from tests.unit.conftest import http_err
 
 
@@ -117,3 +122,61 @@ def test_upstream_error_no_failover_flag():
     e = UpstreamError("image_url download failed", no_failover=True)
     assert e.no_failover is True
     assert ErrorClassifier().classify(e) is ErrorClass.RETRYABLE
+
+
+class TestStatusCoercion:
+    """P0-1（2026-10-10）：上游 `status_code` / `code` 的类型归一。
+
+    实盘缺陷：上游 SSE error 帧的 `code` 是**字符串** ⇒ 直接进 `UpstreamError.status_code`
+    ⇒ `classify()` 的 `status >= 500` 抛
+    `TypeError: '>=' not supported between instances of 'str' and 'int'`
+    ⇒ 该异常不是 GatewayError，端点层接不住 ⇒ 上游 400 被返回成 **HTTP 500**，
+    且 `error_summary` 因 classify 提前抛出而留空。
+    证据：`gateway.log:194088`（errors.py:287 末帧）；
+    `docs/changes/20261010-call-log-audit-1008-1009.md`。
+    """
+
+    def test_int_passthrough(self):
+        assert coerce_status_code(403) == 403
+        assert coerce_status_code(500) == 500
+
+    def test_digit_string_to_int(self):
+        assert coerce_status_code("403") == 403
+        assert coerce_status_code(" 500 ") == 500
+
+    def test_non_digit_string_is_none(self):
+        assert coerce_status_code("ENTITLEMENT_ERROR") is None
+        assert coerce_status_code("AI_APICallError") is None
+        assert coerce_status_code("") is None
+
+    def test_none_bool_and_other_types_are_none(self):
+        assert coerce_status_code(None) is None
+        assert coerce_status_code(True) is None          # bool 不该当状态码
+        assert coerce_status_code(3.5) is None
+        assert coerce_status_code({"code": 1}) is None
+
+    def test_upstream_error_normalizes_on_construction(self):
+        assert UpstreamError("x", status_code="403").status_code == 403
+        assert UpstreamError("x", status_code="ENTITLEMENT_ERROR").status_code is None
+
+    def test_classify_never_raises_on_string_status(self):
+        """回归判据：字符串 status_code 不得让 classify 抛 TypeError。"""
+        e = UpstreamError("upstream stream error", status_code="ENTITLEMENT_ERROR",
+                          error_body='{"code":"ENTITLEMENT_ERROR"}')
+        assert ErrorClassifier().classify(e) is ErrorClass.RETRYABLE
+
+    def test_classify_handles_hand_built_object_with_str_status(self):
+        """分类器也吃手工构造的同形对象 ⇒ 入口须再兜一层类型。"""
+        class _Fake:
+            status_code = "not-a-number"
+            error_type = None
+            error_body = None
+            error_class = None
+
+        assert ErrorClassifier().classify(_Fake()) is ErrorClass.RETRYABLE
+
+    def test_digit_string_status_maps_like_int(self):
+        assert ErrorClassifier().classify(
+            UpstreamError("x", status_code="429")) is ErrorClass.QUOTA
+        assert ErrorClassifier().classify(
+            UpstreamError("x", status_code="401")) is ErrorClass.AUTH

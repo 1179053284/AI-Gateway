@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -25,6 +26,7 @@ from model_gateway.core.scheduler import ERROR_EVENT, CallCtx, GatewayError
 from model_gateway.enums.matcher import resolve_request_model
 
 router = APIRouter()
+logger = logging.getLogger("model_gateway")
 
 
 def _runtime(request: Request):
@@ -33,6 +35,28 @@ def _runtime(request: Request):
 
 def _openai_json_error(status: int, body: dict) -> JSONResponse:
     return JSONResponse(status_code=status, content=body)
+
+
+def _unattributed_error(e: BaseException, endpoint: str) -> JSONResponse:
+    """未归因异常的统一出口（2026-10-10 P1-2）。
+
+    🔴 为什么必须有：端点层此前只 `except GatewayError`，任何非 GatewayError
+    （`TypeError` / `KeyError` / `AttributeError`…）都直接穿到 ASGI 变成**裸 500** ——
+    客户端拿不到任何可读信息，事件里也留不下原因。
+    实盘：2026-10-08 分类器的一个 `TypeError` 就是这么变成 14 次 500 的
+    （`docs/changes/20261010-call-log-audit-1008-1009.md`）。
+
+    处置：`logger.exception` 留全栈（**不吞**，否则只是把黑盒换个位置），
+    回一个带**异常类型名**的 500 —— 类型名足以让排障把两端日志对上，又不泄漏内部细节。
+    """
+    logger.exception("[端点] 未归因异常 endpoint=%s", endpoint)
+    # 形状对齐 `GatewayError.to_openai_error()`（`{"error": {...}}`）—— 客户端按
+    # OpenAI 错误格式解析，少一层包裹会解析不出 message。
+    return _openai_json_error(500, {"error": {
+        "message": f"网关内部错误（{type(e).__name__}），详见服务日志",
+        "type": "gateway_error",
+        "code": "UNATTRIBUTED_ERROR",
+    }})
 
 
 @router.get("/v1/models")
@@ -176,6 +200,8 @@ async def chat_completions(request: Request):
         raise  # aborted 事件已由调度器落盘；客户端已断连，无需响应
     except GatewayError as e:
         return _openai_json_error(e.status_code, e.to_openai_error())
+    except Exception as e:  # noqa: BLE001 — 未知异常不得裸奔成 500（P1-2）
+        return _unattributed_error(e, "chat")
     finally:
         watcher.cancel_sync()
         runtime.cancel_registry.unregister(ctx.request_id)
@@ -212,6 +238,9 @@ async def _chat_stream_response(request: Request, scheduler, ir, ctx, model_def,
     except GatewayError as e:
         watcher.cancel_sync()
         return _openai_json_error(e.status_code, e.to_openai_error())
+    except Exception as e:  # noqa: BLE001 — 未知异常不得裸奔成 500（P1-2）
+        watcher.cancel_sync()
+        return _unattributed_error(e, "chat(stream-first-frame)")
 
     watcher.cancel_sync()  # 首帧已到，断连职责移交 StreamingResponse（starlette）
 
@@ -310,6 +339,8 @@ async def images_generations(request: Request):
         raise
     except GatewayError as e:
         return _openai_json_error(e.status_code, e.to_openai_error())
+    except Exception as e:  # noqa: BLE001 — 未知异常不得裸奔成 500（P1-2）
+        return _unattributed_error(e, "images")
     finally:
         watcher.cancel_sync()
         runtime.cancel_registry.unregister(ctx.request_id)

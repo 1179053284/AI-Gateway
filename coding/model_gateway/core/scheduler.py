@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Awaitable, Callable
 
 from model_gateway.config.schemas import AppConfig
-from model_gateway.core.errors import ErrorClass, UpstreamError
+from model_gateway.core.errors import ErrorClass, UpstreamError, coerce_status_code
 from model_gateway.stats.events import error_summary
 from model_gateway.core.ir import (
     IRRequest,
@@ -423,6 +423,25 @@ class Scheduler:
         finally:
             self._log(ctx, meta)
 
+    def _classify_or_retryable(self, e: UpstreamError, ctx: CallCtx) -> ErrorClass:
+        """分类器调用兜底（2026-10-10 P1-3）。
+
+        🔴 为什么需要：`classify()` 一旦**自身**抛异常（典型是上游 `code` 类型异常
+        引发的 `TypeError`），异常会越过本层 `except UpstreamError` 的语义边界，
+        被端点层当成"未知异常"打成 **HTTP 500**；更糟的是紧随其后的
+        `error_summary(e)` 那一行**根本没机会执行** ⇒ 事件里连原因都不留
+        （2026-10-08 实盘 11 条空摘要，见 `docs/changes/20261010-call-log-audit-1008-1009.md`）。
+
+        处置：分类失败按 `RETRYABLE` 走既有重试/换号（不把分类器的故障算到
+        客户端头上），并留一条 `logger.exception` 全栈。**不吞**：异常原文进日志。
+        """
+        try:
+            return self.runtime.classifier.classify(e)
+        except Exception:  # noqa: BLE001 — 分类器故障不得升级成 500，见上
+            logger.exception("[分类器] 未归因异常，按 RETRYABLE 处置 system_model=%s",
+                             ctx.system_model)
+            return ErrorClass.RETRYABLE
+
     def _capacity_reject(self, ir: IRRequest, resource) -> str | None:
         """已知这条资源**承载不了**本次请求 ⇒ 返回可读原因（选路换下一条），否则 `None`。
 
@@ -564,7 +583,7 @@ class Scheduler:
                     except asyncio.CancelledError:
                         raise
                     except UpstreamError as e:
-                        cls = self.runtime.classifier.classify(e)
+                        cls = self._classify_or_retryable(e, ctx)
                         summary = error_summary(e)
                         if cls is ErrorClass.CANCELED:
                             meta.status = "aborted"
@@ -874,7 +893,13 @@ class Scheduler:
                                     # 供应商 SSE 内 error 帧（INT-11 形态）→ 中途失败
                                     e = UpstreamError(
                                         f"upstream stream error: {err.get('message', '')}",
-                                        status_code=err.get("code") or err.get("http_status"),
+                                        # 🔴 2026-10-10 P0-1：上游 `code` 可能是字符串
+                                        #    （如 cline 的 `"ENTITLEMENT_ERROR"`），必须先归一，
+                                        #    否则 `classify()` 的 `status >= 500` 抛 TypeError
+                                        #    ⇒ 上游 400 被返回成 500。`None or X` 保持原
+                                        #    "code 缺省才看 http_status" 的语义。
+                                        status_code=(coerce_status_code(err.get("code"))
+                                                     or coerce_status_code(err.get("http_status"))),
                                         error_body=json.dumps(err, ensure_ascii=False),
                                         error_type=err.get("type"),
                                     )
@@ -944,7 +969,7 @@ class Scheduler:
                                 }
                                 return
                             # 窗口内失败 → 正常分类处理（重试/切换/透传）
-                            cls = self.runtime.classifier.classify(e)
+                            cls = self._classify_or_retryable(e, ctx)
                             summary = error_summary(e)
                             if cls is ErrorClass.CANCELED:
                                 meta.status = "aborted"

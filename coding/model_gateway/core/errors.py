@@ -143,6 +143,37 @@ VENDOR_TYPE_TABLE: dict[str, ErrorClass] = {
 }
 
 
+def coerce_status_code(value: Any) -> int | None:
+    """把上游给的 `status_code` / `code` 归一成 `int | None`（2026-10-10 P0-1）。
+
+    🔴 为什么必须归一：上游 SSE error 帧的 `code` 可能是**字符串**（如 cline 的
+    `"ENTITLEMENT_ERROR"`、部分通道的数字串 `"403"`）。它此前被直接塞进
+    `UpstreamError.status_code`（注解 `int | None`，但**注解不校验**），到
+    `ErrorClassifier.classify()` 的 `status >= 500` 就抛
+    `TypeError: '>=' not supported between instances of 'str' and 'int'`；
+    该异常不是 `GatewayError`，端点层的 `except GatewayError` 接不住
+    ⇒ 上游一个参数错（400）最终以 **HTTP 500** 返回，且 `error_summary`
+    因 classify 提前抛出而留空。
+    实盘证据（2026-10-08，14 次 500 / 11 条空摘要）：
+    `docs/changes/20261010-call-log-audit-1008-1009.md`；
+    末帧原文 `gateway.log:194088` → `errors.py:287 TypeError`。
+
+    口径（**不猜**）：`int` 原样（`bool` 排除，它不该当状态码）；
+    纯数字串（`"403"`）转 `int`；其余（`None` / 非数字串 / 其它类型）一律 `None`
+    = 「无状态码」= 既有网络类兜底路径。把 `"ENTITLEMENT_ERROR"` 猜成某个码
+    会造出假事实，故只认"本来就能当状态码用"的值。
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if text.isdigit():
+            return int(text)
+    return None
+
+
 class UpstreamError(Exception):
     """上游调用失败（网络异常 / HTTP 错误响应 / 下载失败等）。
 
@@ -168,7 +199,10 @@ class UpstreamError(Exception):
         error_class: "ErrorClass | None" = None,
     ):
         super().__init__(scrub_upstream_text(message) if isinstance(message, str) else message)
-        self.status_code = status_code
+        # 🔴 2026-10-10 P0-1：入口即归一 —— 上游把 `code` 给成字符串时，
+        #    这里若原样收下，`classify()` 的 `status >= 500` 会抛 TypeError，
+        #    最终升级成 HTTP 500（详见 `coerce_status_code` 的说明）。
+        self.status_code = coerce_status_code(status_code)
         self.error_body = scrub_upstream_text(error_body)
         self.error_type = error_type
         self.no_failover = no_failover
@@ -223,7 +257,9 @@ class ErrorClassifier:
                 self._by_http[r.http] = cls
 
     def classify(self, err: UpstreamError) -> ErrorClass:
-        status = err.status_code
+        # 🔴 2026-10-10 P0-1：再兜一层类型归一。`UpstreamError.__init__` 已归一，
+        #    但本方法也吃测试/调用方手工构造的同形对象 ⇒ 不假设"上游来的"一定过了构造函数。
+        status = coerce_status_code(err.status_code)
         etype = err.error_type or extract_error_type(err.error_body)
         # 🔴 规则的匹配键：`status_code=None`（自有信封 / 网络类）用哨兵 `0` 表示
         #    —— 否则「用户配置覆写一切默认判断」这条红线对信封类错误**结构性失效**

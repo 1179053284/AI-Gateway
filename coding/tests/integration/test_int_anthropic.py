@@ -189,6 +189,55 @@ class TestAnthropicStream:
         assert gw.resource("res-A").status == "active"
 
 
+class TestAnthropicErrorBodyFidelity:
+    """🔴 2026-10-10 修：上游 4xx 的**完整**错误体必须原样到客户端（非流式 + 流式两条腿）。
+
+    旧实现两条腿都用 `str(e.args[0])`，而 `BAD_REQUEST` 路径的 `args[0]` 是
+    `stats.events.error_summary(...)` —— **截断 160 字**（`stats/events.py:33-54`）。
+    用户实测后果：上游 `400 {"code":11128,"msg":"Illegal API invocation from an
+    unapproved channel","requestId":"…","displayMsg":{…"TraceID":…}}` 到客户端只剩
+    `…"displayMsg":{"en":"Request blocked.` 就被切断 ⇒ `requestId`/`TraceID` 丢失，
+    既无法向上游报障也无法自查。OpenAI 入站本就透传完整 body，此处补齐不对称。
+
+    撤证方向：把 `api/anthropic.py::_gw_error_message` 改回 `str(e.args[0])`
+    ⇒ 本类两条用例必红（错误体只剩 160 字摘要、尾部 TraceID 丢失）。
+    """
+
+    #: 上游诊断串（>160 字，尾部带 TraceID）—— 复刻用户实测被截断的形状。
+    _TAIL = "TraceID=32cf2cd9-a58e-4820-8fb2-e629254ced5e"
+
+    def _long_message(self) -> str:
+        return ("Illegal API invocation from an unapproved channel; "
+                + "filler " * 40 + self._TAIL)
+
+    async def test_nonstream_bad_request_keeps_full_upstream_body(
+            self, vendor, make_gateway, client):
+        vendor.set("sk-A", Err(status=400, err_type="invalid_request_error",
+                               message=self._long_message()))
+        gw = await make_gateway(gateway_config(vendor.port, models=[chat_res("A")]))
+        resp = await client.post(f"{gw.base_url}{MESSAGES_URL}",
+                                 json=_abody(), headers=_headers())
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["type"] == "error"
+        assert body["error"]["type"] == "invalid_request_error"
+        msg = body["error"]["message"]
+        assert len(msg) > 160, f"错误体被截断成摘要（{len(msg)} 字）：{msg}"
+        assert self._TAIL in msg, f"上游诊断字段丢失：{msg}"
+
+    async def test_stream_bad_request_keeps_full_upstream_body(
+            self, vendor, make_gateway, client):
+        vendor.set("sk-A", Err(status=400, err_type="invalid_request_error",
+                               message=self._long_message()))
+        gw = await make_gateway(gateway_config(vendor.port, models=[chat_res("A")]))
+        resp = await client.post(f"{gw.base_url}{MESSAGES_URL}",
+                                 json=_abody(stream=True), headers=_headers())
+        assert resp.status_code == 400
+        msg = resp.json()["error"]["message"]
+        assert len(msg) > 160, f"流式错误体被截断成摘要（{len(msg)} 字）：{msg}"
+        assert self._TAIL in msg, f"上游诊断字段丢失：{msg}"
+
+
 class TestAnthropicAlias:
     """INT-33：Claude Code 风格 model id 别名命中网关模型。"""
 

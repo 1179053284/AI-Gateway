@@ -17,6 +17,7 @@ UA / 兜底表）全部已在 `product.py::_PROFILE` 里参数化（`product.ts:
 | 请求体 | `prompt_cache_key` / `reasoning_effort` / `max_tokens` 等由 DSH 组装 | 调用链图（`research/_v1-archive/01-…机制.md`；不要引 `buddy-adapter.ts:1089-1126`——那是 `resolveCallWithInfo` 的 maxTokens/reasoning 段，与出站头无关） | 网关侧由既有 IR/参数注入负责（Q24/FR-3.16）；本族 `prepare_body` 只落供应商模型名，**不加自创字段** |
 | 非流式 | 通道**只收 SSE**：`stream:false` 实盘 4/4 回 `400 {"code":11101}` | :8300 真实两号（2026-10-04，`coding/data/usage/events-20261004.jsonl`）；同族 DSH 侧 `buddy/protocol.py:277` 亦只走 SSE | `stream_only = True` ⇒ 族基类内部走流式 + 本地聚合（`adapters/product_out.py`） |
 | 首条 system | workbuddy 要求首条必须是 `system`：否则 `400 {"code":11128,"msg":"first message is not system prompt"}`；**buddy 同形请求为 200** | :8300 真实数据（2026-10-04：11128 三次全部来自 workbuddy 两个号，buddy 零命中） | `prepare_body` 按 `profile.system_first_text` 补齐 —— 文案只在 **workbuddy 档案**里登记（用户 2026-10-04 指定），buddy 留空 ⇒ 不给没这条限制的通道凭空注入；客户端写了 system 时**内容一字不改、只挪到首位** |
+| 通道未获批（资源级不可承接） | `400 {"code":11128,"msg":"Illegal API invocation from an unapproved channel"}` | 本次实测统计 `coding/data/usage/events-*.jsonl`（`buddy-*/glm-5.3` 6/6 failed、`glm-5.3-flash` 183 成功） | `_http_error_from_text` 覆写：`400` + **逐字文案** ⇒ `RESOURCE_UNAVAILABLE_TYPE`（换号续跑）；⛔ 不认 `11128` 码本身（与上一行同码）、不认泛词 `unapproved` |
 
 ⚠️ 本模块**无网络副作用**：只构造适配器；请求由 `core/scheduler` 驱动。
 """
@@ -26,8 +27,36 @@ from __future__ import annotations
 from urllib.parse import urlparse
 
 from model_gateway.adapters.product_out import FamilyOpenAIOut, ProductAccount
-from model_gateway.core.errors import UpstreamError
+from model_gateway.core.errors import RESOURCE_UNAVAILABLE_TYPE, UpstreamError
 from model_gateway.upstream.buddy import protocol as p
+
+#: 「该通道对这条模型未获批」的响应体**逐字**文案（比对时大小写不敏感）。
+#: 取证（本次实测统计 `coding/data/usage/events-*.jsonl`）：网关模型 `glm-5.3` 的资源里
+#: CodeBuddy（产品族 buddy）两条排在最前，对 `glm-5.3` 恒回
+#: `400 {"code":11128,"msg":"Illegal API invocation from an unapproved channel",...}` ——
+#: `buddy-00fdd61f/glm-5.3` 与 `buddy-a7f1c09f/glm-5.3` 6 次尝试 6 次 failed（全是该 400）；
+#: 而同两账号的 `glm-5.3-flash` 183 次 success（不是账号/客户端被拒），同一网关模型
+#: `glm-5.3` 在 `lobsterai-*`（43 成功）、`qodercn-*/gmodel`（534 成功）、`cline-*`
+#: （10 成功）上也都正常 ⇒ 是**该通道对这条模型未获批 = 资源级不可承接**，换号即可成。
+_UNAPPROVED_CHANNEL_MESSAGE = "Illegal API invocation from an unapproved channel"
+
+
+def _is_resource_scoped_rejection(status_code: int, text: str) -> bool:
+    """这条拒绝是「**资源级不可承接**」（该通道对这条模型未获批）而不是请求写错了吗？
+
+    取证来源与判据理由见 `_UNAPPROVED_CHANNEL_MESSAGE` 的注释（本次实测统计）。
+
+    🔴 判据**只认逐字文案**（大小写不敏感）且**仅限 `status_code == 400`**：
+    - ⛔ 不认 `11128` 码本身 —— 该码同时被 workbuddy 的
+      `"first message is not system prompt"` 使用（`upstream/buddy/out.py:19`、
+      `tests/integration/test_buddy_out.py:56-65`），认码会把"请求该补 system"
+      误判成"换号就行"；
+    - ⛔ 不认泛词 `unapproved`（防泛化，避免把别的 400 吞成"换号就行"）；
+    - 其余状态码一律不认（401/402/429/5xx 各归各位）。
+    """
+    if status_code != 400:
+        return False
+    return _UNAPPROVED_CHANNEL_MESSAGE.lower() in (text or "").lower()
 
 
 class BuddyFamilyOut(FamilyOpenAIOut):
@@ -85,6 +114,23 @@ class BuddyFamilyOut(FamilyOpenAIOut):
         out = super().prepare_body(body, vendor_model=vendor_model,
                                    cred=cred, meta=meta, device=device)
         return _with_system_first(out, self._profile.system_first_text)
+
+    def _http_error_from_text(self, status_code: int, text: str) -> UpstreamError:
+        """非 200 → 错误（**并重解释"通道未获批"400 的资源级语义**，2026-10-10）。
+
+        只改写一种形状：`400` + 取证过的「该通道对这条模型未获批」逐字文案 ⇒ 打上
+        `RESOURCE_UNAVAILABLE_TYPE` 交分类器 → `RESOURCE_UNAVAILABLE`
+        → 调度器**换号续跑 + 冷却这条 (资源, 模型)**（不 disable、不计 C）。
+        其余状态码/文案**一字不动**，走既有归属（普通 400 仍 `BAD_REQUEST`，原样透传）。
+
+        取证与判据理由见 `_is_resource_scoped_rejection` 与 `_UNAPPROVED_CHANNEL_MESSAGE`。
+        覆写本钩子即同时覆盖流式与非流式两条腿（基类两处都是 `self.` 调用，见
+        `adapters/openai_out.py::_http_error` 注释）。
+        """
+        err = super()._http_error_from_text(status_code, text)
+        if _is_resource_scoped_rejection(status_code, text):
+            err.error_type = RESOURCE_UNAVAILABLE_TYPE
+        return err
 
 
 #: 头钩子的**显式登记**（供接线护栏核验，与 `_IMPLEMENTED` 同一性质）：

@@ -45,6 +45,20 @@ class _FakeBuddyUpstream:
         body = await request.json()
         self.requests.append({"path": request.url.path,
                               "headers": dict(request.headers), "body": body})
+        token = request.headers.get("authorization", "")
+        if token == "Bearer BAD-TOKEN":
+            # 🔴 复刻本产品族的「该通道对这条模型未获批」400（2026-10-10 实测统计：
+            # `buddy-*/glm-5.3` 6 次尝试 6 次 failed 全是该响应）—— 网关须据此换号续跑。
+            return JSONResponse({"code": 11128,
+                                 "msg": "Illegal API invocation from an unapproved channel",
+                                 "requestId": "fake-buddy"}, status_code=400)
+        if token == "Bearer PLAIN-400-TOKEN":
+            # 🔴 反例：**同一个 11128 码**，但文案是 workbuddy 的"首条须是 system"
+            # （`upstream/buddy/out.py:19`）—— 网关**不得**把它重解释成资源级不可承接
+            # （这就是"只认逐字文案、不认 `11128` 码本身"的对象）。
+            return JSONResponse({"code": 11128,
+                                 "msg": "first message is not system prompt",
+                                 "requestId": "fake-buddy"}, status_code=400)
         if not body.get("stream"):
             # 🔴 复刻真实通道的**唯一**接受形态：非流式一律 400 code 11101
             # （:8300 真实两号 4/4 命中，2026-10-04，`usage/events-20261004.jsonl`）。
@@ -281,3 +295,97 @@ async def test_relogin_is_picked_up_without_restart(buddy_upstream, make_gateway
 
     tokens = [r["headers"]["authorization"] for r in buddy_upstream.requests]
     assert tokens == ["Bearer OLD-TOKEN", "Bearer NEW-TOKEN"], tokens
+
+
+# ============ 资源级不可承接（通道未获批 400）→ 换号续跑 ============
+
+def _two_account_cfg(port: int, *, bad_token: str, bad_name: str) -> dict:
+    """两条资源（两个账号令牌）指向同一假上游；第一条用 `bad_token` 恒回 400，第二条健康。"""
+    return {
+        "resources": [
+            {"id": "res-bad", "name": bad_name, "vendor": "", "preset": "",
+             "account": f"acc-{bad_token.lower()}", "product": "buddy",
+             "account_ref": f"acc-{bad_token.lower()}",
+             "protocol": "openai", "base_url": f"http://127.0.0.1:{port}",
+             "api_key": "", "enabled": True, "access_mode": "api"},
+            {"id": "res-good", "name": "健康通道", "vendor": "", "preset": "",
+             "account": "acc-good", "product": "buddy", "account_ref": "acc-good",
+             "protocol": "openai", "base_url": f"http://127.0.0.1:{port}",
+             "api_key": "", "enabled": True, "access_mode": "api"},
+        ],
+        "models": [{"name": "cb-model", "endpoint": "chat",
+                    "resources": [{"resource": "res-bad", "model": "hy3"},
+                                  {"resource": "res-good", "model": "hy3"}]}],
+    }
+
+
+async def test_unapproved_channel_400_fails_over_and_never_disables(buddy_upstream,
+                                                                   make_gateway, client):
+    """**2026-10-10 端到端红证**：buddy 对某条模型「通道未获批」恒回
+    `400 {"code":11128,"msg":"Illegal API invocation from an unapproved channel"}`
+    （实测统计见 `upstream/buddy/out.py` 的 `_UNAPPROVED_CHANNEL_MESSAGE` 注释）——
+    必须**换号续跑**（客户端 200），坏的那条 (资源, 模型) 进冷却（**不是** `disabled`/
+    `invalid`）、账号不被判死、不计 C、只被打 1 次。
+
+    撤证方向：注掉 `BuddyFamilyOut._http_error_from_text` 里 `err.error_type =
+    RESOURCE_UNAVAILABLE_TYPE` 那行 ⇒ 该 400 落 `BAD_REQUEST` 终局（不换号、原样透传）
+    ⇒ 本用例必红。"""
+    store.commit_login("buddy", "acc-bad-token", {"access_token": "BAD-TOKEN"}, {})
+    store.commit_login("buddy", "acc-good", {"access_token": "GOOD-TOKEN"}, {})
+    gw = await make_gateway(_two_account_cfg(buddy_upstream.port,
+                                             bad_token="BAD-TOKEN", bad_name="坏通道"))
+
+    resp = await _chat(client, gw, _body())
+    assert resp.status_code == 200, f"资源级 400 未换号：{resp.status_code} {resp.text[:200]}"
+    assert resp.json()["choices"][0]["message"]["content"] == "你好"
+
+    await gw.drain_events()
+    ev = gw.read_events()[-1]
+    assert ev["status"] == "success"
+    assert ev["final_resource"] == "健康通道/hy3"          # 换到第二条
+    assert ev["switch_count"] == 1
+    # 坏资源只被打 1 次（确定性否认不重试），且 errors 非空（诊断留痕）
+    assert ev["resource_attempts"][0]["resource"] == "坏通道/hy3"
+    assert ev["resource_attempts"][0]["attempts"] == 1
+    assert ev["resource_attempts"][0]["errors"]
+    bad_calls = [r for r in buddy_upstream.requests
+                 if r["headers"]["authorization"] == "Bearer BAD-TOKEN"]
+    assert len(bad_calls) == 1, f"坏资源只该被打 1 次：{len(bad_calls)}"
+
+    st = gw.runtime.resources.registry.get(("res-bad", "hy3"))
+    assert st.status == "cooldown", f"坏号应进冷却而非判死：{st.status}"
+    assert st.C == 0, f"资源级不可承接不该计 C（不是健康度信号）：C={st.C}"
+
+    assert gw.read_switches()[0]["reason_cls"] == "RESOURCE_UNAVAILABLE"
+
+
+async def test_plain_400_is_not_reinterpreted_and_does_not_fail_over(buddy_upstream,
+                                                                    make_gateway, client):
+    """**防泛化反例**：同样是 `400 code 11128`，但文案是 workbuddy 的
+    `"first message is not system prompt"`（`upstream/buddy/out.py:19`）——
+    **不得**被重解释成资源级不可承接。客户端收到 **400 原样透传**、不换号、
+    `switch_count == 0`、健康资源零请求（守 UT-116「普通 400 仍 BAD_REQUEST」红线）。
+
+    这正是"只认逐字文案、不认 `11128` 码本身"的理由：该码同时表达两种语义。"""
+    store.commit_login("buddy", "acc-plain-400-token",
+                       {"access_token": "PLAIN-400-TOKEN"}, {})
+    store.commit_login("buddy", "acc-good", {"access_token": "GOOD-TOKEN"}, {})
+    gw = await make_gateway(_two_account_cfg(buddy_upstream.port,
+                                             bad_token="PLAIN-400-TOKEN",
+                                             bad_name="普通400通道"))
+
+    resp = await _chat(client, gw, _body())
+    assert resp.status_code == 400, f"普通 400 应原样透传：{resp.status_code} {resp.text[:200]}"
+    assert "first message is not system prompt" in resp.text   # 上游原文保真（透传）
+
+    await gw.drain_events()
+    ev = gw.read_events()[-1]
+    assert ev["status"] == "failed"
+    assert ev["switch_count"] == 0                              # 不换号
+    assert gw.read_switches() == []                             # 无切换事件
+    good_calls = [r for r in buddy_upstream.requests
+                  if r["headers"]["authorization"] == "Bearer GOOD-TOKEN"]
+    assert good_calls == []                                     # 健康资源零请求（终局）
+
+    st = gw.runtime.resources.registry.get(("res-bad", "hy3"))
+    assert st.status == "active", f"普通 400 不该冷却/判死：{st.status}"
