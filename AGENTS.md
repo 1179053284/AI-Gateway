@@ -32,37 +32,19 @@
 - `.cursor/rules/` — 项目规则（mdc，AI 工具可自动加载）
 - `.cursor/memory/` — 项目长期记忆（runbook / decisions / pitfalls / modules）
 - `docs/specs/` — 需求真相（PRD 与各域 spec）
-- `docs/changes/` — 实测记录/运行证据（铁律 2；如 `M1-task1-scaffold.md`）；并行任务出现时建立 ACTIVE.md 协调
+- `docs/changes/` — 实测记录/运行证据（铁律 2）；**开/完结分离（2026-10-11 定版）**：进行中住 `open/`、完结自主迁 `e2e-records/`（日期+内容 grep 可查）；并行任务出现时建立 ACTIVE.md 协调
 - `coding/model_gateway/` + `coding/tests/` + `coding/pyproject.toml` + `coding/config.example.yaml` — 源码唯一区 `coding/`（结构见 tech-design.md §7）。**历史交付叙事（~60 轮）已全量归档至 `docs/changes/status-archive.md`（原文不改写），入口只留近况提炼：**
   - 2026-10-09 · **资源池排序改版：↑/↓ → 置顶/置底 + 整行拖拽**（frontend-spec v2.55 §3.4；台账 `E2E-20261009-pool-pin-drag.md`；v2 门 148/0 + 变异 209/209 + 批次 pytest 78 passed + 隔离实例真机 4 连保存/拖拽落盘全对；🔴 两处真值修正：旧 `swapUnits` 的 ↑ 恒等空操作 bug、乐观锁双计次（PUT+mtime 轮询各 reload 一次 ⇒ 连续第二次保存必 409，`main.py` mtime 共享记账修复）——**含后端改动，:8300 未重启前连续保存仍会撞 409**）
   - 2026-10-08 · **待合并收口轮：51 路径逐一核实 + 14 批落账 + 代理漏网口修复**（commit `2272863`…`2e781ef`；全量 2349/3 + v2 门 145/145 + 账号门 33/0 GREEN；台账 `gate-raw-20261008-merge-closure.log`；🔴 60 提交未推送 origin、:8300 未重启线上未生效——两条都待用户点头）
-  - 2026-10-08 · **对接说明清单表每行模型 ID 后配复制钮**（design-spec v2.53 / frontend-spec v2.54 §6 末条；台账 `E2E-20261008-apidocs-modelid-copy.md`；🔴 该页此前整页未跟踪 ⇒ 提交单元含整页 + 侧栏接线 + 该页 CSS 三段 + `help/`）
-  - 2026-10-08 · **对接说明页四颗复制钮搬进代码框内右上角**（design-spec v2.52 / frontend-spec v2.53；台账 `E2E-20261008-apidocs-codecopy.md`）
-  - 2026-10-08 · **`/v1/responses` 兼容端点透传**（test-cases v1.25；台账 `E2E-20261008-responses-endpoint.md`，含撞车专节 §5——并行会话同树同功能，停手判据已归案）
-  - 2026-10-08 · **趋势图柱体 0px 事故与假 DOM 门补强**（新探针 `probe_trend_charts_geometry.py`；台账 `E2E-20261008-trend-bars-zero-height.md`）
-  - 2026-10-08 · **cline-403 resource-unavailable 换号链路**（台账 `E2E-20261008-cline-403-resource-unavailable.md`）
-  - 2026-10-08 · **R3 落账/验收双轨制 + 交接单结构落地**（decisions.md 2026-10-08；凭据 `other/handoffs/20261008-structure-other-handoffs.md`）
-  - 2026-10-08 · **映射弹窗两处收口**（commit `4bd0a6d`，D5 终稿轮五轮交叉验收通过；台账 `E2E-20261006-map-switch-save-btn.md`）
-  - 2026-10-07 · **总览「账号资源额度」板块**（PRD Q43，frontend-spec v2.52 §7.20；台账 `E2E-20261007-overview-account-quota.md`）
-  - 2026-10-07 · **accounts.js 拆分收口 + 配置代次乐观锁**（commit `172e17b`；详细叙事在归档）
-  - 2026-10-06 · **P0/P1/P2 修复批**：拆分遗留全局不可用（`6df2ca5`）→ fmtTok/switchEl 未定义（`f6ea951`）→ 映射弹窗收口（`4bd0a6d`）；单账号并发上限 `concurrency_cap`（`0992863`）
-  - 2026-10-05 · **草稿制落账**：auto-map 不再是写面（tech-design v2.10 §9-Q41；台账 `E2E-20261005-map-draft-mode.md`）
   - 更早轮次（M1/M2、Q18–Q43 各轮、图标/额度/设置页/映射弹窗系列）：见归档 `docs/changes/status-archive.md` 与 `docs/changes/e2e-records/`
   - **当前生效版本表**（spec 头行是本体，本表是入口速查；核对于 2026-10-08）：PRD **v1.31** · tech-design **v2.10** · test-cases **v1.25** · design-spec **v2.53** · frontend-spec **v2.54**。用法：开工前以本表定位各 spec 当前版本；版本间演进链在 spec 头部版本史行，不要在 AGENTS.md 里再堆版本引用。
-  - 🔴 **归档指针**：查证 2026-10-08 之前的历史交付证据链一律走 `docs/changes/status-archive.md` → 对应台账；新状态链条目追加在该归档末尾（仍遵守「存证不改写」），入口快照只维护最近两周。
-
-## M6 多产品账号接入与模型转接（2026-09-30 **已交付**）
-- 指令 = PRD v1.19 §9-Q29：DSH 插件全部产品（**除华为云 CodeArts**）的「账号接入/管理/切换/签到领取」+ **模型转发**整合进网关；架构 `tech-design.md` §22（10 实例 registry、`accounts/` 最小公共层 + `upstream/<product>/` 薄模块 + 转接层复用既有调度）。
-- **证据（可复跑）**：台账 `docs/changes/e2e-records/E2E-20260930-M6-multi-product.md`（评审→修复→**撤修复红证**全表）；对抗评审 `docs/changes/reviews/m6-r{1,2,3,4}-*.md`；交付面板 `m6-panel-{pm,pm-2,pm-3,eng-a,eng-a-2,eng-b,ix}.md` —— **四角色全部「通过 · 0 阻塞」**；前端真机断言 81 项 + 截图（`m6-accounts-*` / `m6-panel-ix-*`）。
-- 计数：`pytest -q` → **1560 passed / 0 failed**（README 双语同值；数字取自 2026-09-30 全量跑的输出行 `1 failed, 1560 passed, 1 skipped in 369.16s`——那 1 红项正是钉这个数字的 `test_readme_test_counts_are_not_stale` 本身，同步到 1560 后即绿）。M7 一轮另加：回调接收端 + 页面改版 + zcode/扫码登录，判据 `node scripts/verify_accounts_ui.mjs` = 13 通过 / 0 失败、真机门 151 通过 / 0 失败。
-- **未实测（用户驱动，不得写成已完成）**：真实凭据逐产品登录/领取；zcode 直连 405/3012（D1）；qoder 签名缝与 zcode 验证码缝（均 **fail-closed**，未注入时资源不进 `/v1/models` 且有横幅）；T5a/T5b、T10；各产品 `stream:false` 等现场项（清单见 §22.11 与台账）。
-- 新增：管理端「账号接入」页（`#/accounts`，遵守 frontend-spec）+ `/admin/api/accounts*`（含 `models` 目录出口）；**`mgw zcode login` 已接真实设备流**（2026-09-30 补口；退出码 0/1/2/3 契约不变）；跨进程写盘互斥 `data/locks/accounts.lock`（fail-closed）。
-- **仍开放（需用户决策）**：qoder/qodercn 模型转发（签名含 292KB WASM：引入 wasm 运行时 / 逆向重写 / 维持 fail-closed）；zcode 模型转发（D1 最小实测后接线）。
+  - 🔴 **归档指针（2026-10-11 起按「开/完结分离」执行，decisions ⑤）**：查证已出栈的历史交付证据链一律走 `docs/changes/status-archive.md` → 对应台账；入口快照只保留**带未决线程**的条目（未完结面），纯完结条目由交付轮自主出栈至该归档（新条目追加在归档末尾，存证不改写）。
+  - 2026-09-30 · **M6 多产品账号接入与模型转接已交付**（全文叙事 + 未实测清单 + 面板证据已出栈至 `status-archive.md`「2026-10-11 出栈」节）：仍开放 = qoder wasm 转发路线三选一、zcode 模型转发 D1。
 
 ## 验收约定（简版，细则见 mg-11）
 - 完成 = 行为实测证据 + 与需求点逐条对应；`SHELL` = 可跟踪未完成项，禁止打 ✅。
 - 交付回复必须带证据；无证据不得宣称完成。
-- 🔴 **落地门禁（2026-10-04 用户定版）**：任何信息落地（写进 `docs/specs/`、台账、记忆、README）或改动生效
+- 🔴 **落地门禁（2026-10-04 用户定版；2026-10-11 增适用面分级）**：T2 白名单面（规则/门禁/术语/spec 契约/对外承诺/不可逆动作/跨面改动）的信息落地或改动生效
   （提交 main、重启 :8300、对外宣称完成），须**多角色独立验收全部 `VERDICT: 通过`（零阻塞）**；
-  任一路"不通过"⇒ 逐条复研 → 修或证伪 → **同批角色重跑**，直至全通过。门禁细则与六路切法见
-  `mg-11-engineering-acceptance.mdc`「⛔ 落地门禁」；概念归属怎么自己判见 `mg-terminology.mdc`「概念归属自动判则」。
+  任一路"不通过"⇒ 逐条复研 → 修或证伪 → **同批角色重跑**，直至全通过。T0 快路径免多角色（mg-10 快档）、T1 标准轮=机械门+R3 轨道一；
+  门禁细则与六路切法见 `mg-11-engineering-acceptance.mdc`「⛔ 落地门禁」（分级块在其节首）；概念归属怎么自己判见 `mg-terminology.mdc`「概念归属自动判则」。

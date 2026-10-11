@@ -55,7 +55,7 @@
   静态门 V23/V25 变异锚钉新文案字面——拆开提交任何一边都会把对方打红）。机械求法在 pitfalls R4（diff 字面 grep →
   并入提交集 → 递归至不动点）；并行会话占用 ⇒ 不强行原子 + 报备（§16.4 先例）。**反转触发条件**：
   门与页面同仓同提交成为不受 hooks 约束的常态后，可降为「门与页面同轮落账」的软约束。
-- **2026-10-11 知识体系重构定版（用户授权「按规划书顺序依次落地+根据实际情况判定」；台账 `docs/changes/open/E2E-20261011-knowledge-refit.md`）**：
+- **2026-10-11 知识体系重构定版（用户授权「按规划书顺序依次落地+根据实际情况判定」；台账 `docs/changes/e2e-records/E2E-20261011-knowledge-refit.md`）**：
   ① **skill 真身唯一住址 = `.cursor/skills/`**（入口 `INDEX.md`，任何 AI 工具经 AGENTS.md 到达，不做单产品兼容——用户明示「设计好入口文件让它读懂整个体系」）；工具家目录（`~/.qoder-cn/skills/` 等）不维护、不写入，三支 mgw skill 已迁出、家目录零残留（备份 `other/backups/20261011-knowledge-refit-pre/`）。为什么：载体错位是非 Qoder 工具看不见 playbook 的根因，留副本=漂移温床。
   ② **无用户点名批准不落盘任何新 skill**；工具内建议库（qoder skill_evolution_suggestions）定性为缓存非依据（条目会无痕消失，两轮实测）。为什么：堵「无指令乱生成」的入口。
   ③ **skill 文件改动须当轮刷 INDEX 版本/核验日期 + 台账一行**；frontmatter 带 `metadata.version`。为什么：10-08 P2/P3 无账改写（mtime 与台账脱节）的复发防线，git 化后可用 diff 机器验证。

@@ -50,7 +50,8 @@
 - 配置/锁：`coding/data/config.yaml`、`coding/data/gateway.lock`；日志 `coding/data/gateway.log`（>32MB 由启动器轮转 `.1`）
 - 用量流水：`coding/data/usage/events-YYYYMMDD.jsonl`（🔴 字段名是 **`system_model`**，不是 `model`）、`ops-results-*.jsonl`（相邻 `ts` 差 = 真实刷新节奏）
 - 账号运行态：`coding/data/upstream/<product>/accounts/*/runtime.json`（`quota.checked_at` 是 ISO 串，不是 epoch）
-- 证据台账：`docs/changes/**`（🔴 `docs/` 被 **gitignore ⇒ 永不进提交**，别把"没进提交"误读为失败）
+- 证据台账：`docs/changes/**`（🔴 `docs/changes/` 维持 gitignore ⇒ 永不进提交，别把"没进提交"误读为失败；`docs/specs/` 自 2026-10-11 起跟踪）
+- **台账生命周期（2026-10-11 定版，decisions ⑤）**：进行中住 `docs/changes/open/`；轮次彻底完结**自主迁移** `docs/changes/e2e-records/`（完结存证区，查找按文件名 `E2E-YYYYMMDD-*` 日期 + 内容 grep）；待用户表态 = `other/handoffs/`（完成移 `done/`）
 - 清理：临时实例数据根、探针脚本一律 `/tmp`，跑完即清（规矩 12 零垃圾）；运行期临时物不入库
 
 ## 5 授权协议（哪些必须先问用户）

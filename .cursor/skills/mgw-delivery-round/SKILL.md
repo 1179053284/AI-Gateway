@@ -63,12 +63,13 @@ metadata:
 4. 台账落在 `docs/changes/e2e-records/E2E-YYYYMMDD-<主题>.md`，固定段：§0 用户原话 → §改动面/根因（实测）→ §判据（随设计前进，不删条目）→ §撤证 → §门行（抄运行器原话 + 原文路径）→ §未做/未验（如实）→ §归案。
 5. `docs/` 被 gitignore ⇒ 台账**永不进提交**；这不是失败，别为它改名换目录。
 
-## 6. 归案（四件套，能少不能漏）
+## 6. 归案（五件套，能少不能漏）
 
 - `docs/specs/*`：改了行为/契约 ⇒ 对应 spec 升版；**版本号取下一个空位**（落笔前 grep 现值；被并行会话占了就顺位，并在正文写明改号原因）。
 - `AGENTS.md`：状态链补本轮一行（证据路径 + 门行数字）。
 - `.cursor/memory/`：新坑 → `pitfalls.md` 一行（现象/根因/修复方向/日期）；关键"为什么"→ `decisions.md`；新命令 → `runbook.md`。
-- 用户级 skill 的规则若有变化（如本环流程本身）→ 更新对应 SKILL.md。
+- `.cursor/skills/`：本环流程本身有变化 → 更新对应 SKILL.md + 刷 `INDEX.md` 版本/核验日期（2026-10-11 定版，decisions ③）。
+- `docs/changes/open/<本轮台账>`：轮次**彻底完结**（门绿 + 归案完 + 状态链落定）⇒ 当轮自主迁移至 `docs/changes/e2e-records/`（完结存证区；查找按文件名日期 + 内容 grep，见 runbook §4。2026-10-11 定版，decisions ⑤）。
 
 ## 7. 上线判定（最容易撒谎的一步）
 
