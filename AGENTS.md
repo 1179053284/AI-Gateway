@@ -26,18 +26,16 @@
 7. `git status && git log --oneline -5`（续接时先看 HEAD 与工作区状态，防重做）
 
 ## 目录速览
-- **结构定版（2026-10-01，对齐 codex-coding）**：`coding/` = 源码唯一区（model_gateway / tests / pyproject / config.example.yaml / README / LICENSE / .venv / data）；`bianyiandhuanjing/` = 运行与验收环境（`启动网关.command` + `scripts/`：ship-gate.sh 机械门 + verify_*/ui_verify_* 验收门 + fixtures）；权威说明 = 根 `项目目录说明.md`；git 仓库保持在根。**2026-10-08 追补（已获用户点头；凭据原文 = `docs/handoffs/20261008-structure-other-handoffs.md`，当日建于根 `other/handoffs/`）**：新增 AI→用户交接单唯一出口（六节必填 + 判轨理由行，完成移 `done/`），与 codex `other/people-todolist/` 同构。**2026-10-11 二次追补（用户裁决）**：根 `other/` 整体并入 `docs/` ⇒ 交接单现住 `docs/handoffs/`、时点备份住 `docs/backups/`（.gitignore 白名单放行，git 可见性不变）；存证旧文里的 `other/handoffs/` 路径一律按 `docs/handoffs/` 读
-- 🔴 **待合并收口轮（2026-10-08 晚，本会话执行；用户指令「逐一核实每个待合并改动…逐一进行合并」）**：工作区 51 个未提交路径**逐一路径核实归属与在册台账**（无一「状态没更新」的假未合并——`fix/zcode-selection-gate` 分支除外：`4fb9b05` 早已是 main 祖先，分支与 `/private/tmp/mgw-zcode-fix` worktree 纯状态残留，已清）后按 R4 锚耦合闭包**分 14 批原子落账**（`2272863`…`2e781ef`，含并行会话 `8c5e906` 交插事件如实归因：其 apidocs/base.css 段与本收口轮锚耦合互补落齐）；收口轮新抓两条根因修复：① `366962c` local_admin 禁环境代理（本机 `http_proxy=127.0.0.1:7890` 把对 `127.0.0.1:<port>` 的 CLI 探活转发走代理，空端口得 502 落「timeout」而非「not-running」，三态判据失真——铁律 1 纯本地的漏网口）；② `865a963` 打桩点随 `_local_opener` 前进（门侧自纠非放宽）。终局机械门 = 全量 `2349 passed / 3 skipped` + v2 门 `145/145` + 账号门 `33/0` = **SHIP-GATE: GREEN**（原文 `docs/changes/e2e-records/gate-raw-20261008-merge-closure.log`，2026-10-08 21:5x）；README 双语同步 **2349**；工作区干净。⚠️ 如实报备三条：origin/main 仍停在 `5158cbc`（**60 个本地提交未推送**，推送需用户点头）；收口轮后台全量门期间 `coding/data/config.yaml` 有运行态写入（gitignored 运行数据，非源码面）；**:8300 未重启** ⇒ 3012 防线 / cline-403 换号 / responses 端点 / 总览额度板块等含后端改动的已落账功能**线上尚未生效**（重启须用户点头）
-- `.cursor/rules/` — 项目规则（mdc，AI 工具可自动加载）
-- `.cursor/memory/` — 项目长期记忆（runbook / decisions / pitfalls / modules）
-- `docs/specs/` — 需求真相（PRD 与各域 spec）
-- `docs/changes/` — 实测记录/运行证据（铁律 2）；**开/完结分离（2026-10-11 定版）**：进行中住 `open/`、完结自主迁 `e2e-records/`（日期+内容 grep 可查）；并行任务出现时建立 ACTIVE.md 协调
-- `coding/model_gateway/` + `coding/tests/` + `coding/pyproject.toml` + `coding/config.example.yaml` — 源码唯一区 `coding/`（结构见 tech-design.md §7）。**历史交付叙事（~60 轮）已全量归档至 `docs/changes/status-archive.md`（原文不改写），入口只留近况提炼：**
-  - 2026-10-09 · **资源池排序改版：↑/↓ → 置顶/置底 + 整行拖拽**（frontend-spec v2.55 §3.4；台账 `E2E-20261009-pool-pin-drag.md`；v2 门 148/0 + 变异 209/209 + 批次 pytest 78 passed + 隔离实例真机 4 连保存/拖拽落盘全对；🔴 两处真值修正：旧 `swapUnits` 的 ↑ 恒等空操作 bug、乐观锁双计次（PUT+mtime 轮询各 reload 一次 ⇒ 连续第二次保存必 409，`main.py` mtime 共享记账修复）——**含后端改动，:8300 未重启前连续保存仍会撞 409**）
-  - 2026-10-08 · **待合并收口轮：51 路径逐一核实 + 14 批落账 + 代理漏网口修复**（commit `2272863`…`2e781ef`；全量 2349/3 + v2 门 145/145 + 账号门 33/0 GREEN；台账 `gate-raw-20261008-merge-closure.log`；🔴 60 提交未推送 origin、:8300 未重启线上未生效——两条都待用户点头）
-  - 更早轮次（M1/M2、Q18–Q43 各轮、图标/额度/设置页/映射弹窗系列）：见归档 `docs/changes/status-archive.md` 与 `docs/changes/e2e-records/`
+- **结构定版**：`coding/` 源码唯一区（源码/测试/配置样例/双语 README）；`bianyiandhuanjing/` 运行与验收环境（ship-gate 机械门 + verify_* 验收门）；**权威说明 = 根 `项目目录说明.md`**（结构细节与追补史不在此展开）；交接单 `docs/handoffs/`（六节必填 + 判轨理由行，完成移 `done/`）、时点备份 `docs/backups/`。
+- 🔴 **持续待用户点头两项**（2026-10-08 收口轮起，跨轮有效；叙事原文见 status-archive「2026-10-11 三次出栈」）：① 推送 origin（本地领先 60+ 提交）；② 重启 :8300（3012 防线 / cline-403 换号 / responses 端点 / 总览额度板块 / 资源池排序乐观锁修复等含后端改动**线上未生效**；未重启前资源池连续第二次保存撞 409，刷新页面可临时避开）。
+- `.cursor/rules/` — 项目规则；`.cursor/memory/` — 长期记忆（runbook / decisions / pitfalls）；`.cursor/skills/` — 场景手册（入口 INDEX，装配第 4 步）
+- `docs/` — `specs/` 需求真相 / `handoffs/` 待用户表态 / `backups/` 时点备份 / `changes/` 实测台账（**开/完结分离**：进行中住 `open/`、完结自主迁 `e2e-records/`，日期+内容 grep 可查；待办 ACTIVE.md 并行协调）
+- 近况（只留提炼；叙事原文一律在 `docs/changes/status-archive.md`）：
+  - 2026-10-11 · **知识体系重构落地**（skill 归家 `.cursor/skills/` + 入口通用化 + 门禁分级 T0/T1/T2 + 开/完结生命周期 + 知识层入 git；台账 `E2E-20261011-knowledge-refit.md`）
+  - 2026-10-09 · **资源池排序改版已交付**（置顶/置底 + 整行拖拽；台账 `E2E-20261009-pool-pin-drag.md`，交接单 `docs/handoffs/20261009-pool-pin-drag.md` 待验收；未生效事项见上 🔴）
+  - 2026-09-30 · **M6 多产品账号接入已交付**（全文/面板证据/仍开放决策 = qoder wasm 转发三选一、zcode 转发 D1，见 status-archive「2026-10-11 出栈」节）
   - **当前生效版本表**（spec 头行是本体，本表是入口速查；核对于 2026-10-08）：PRD **v1.31** · tech-design **v2.10** · test-cases **v1.25** · design-spec **v2.53** · frontend-spec **v2.54**。用法：开工前以本表定位各 spec 当前版本；版本间演进链在 spec 头部版本史行，不要在 AGENTS.md 里再堆版本引用。
-  - 🔴 **归档指针（2026-10-11 起按「开/完结分离」执行，decisions ⑤）**：查证已出栈的历史交付证据链一律走 `docs/changes/status-archive.md` → 对应台账；入口快照只保留**带未决线程**的条目（未完结面），纯完结条目由交付轮自主出栈至该归档（新条目追加在归档末尾，存证不改写）。
+  - 🔴 **归档指针（2026-10-11 定版，decisions ⑤）**：已出栈叙事与历史证据链一律走 `docs/changes/status-archive.md` → 对应台账；**早于 2026-10-01 的台账/评审/调研文本**已迁 `docs/backups/20261011-pre-october-archive/`（原图像画面证据经用户指令清理；读法声明见 pitfalls 头部与归档 README）；入口快照只保留**带未决线程**的条目，纯完结条目由交付轮自主出栈（存证不改写）。
   - 2026-09-30 · **M6 多产品账号接入与模型转接已交付**（全文叙事 + 未实测清单 + 面板证据已出栈至 `status-archive.md`「2026-10-11 出栈」节）：仍开放 = qoder wasm 转发路线三选一、zcode 模型转发 D1。
 
 ## 验收约定（简版，细则见 mg-11）

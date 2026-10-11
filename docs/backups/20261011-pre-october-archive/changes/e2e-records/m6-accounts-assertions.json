@@ -1,0 +1,372 @@
+[
+  {
+    "name": "A0 页面渲染完成（#ac-wrap + #ac-table 出现）",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "name": "A3 两行顶栏（PAGE_META 注入）",
+    "ok": true,
+    "detail": "{'crumb': '资源配置', 'title': '账号接入', 'doc': '账号接入 · Model-Gateway'}"
+  },
+  {
+    "name": "A2 导航项高亮 = accounts",
+    "ok": true,
+    "detail": "accounts"
+  },
+  {
+    "name": "A4 页内无重复页标题（标题只在顶栏）",
+    "ok": true,
+    "detail": "[]"
+  },
+  {
+    "name": "A5 骨架A 双面板：接管留白 -12/-12/-48 + 高 calc(100vh-60px) + 子侧栏 248 + 右区内部滚动",
+    "ok": true,
+    "detail": "{'m': '-12px -12px -48px', 'h': '793px', 'vh': 853, 'sw': 248, 'scroll': 'auto', 'mainScroll': 'auto', 'mainPad': '12px'}"
+  },
+  {
+    "name": "A6 产品族分组卡 = 8",
+    "ok": true,
+    "detail": "8"
+  },
+  {
+    "name": "A7 子侧栏产品行 = 10（registry.PRODUCT_IDS 全量）",
+    "ok": true,
+    "detail": "['buddy', 'workbuddy', 'lobsterai', 'qoder', 'qodercn', 'trae', 'cline', 'loomy', 'raccoon', 'zcode']"
+  },
+  {
+    "name": "A8 产品行 title = 账号数(启用数) + 登录方式",
+    "ok": true,
+    "detail": "CodeBuddy · 2 个账号（1 启用）· 登录方式：外链授权"
+  },
+  {
+    "name": "A9 状态圆点：有启用账号亮、零账号不亮",
+    "ok": true,
+    "detail": "{'buddy': True, 'workbuddy': False}"
+  },
+  {
+    "name": "A10 头卡：logo 块首字母 C + 副行（登录形态/协议/账号数/设备身份）",
+    "ok": true,
+    "detail": "{'logo': 'C', 'head': '\\n      \\n        C\\n        \\n          CodeBuddy\\n          \\n            外链授权 · OpenAI 兼容\\n            · 2 个账号（1 启用）\\n            · 设备身份：无\\n          \\n        \\n      '}"
+  },
+  {
+    "name": "A12a buddy 列 = [账号,状态,最近结果,操作]（无设备列）",
+    "ok": true,
+    "detail": "['账号', '状态', '最近结果', '操作']"
+  },
+  {
+    "name": "A11 账号行 = buddy-demo1 / buddy-demo2",
+    "ok": true,
+    "detail": "['buddy-demo1', 'buddy-demo2']"
+  },
+  {
+    "name": "A18 卡头统计 value = 2 个账号 · 1 启用",
+    "ok": true,
+    "detail": "2 个账号 · 1 启用"
+  },
+  {
+    "name": "A18b 表格卡 = .card.flush + .card-head.inset，添加钮在卡头",
+    "ok": true,
+    "detail": "True"
+  },
+  {
+    "name": "A14 停用行弱化（td.off）+ 开关关态 + a11y 三件套",
+    "ok": true,
+    "detail": "{'off1': True, 'off2': True, 'state': '已停用', 'swOn': False, 'swRole': 'switch', 'swAc': 'false', 'swLabel': '启用 / 停用账号 buddy-demo2'}"
+  },
+  {
+    "name": "A15 全部开关：role=switch + aria-checked 与 class 同步 + aria-label 齐备",
+    "ok": true,
+    "detail": "[{'role': 'switch', 'ac': 'true', 'on': True, 'label': '启用 / 停用账号 buddy-demo1'}, {'role': 'switch', 'ac': 'false', 'on': False, 'label': '启用 / 停用账号 buddy-demo2'}]"
+  },
+  {
+    "name": "A16a buddy-demo1 操作列（能力驱动）= probe+refresh+claim+delete 且全可用",
+    "ok": true,
+    "detail": "[{'op': 'probe', 'dis': False, 'off': False, 'title': '测试（探活）：连通 / 凭据有效 两维分开'}, {'op': 'refresh', 'dis': False, 'off': False, 'title': '续期：刷新凭据并落盘'}, {'op': 'claim', 'dis': False, 'off': False, 'title': '签到 / 领取：结果按 ops 四类呈现（只有失败着色）'}, {'op': 'delete', 'dis': False, 'off': False, 'title': '删除账号（需二次确认；其关联资源将置为停用并保留）'}]"
+  },
+  {
+    "name": "A13 额度列不渲染（全部 unknown 时整列不出现）",
+    "ok": true,
+    "detail": "['账号', '状态', '最近结果', '操作']"
+  },
+  {
+    "name": "A12b lobsterai 列含设备列",
+    "ok": true,
+    "detail": "['账号', '状态', '设备', '最近结果', '操作']"
+  },
+  {
+    "name": "A12c 设备列 = uuid = 值（身份字段逐项展示）",
+    "ok": true,
+    "detail": "uuid = 11111111-2222-3333-4444-555555555555"
+  },
+  {
+    "name": "A12d trae 设备列 = machine_id + device_id 双行",
+    "ok": true,
+    "detail": "machine_id = mid-trae-demo-0001device_id = dev-trae-demo-0001"
+  },
+  {
+    "name": "A10b trae 头卡：本机回跳 / 产品专属出站塑形 / 双设备身份",
+    "ok": true,
+    "detail": "\n      \n        T\n        \n          Trae\n          \n            本机回跳 · 产品专属出站塑形\n            · 1 个账号（1 启用）\n            ·"
+  },
+  {
+    "name": "A16b loomy（refresh=false）：续期按钮置灰 + 给原因 + claim 保留",
+    "ok": true,
+    "detail": "{'dis': True, 'off': True, 'title': '该产品不可续期：续期通道未登记（tech-design §22.6）', 'ops': ['probe', 'refresh', 'claim', 'delete']}"
+  },
+  {
+    "name": "A16c raccoon（checkin=false）：无签到按钮（未登记能力不渲染）",
+    "ok": true,
+    "detail": "['probe', 'refresh', 'delete']"
+  },
+  {
+    "name": "A16d 运行态损坏 → 状态未知（fail closed，warn 色不谎报健康）",
+    "ok": true,
+    "detail": "{'state': '状态未知', 'dotOn': False, 'color': 'rgb(194, 106, 0)', 'title': '运行态文件读不动：/private/tmp/mg-m6-8399/upstream/qoder/accounts/qoder-demo1/runtime.json（Expecting property name enclosed in double quotes: line 1 column 2 (char 1)）'}"
+  },
+  {
+    "name": "A17 空状态文案（含登录形态指路）",
+    "ok": true,
+    "detail": "暂无账号——点击「接入账号」用设备码授权完成第一个账号接入"
+  },
+  {
+    "name": "A16e 未登记端点（claim_onboarding）→ 新手任务按钮不渲染",
+    "ok": true,
+    "detail": "0"
+  },
+  {
+    "name": "A19 图标契约（Lucide：fill=none/stroke=currentColor/sw 2|2.1/14·16·20）",
+    "ok": true,
+    "detail": "{'n': 4, 'bad': 0}"
+  },
+  {
+    "name": "A20 D3 无「保存」按钮 / 无导出功能（v2.6）",
+    "ok": true,
+    "detail": "0"
+  },
+  {
+    "name": "A21 行内图标钮 = 28×28 且 aria-label 齐备",
+    "ok": true,
+    "detail": "[]"
+  },
+  {
+    "name": "A25 卡片档（--radius-lg 10px / --shadow-card / p-12）+ 块间距 12px 节奏",
+    "ok": true,
+    "detail": "{'radius': '10px', 'shadow': 'rgba(15, 23, 42, 0.035) 0px 10px 24px 0px', 'pad': '12px', 'gap': 12, 'gcGap': '12px'}"
+  },
+  {
+    "name": "A22a 浅色主题生效（默认跟随系统 → data-theme=light；顶栏三态按钮 system 高亮）",
+    "ok": true,
+    "detail": "{'theme': 'light', 'systemOn': True, 'lightOn': False, 'darkOn': False}"
+  },
+  {
+    "name": "A22b 深色主题生效（data-theme=dark + 顶栏图标态）",
+    "ok": true,
+    "detail": "{'theme': 'dark', 'darkOn': True, 'bg': 'rgb(16, 17, 20)'}"
+  },
+  {
+    "name": "W1a 向导参数段（qoder device_code）：标题 / 无 kind tab / 账号名输入 + 提示 / 关闭钮 aria",
+    "ok": true,
+    "detail": "{'title': '接入账号 · Qoder', 'tabs': 0, 'input': True, 'placeholder': '留空 = 自动生成（如 qoder-a1b2c3d4）', 'hint': '账号名（选填）：留空由系统生成；仅 A-Za-z0-9_-，1–32 位', 'closeAria': '关闭', 'startBtn': True}"
+  },
+  {
+    "name": "W1a2 输入 focus 态（边框转 --text 黑 + 底转白）+ h-44 + radius 8",
+    "ok": true,
+    "detail": "{'border': 'rgb(23, 27, 34)', 'bg': 'rgb(255, 255, 255)', 'h': '44px', 'radius': '8px'}"
+  },
+  {
+    "name": "W1b device_code 进行段：设备码 + 复制 + 授权地址 + 打开授权页 + 导语",
+    "ok": true,
+    "detail": "{'guide': True, 'code': True, 'copy': True, 'open': True, 'urlRow': True}"
+  },
+  {
+    "name": "W1c device_code 自动轮询（POLLABLE）：状态转「等待中」",
+    "ok": true,
+    "detail": "等待中"
+  },
+  {
+    "name": "W2a loomy 双形态 tab（扫码 + 短信验证码，未开始时可切）",
+    "ok": true,
+    "detail": "{'tabs': ['扫码', '短信验证码'], 'dis': True}"
+  },
+  {
+    "name": "W2b qr（url=官方图片地址）→ <img> 渲染",
+    "ok": true,
+    "detail": "{'src': 'https://loomy.example.com/qr.png', 'w': '200'}"
+  },
+  {
+    "name": "W3 sms_code 形态：手机号输入 + 发送验证码（两段式，不轮询）",
+    "ok": true,
+    "detail": "{'phone': True, 'send': True, 'hint': '短信通道若要求图形验证码（滑块），本向导未内置——请改用主形态登录。', 'pollable': False}"
+  },
+  {
+    "name": "W4a local_callback 形态：授权地址 + 回跳粘贴 textarea + 提交（无轮询通道）",
+    "ok": true,
+    "detail": "{'url': True, 'ta': True, 'submit': True, 'noPollHint': True, 'guide': True}"
+  },
+  {
+    "name": "W4b local_callback 不发起轮询（2.6s 后仍为「等待用户操作」）",
+    "ok": true,
+    "detail": "等待用户操作"
+  },
+  {
+    "name": "W5 external_link 形态：授权地址 + 打开授权页",
+    "ok": true,
+    "detail": "{'label': True, 'open': True, 'copy': True}"
+  },
+  {
+    "name": "W6a raccoon 双形态 tab",
+    "ok": true,
+    "detail": "{'tabs': ['扫码', '短信验证码']}"
+  },
+  {
+    "name": "W6b raccoon qr_payload：内容如实展示（不伪造图片）+ 复制 + 打开链接",
+    "ok": true,
+    "detail": "{'payloadRow': True, 'payload': True, 'noImg': True, 'noFake': True, 'openLink': True, 'copy': True}"
+  },
+  {
+    "name": "W7 账号名重名即时提示（覆盖语义）",
+    "ok": true,
+    "detail": "同名账号已存在：登录成功会覆盖其凭据目录"
+  },
+  {
+    "name": "D1 启停开关：点击后重取视图 → buddy-demo2 = 启用",
+    "ok": true,
+    "detail": "{'on': True, 'state': '启用'}"
+  },
+  {
+    "name": "D1b 启停即落库（disk meta.json enabled=true；无「保存」按钮）",
+    "ok": true,
+    "detail": "{'via': 'import', 'created_at': '2026-09-20T09:00:00', 'enabled': True, 'updated_at': '2026-09-30T01:33:27'}"
+  },
+  {
+    "name": "D2a 删除二次确认弹窗：文案列明级联影响 + 脚钮 2 颗",
+    "ok": true,
+    "detail": "{'text': '确定删除 CodeBuddy 的账号「buddy-demo2」？删除后其关联资源会被置为停用并保留（统计与历史不丢，彻底删除请到「模型资源」页），账号凭据目录将被移除。', 'footBtns': 2, 'gap': '8px'}"
+  },
+  {
+    "name": "D2b 取消删除：账号仍在（未落库）",
+    "ok": true,
+    "detail": "True"
+  },
+  {
+    "name": "D3 后端 500 时前端不漂移：错误 toast + 视图回落服务端真相（仍为启用）",
+    "ok": true,
+    "detail": "{'on': True, 'state': '启用', 'toast': \"启停失败：凭据落盘失败（已回滚）：写回自检：元信息键 'updated_at' 读回不一致\"}"
+  },
+  {
+    "name": "D3b 后端已整体回滚：盘面 enabled=true 未变（与视图一致）",
+    "ok": true,
+    "detail": "{'via': 'import', 'created_at': '2026-09-20T09:00:00', 'enabled': True, 'updated_at': '2026-09-30T01:33:27'}"
+  },
+  {
+    "name": "P-B1 [后端缺陷复现] 含 updated_at 的真实账号启停 → 500「写回自检：元信息键 'updated_at' 读回不一致」",
+    "ok": true,
+    "detail": "{'code': 500, 'body': '{\"error\":{\"message\":\"凭据落盘失败（已回滚）：写回自检：元信息键 \\'updated_at\\' 读回不一致\"}}'}",
+    "status": "fixed-by-Fix4",
+    "note": "【历史复现记录，保留不删】ok:true 的含义是「缺陷复现成功（500）」，不是通过断言。修复 = store.py::_verify_written 比较基准改 merged（Fix-4）。🔴 锚点一律以**函数名**指路、不写行号——行号已两次漂移（447-473 → 551/726-752 → 567/786-794），修复语义不变；回归用例 tests/integration/test_admin_accounts.py::test_enable_after_stale_meta_still_works。修复后复跑见 recheck_after_fix。",
+    "recheck_after_fix": {
+      "when": "2026-09-30",
+      "instance": "127.0.0.1:8397 · MG_CONFIG=/tmp/m6fixE/config.yaml（Fix-ε 独立实例，绝不碰 :8300）",
+      "steps": "import（buddy/fixe-pb1）→ 盘面 meta.updated_at 置 2026-09-20T09:00:00（跨秒陈旧基准 = P-B1 触发形态）→ POST disable → POST enable",
+      "result": "disable=200 / enable=200；盘面 enabled 往返 True→False→True、updated_at 刷新为 2026-09-30T02:57:08、via='import' 保留；复现文案「写回自检：元信息键 'updated_at' 读回不一致」零命中",
+      "ok": true
+    }
+  },
+  {
+    "name": "A23 运行期零 JS 异常 / 零页面 console.error（favicon·mock 图 等浏览器产物除外）",
+    "ok": true,
+    "detail": "{'exceptions': 0, 'console_err': [], 'artifacts': [('favicon-404', 'http://127.0.0.1:8399/favicon.ico'), ('mock-img-DNS', 'https://loomy.example.com/qr.png')], 'backend_500_echo': 1}"
+  },
+  {
+    "name": "A24 全量请求未触达任何真实上游主机（仅本机 8399 + mock 图域）",
+    "ok": true,
+    "detail": "{'requests': 114, 'hosts': ['loomy.example.com']}"
+  },
+  {
+    "name": "[修复轮-1] B1-A1 子侧栏产品行 = 10（顺序 = registry.PRODUCT_IDS，回归不破）",
+    "ok": true,
+    "detail": "[\"buddy\",\"workbuddy\",\"lobsterai\",\"qoder\",\"qodercn\",\"trae\",\"cline\",\"loomy\",\"raccoon\",\"zcode\"]",
+    "note": "【修复轮-1 追加，2026-09-30】B-1 模型目录出口 + IX-2/IX-3 真机断言（独立实例 127.0.0.1:8395 · MG_CONFIG=/tmp/m6pf1-inst/config.yaml · 假凭据零触网；脚本 /tmp/m6pf1-inst/dom_check_models.py，结果 /tmp/m6pf1-inst/dom-results-models.json 17/17 PASS，截图 /tmp/m6pf1-inst/shots/pf1-models-qoder-ok.png、pf1-models-buddy-unknown.png、pf1-loomy-sms-guide.png）。历史记录保持原样不删；两处已知随本轮变化的旧记录：① A16a 的 buddy 操作列自本轮起在 probe 之后新增「模型目录」钮（data-op=models，28×28，图标 = Lucide 0.555.0 list-tree 官方 path）；② A16b 的 loomy 续期钮 title 由「该产品不可续期：续期通道未登记（tech-design §22.6）」改为用户语言「该产品未提供续期通道：凭据无法刷新，需要时请重新登录」（IX-2 修复）、短信导语新增专属分支（IX-3）。"
+  },
+  {
+    "name": "[修复轮-1] B1-A2 buddy 行「模型目录」入口：aria-label + title + 图标 = Lucide list-tree 官方 path 逐条相等 + 28×28",
+    "ok": true,
+    "detail": "{\"aria\":\"模型目录 buddy-a1\",\"title\":\"模型目录：列出该账号凭据可读到的厂商模型（取不到时如实给出原因，不编造）\",\"w\":28,\"h\":28,\"ds\":[\"M8 5h13\",\"M13 12h8\",\"M13 19h8\",\"M3 10a2 2 0 0 0 2 2h3\",\"M3 5v12a2 2 0 0 0 2 2h3\"],\"svg\":{\"fill\":\"none\",\"stroke\":\"currentColor\",\"sw\":\"2\",\"w\":\"14\"}}"
+  },
+  {
+    "name": "[修复轮-1] B1-B1 成功态弹窗标题 = 模型目录 · Qoder / qoder-a1",
+    "ok": true,
+    "detail": "模型目录 · Qoder / qoder-a1"
+  },
+  {
+    "name": "[修复轮-1] B1-B2 目录头：模型（17）+ 来源：本地静态表（static）",
+    "ok": true,
+    "detail": "{\"t\":\"模型（17）\",\"d\":\"来源：本地静态表（static）\"}"
+  },
+  {
+    "name": "[修复轮-1] B1-B3 目录行 = 17 条 data-mdl（首行 auto；辅助行含 上下文/能力，且只列已知事实）",
+    "ok": true,
+    "detail": "{\"n\":17,\"ids\":[\"auto\",\"ultimate\",\"performance\"],\"first\":\"auto Auto · 上下文 200000 · 图片输入\",\"second\":\"ultimate Ultimate · 上下文 1000000 · 深度推理（xhigh/high/low/max/medium/none） · 图片输入\"}"
+  },
+  {
+    "name": "[修复轮-1] B1-B4 弹窗脚钮 = [关闭]（单钮只读弹窗）",
+    "ok": true,
+    "detail": "[\"关闭\"]"
+  },
+  {
+    "name": "[修复轮-1] B1-B5 弹窗打开时页面文本零凭据串（SECRET-PF1）",
+    "ok": true,
+    "detail": "False"
+  },
+  {
+    "name": "[修复轮-1] B1-B6 目录弹窗不含「取不动」告警（成功态不摆错误）",
+    "ok": true,
+    "detail": "0"
+  },
+  {
+    "name": "[修复轮-1] B1-C1 取不动弹窗：alert-warn「目录取不动」+ 原因原文（RuntimeError 原文透传）",
+    "ok": true,
+    "detail": "{\"t\":\"目录取不动\",\"x\":\"RuntimeError: 假上游不可达（修复轮-1 真机验证用）\"}"
+  },
+  {
+    "name": "[修复轮-1] B1-C2 取不动时 0 条目录行（**不编造**）+ hint 含 来源：远端目录（remote）",
+    "ok": true,
+    "detail": "{\"rows\":0,\"hints\":[\"来源：远端目录（remote） · 不展示任何未取回的条目（不编造）。\"]}"
+  },
+  {
+    "name": "[修复轮-1] B1-C3 取不动时页面文本零凭据串",
+    "ok": true,
+    "detail": "False"
+  },
+  {
+    "name": "[修复轮-1] IX-2 loomy 续期钮：置灰 + title = 用户语言（无「§」内部编号）",
+    "ok": true,
+    "detail": "{\"dis\":true,\"off\":true,\"title\":\"该产品未提供续期通道：凭据无法刷新，需要时请重新登录\"}"
+  },
+  {
+    "name": "[修复轮-1] IX-3 短信形态导语 = 专属分支（非默认「请按上方指引完成登录。」）",
+    "ok": true,
+    "detail": "先点「发送验证码」，收到短信后填入验证码完成登录。"
+  },
+  {
+    "name": "[修复轮-1] IX-3b 短信段展示物在位（手机号输入 + 发送验证码钮）",
+    "ok": true,
+    "detail": "{\"phone\":true,\"send\":true}"
+  },
+  {
+    "name": "[修复轮-1] Z1 运行期零 JS 异常（Runtime.exceptionThrown）",
+    "ok": true,
+    "detail": "count=0"
+  },
+  {
+    "name": "[修复轮-1] Z2 零 console.error",
+    "ok": true,
+    "detail": "count=0"
+  },
+  {
+    "name": "[修复轮-1] Z3 请求主机仅本机实例（未触达任何真实上游）",
+    "ok": true,
+    "detail": "['127.0.0.1:8395']"
+  }
+]
