@@ -56,9 +56,10 @@
   并入提交集 → 递归至不动点）；并行会话占用 ⇒ 不强行原子 + 报备（§16.4 先例）。**反转触发条件**：
   门与页面同仓同提交成为不受 hooks 约束的常态后，可降为「门与页面同轮落账」的软约束。
 - **2026-10-11 知识体系重构定版（用户授权「按规划书顺序依次落地+根据实际情况判定」；台账 `docs/changes/e2e-records/E2E-20261011-knowledge-refit.md`）**：
-  ① **skill 真身唯一住址 = `.cursor/skills/`**（入口 `INDEX.md`，任何 AI 工具经 AGENTS.md 到达，不做单产品兼容——用户明示「设计好入口文件让它读懂整个体系」）；工具家目录（`~/.qoder-cn/skills/` 等）不维护、不写入，三支 mgw skill 已迁出、家目录零残留（备份 `other/backups/20261011-knowledge-refit-pre/`）。为什么：载体错位是非 Qoder 工具看不见 playbook 的根因，留副本=漂移温床。
+  ① **skill 真身唯一住址 = `.cursor/skills/`**（入口 `INDEX.md`，任何 AI 工具经 AGENTS.md 到达，不做单产品兼容——用户明示「设计好入口文件让它读懂整个体系」）；工具家目录（`~/.qoder-cn/skills/` 等）不维护、不写入，三支 mgw skill 已迁出、家目录零残留（备份 `docs/backups/20261011-knowledge-refit-pre/`）。为什么：载体错位是非 Qoder 工具看不见 playbook 的根因，留副本=漂移温床。
   ② **无用户点名批准不落盘任何新 skill**；工具内建议库（qoder skill_evolution_suggestions）定性为缓存非依据（条目会无痕消失，两轮实测）。为什么：堵「无指令乱生成」的入口。
   ③ **skill 文件改动须当轮刷 INDEX 版本/核验日期 + 台账一行**；frontmatter 带 `metadata.version`。为什么：10-08 P2/P3 无账改写（mtime 与台账脱节）的复发防线，git 化后可用 diff 机器验证。
   ④ **知识层入 git 白名单** = `AGENTS.md` + `.cursor/{rules,memory,skills}` + `docs/specs/`；`docs/changes/` 维持 ignore（.gitignore 原注释意图=内部实测证据不上传，其防漂移靠开/完结生命周期+备份）。反转触发：用户要求台账也入 git。
-  ⑤ **记录开/完结分离**：进行中台账唯一住址 `docs/changes/open/`，轮次彻底完结（门绿+归案四件套+状态链落定）自主迁移 `docs/changes/e2e-records/`（=完结存证区，存量一字不搬——大量 P-XXX/decisions 引用指向现路径，搬动=制造断链）；待用户表态沿用 `other/handoffs/`（done/ 机制不变）。为什么：回应用户「未完结与已完结记录分离、完结自主迁移、按日期/内容可查」。
+  ⑤ **记录开/完结分离**：进行中台账唯一住址 `docs/changes/open/`，轮次彻底完结（门绿+归案四件套+状态链落定）自主迁移 `docs/changes/e2e-records/`（=完结存证区，存量一字不搬——大量 P-XXX/decisions 引用指向现路径，搬动=制造断链）；待用户表态沿用 `docs/handoffs/`（done/ 机制不变；2026-10-11 ⑦ 自 other/ 并入）。为什么：回应用户「未完结与已完结记录分离、完结自主迁移、按日期/内容可查」。
   ⑥ **流程分级 T0/T1/T2**（mg-11 字面修订）：T0 快路径免全门；T1 标准轮=R3 轨道一；T2 重门禁白名单（规则/门禁/术语/spec 契约/对外承诺/不可逆）=落地门禁全文照旧。为什么：mg-11「任何落地都多角色」与 R3 双轨制现状打架是 AI 过度执行的规则层根源；T2 面完整保留用户 10-04 定版。反转触发：用户明令恢复「一切落地都多角色」。
+  ⑦ **modules/ 事实表退役 + 根 `other/` 并入 `docs/`**（同日用户裁决）：`.cursor/memory/modules/` 删除（在册约 40 轮零沉淀，职责由 pitfalls/runbook/decisions 承载；mg-10 §全流程 6 与 AGENTS 装配 5 同步除名）；`other/handoffs/` → `docs/handoffs/`、`other/backups/` → `docs/backups/`（.gitignore 白名单放行，保住交接单 git 可见性——其 2026-10-08 建于根 `other/` 的唯一理由「docs 整目录忽略」已由白名单消除；根 `other/` 撤销）。**存证旧文（R3 条目、20261008 交接单、docs/changes 台账）里的 `other/handoffs/` 路径一律按 `docs/handoffs/` 读，原文不改**。
