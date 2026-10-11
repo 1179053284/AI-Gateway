@@ -569,6 +569,54 @@ const PRODUCT_KEYS = ["id", "title", "login", "protocol", "base_url", "device",
 const SNAP_KEYS = ["state", "source", "detail", "plan", "items", "remaining",
   "reason", "data_at", "plan_key", "checked_at"];
 
+/* ---------- fixture 时间戳自归一（2026-10-11 · V15 时间炸弹修复）----------
+ * fixtures 的 `data_at`/`checked_at` 起初写死 2026-10-02 一族：页面只在 data_at 距今
+ * 7 天内渲染**相对新鲜度**（「N 分钟前查」），跨过 7 天线全部退回绝对时刻 ⇒
+ * 2026-10-09 起 V15 的「相对新鲜度样本 ≥2 行」归零误红（门自己的判据被日历腐蚀；
+ * 页面实现的 7 天回退自始至终工作正常，基线全量门 2026-10-11 复跑时现形）。
+ * 修法 = **装载时重锚**：取 fixtures 里最新的 ISO 日期作锚点（=「今天」），其余值按与
+ * 锚点的**相对天数**前推（保留原时刻）—— 锚点自身不写死，fixtures 将来再改日期也不会
+ * 重新长出炸弹。只重锚 ISO 形状的串（`^\d{4}-\d{2}-\d{2}T`）：V17 的 epoch 变异
+ * （数值 / 裸数字串）不是 ISO ⇒ 原样保留，变异路径不受影响。
+ * 重锚后若时刻落在未来（锚点时刻晚于门运行时刻）⇒ 再退一天，保证永远是「过去时」。 */
+const _ISO_STAMP_RE = /^\d{4}-\d{2}-\d{2}T/;
+function reanchorFixtureTimes(view) {
+  const stamps = [];
+  const collect = (o) => {
+    if (!o || typeof o !== "object") return;
+    if (Array.isArray(o)) return o.forEach(collect);
+    for (const [k, v] of Object.entries(o)) {
+      if ((k === "data_at" || k === "checked_at") && typeof v === "string" && _ISO_STAMP_RE.test(v)) stamps.push(v);
+      else collect(v);
+    }
+  };
+  collect(view);
+  if (!stamps.length) return;
+  const DAY = 86400000;
+  const dayOf = (iso) => iso.slice(0, 10);
+  const anchorMs = Date.parse(`${stamps.map(dayOf).sort().pop()}T00:00:00`);
+  const shift = (iso) => {
+    const ageDays = Math.round((Date.parse(`${dayOf(iso)}T00:00:00`) - anchorMs) / DAY);
+    const build = (ms) => {
+      const d = new Date(ms);
+      const pad = (n) => String(n).padStart(2, "0");
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}${iso.slice(10)}`;
+    };
+    let out = build(Date.now() - ageDays * DAY);
+    if (Date.parse(out) > Date.now()) out = build(Date.now() - (ageDays + 1) * DAY);
+    return out;
+  };
+  const walk = (o) => {
+    if (!o || typeof o !== "object") return;
+    if (Array.isArray(o)) return o.forEach(walk);
+    for (const [k, v] of Object.entries(o)) {
+      if ((k === "data_at" || k === "checked_at") && typeof v === "string" && _ISO_STAMP_RE.test(v)) o[k] = shift(v);
+      else walk(v);
+    }
+  };
+  walk(view);
+}
+
 function loadFixtures(errors) {
   const out = [];
   for (const f of FIXTURES) {
@@ -579,6 +627,7 @@ function loadFixtures(errors) {
       errors.push(`fixture ${f} 读不出来：${e.message}`);
       continue;
     }
+    reanchorFixtureTimes(view);
     if (!Array.isArray(view.products) || !view.counts) {
       errors.push(`fixture ${f} 缺 products/counts（accounts_view 出口，admin_accounts.py:518-522）`);
       continue;

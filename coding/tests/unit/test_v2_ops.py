@@ -819,7 +819,7 @@ async def test_operation_provides_the_default_claim_fn(tmp_path, monkeypatch):
 def test_registry_declares_products_it_can_act_on():
     """注册表自检（§22.6 口径）：动作必须声明非空产品集，且**只声明在册产品**。
 
-    产品全集 = `accounts/registry.py::PRODUCT_IDS`（在册 10 实例）。原判据写死
+    产品全集 = `accounts/registry.py::PRODUCT_IDS`（在册 11 实例，Q44 起）。原判据写死
     `{zcode}` —— 随多产品收敛过期后，它会把合法的跨产品声明（如 claim 的 7 家）
     误判成"系统里不存在的产品"（判据对象错了，不是实现错了）。
     """

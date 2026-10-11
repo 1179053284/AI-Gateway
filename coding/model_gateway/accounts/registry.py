@@ -1,4 +1,4 @@
-"""10 个产品实例的注册表（tech-design v2.0 §22.4 逐产品矩阵）。
+"""11 个产品实例的注册表（tech-design v2.11 §22.4 逐产品矩阵）。
 
 🔴 填表纪律（§22.4 + M6-1 任务书）：**表里有证据的照填，取不到的留空并标「未核实」，
    不许编造**。每条实例的注释给出该行的证据出处（§22.4 行 / `20`–`23` 的 `file:line`）。
@@ -26,20 +26,20 @@
 ③ `login_alt`：**已裁决**（2026-09-29）——`loomy`/`raccoon` 的扫码 / 短信双路径以
    `login_alt` 登记（主形态仍为 `qr`）。
 
-**能力位口径**（`20 §3.1` 逐行）：`balance` 11/11 ✓；`checkin` 8/11 ✓
-（**workbuddy / cline / raccoon 为 ✗**）；`onboarding` 仅 loomy / raccoon ✓；
-`permanent_lock` 仅 buddy / workbuddy / loomy ✓；`refresh` 见 `20 §2.6`
-（**loomy / zcode 不可续期**）。
+**能力位口径**（`20 §3.1` 逐行 + Q44 增补）：`balance` 12/12 ✓；`checkin` 9/12 ✓
+（**workbuddy / cline / raccoon 为 ✗**；workbuddycn = 中国版有签到端点，与国际版相反）；
+`onboarding` 仅 loomy / raccoon ✓；`permanent_lock` 仅 buddy / workbuddy / workbuddycn / loomy ✓；
+`refresh` 见 `20 §2.6`（**loomy / zcode 不可续期**）。
 """
 
 from __future__ import annotations
 
 from model_gateway.accounts.types import Capabilities, DeviceSpec, ProductMeta
 
-#: 在册产品（§22.0：10 实例 / 9 产品；**排除华为云 CodeArts**——用户指令明确不接）。
-#: 顺序 = UI 左子侧栏的展示顺序（照抄 §22.4 表序）。
+#: 在册产品（§22.0：11 实例 / 10 产品；**排除华为云 CodeArts**——用户指令明确不接）。
+#: 顺序 = UI 左子侧栏的展示顺序（照抄 §22.4 表序；Q44 起同族中国版紧跟国际版）。
 PRODUCT_IDS: tuple[str, ...] = (
-    "buddy", "workbuddy", "lobsterai", "qoder", "qodercn",
+    "buddy", "workbuddy", "workbuddycn", "lobsterai", "qoder", "qodercn",
     "trae", "cline", "loomy", "raccoon", "zcode",
 )
 
@@ -83,6 +83,25 @@ PRODUCTS: dict[str, ProductMeta] = {
         base_url="https://www.workbuddy.ai",
         device=_NO_DEVICE,
         capabilities=Capabilities(balance=True, checkin=False,
+                                  onboarding=False, permanent_lock=True, refresh=True),
+        models_source="remote",
+    ),
+    # —— workbuddycn：WorkBuddy 中国版（Q44，2026-10-11；与 buddy/workbuddy 同族共用实现）——
+    # 登录 external_link 轮询（auth/state 查询串 platform="cli"：客户端声明的 "workbuddy"
+    #   是登录页深链 `workbuddy://` 的键、本机 WorkBuddy.app 已注册该协议 ⇒ 照抄会复刻
+    #   国际版 workbuddy-ai:// 的报障；同 `upstream/workbuddy/product.py` 2026-10-10 修法）；
+    # 额度 ✓（2026-10-10 实调 code=0）；**签到 ✓**（checkin-activity-status 实调 active=true，
+    #   与国际版相反）；永久锁 ✓（同族同判，方案 §7-R3）；无设备标识；
+    # 模型 remote `/v3/config` + 中国版兜底表（16 条，剔除服务端别名 auto）。
+    # base_url = 中国版 `cli/product.json` 的 `endpoint`（本机 WorkBuddy.app v5.6.2 实读，
+    #   2026-10-11 复验）。证据面：`docs/changes/plans/20261011-workbuddycn-integration-plan.md`。
+    "workbuddycn": ProductMeta(
+        id="workbuddycn", title="WorkBuddy（中国版）",
+        login="external_link",
+        protocol="openai",
+        base_url="https://www.workbuddy.cn",
+        device=_NO_DEVICE,
+        capabilities=Capabilities(balance=True, checkin=True,
                                   onboarding=False, permanent_lock=True, refresh=True),
         models_source="remote",
     ),

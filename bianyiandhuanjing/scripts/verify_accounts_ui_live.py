@@ -60,7 +60,7 @@ BANNED = ["正常", "在服务", "健康", "在线", "已取消"]
 #: 额度列**五档**（2026-10-02 方案 §4-7：「无套餐」= `state=unknown + reason=no_plan` 的**前端映射**，
 #: 不是第四态枚举；「（冷却中）」等附属标注**不在此表**——它们挂在同一档后面，多一档就会打红 D6a）。
 QUOTA_WORDS = ["有余量", "已耗尽", "无套餐", "未知", "尚未刷新"]
-PRODUCT_IDS = ["buddy", "workbuddy", "lobsterai", "qoder", "qodercn",
+PRODUCT_IDS = ["buddy", "workbuddy", "workbuddycn", "lobsterai", "qoder", "qodercn",
                "trae", "cline", "loomy", "raccoon", "zcode"]
 CHECKED_AT = "2026-10-01T09:30:00"
 
@@ -753,6 +753,15 @@ const READ = () => {
       //    于是 `new Set([undefined ×10]).size === 1` **空过**（打印出来就是 y 值=[null]）。
       by: Math.round(b.getBoundingClientRect().y * 10) / 10,
       wrapped: nameSpan ? nameSpan.getClientRects().length > 1 : false,
+      // 🔴 Q44 起新增（H6 的观测量）：量**文本**矩形不量盒子（P-040）——名字被 flex 拉满时
+      //    盒宽读的是剩余空间，文本宽才是「占用了多少 174px 预算」。徽章同理（缺省 0）。
+      textW: (() => { if (!nameSpan) return 0; const r = document.createRange();
+        r.selectNodeContents(nameSpan); const rects = r.getClientRects();
+        return Math.round((rects.length ? rects[0].width : 0) * 10) / 10; })(),
+      badgeW: (() => { const m = b.querySelector(".badge"); if (!m) return 0;
+        const r = document.createRange(); r.selectNodeContents(m);
+        const rects = r.getClientRects();
+        return Math.round((rects.length ? rects[0].width : 0) * 10) / 10; })(),
       markH: (() => { const m = b.querySelector(".mark-sm"); return m ? Math.round(m.getBoundingClientRect().height * 10) / 10 : null; })(),
       badgeH: (() => { const m = b.querySelector(".badge"); return m ? Math.round(m.getBoundingClientRect().height * 10) / 10 : null; })(),
     };
@@ -1046,12 +1055,12 @@ if (MODE === "rail") {
   const r = await read();
   ck("RT1", "撤证①：rail 容器 .group-card 计数必须为 0（族容器不得复活）",
      r.groupCards === 0, ".group-card=" + r.groupCards + " railBox.class=" + r.railBox.cls);
-  ck("RT2", "撤证①：.anchor-item 计数 === 10", r.rail.length === 10, "计数=" + r.rail.length);
+  ck("RT2", "撤证①：.anchor-item 计数 === 在册产品数 11（Q44 起）", r.rail.length === 11, "计数=" + r.rail.length);
   ck("RT3", "撤证①：rail 容器类名含 subnav-scroll（不得被换成族卡片）",
      /subnav-scroll/.test(r.railBox.cls), "class=「" + r.railBox.cls + "」");
   ck("RT4", "撤证①：rail 行 title 逐字判据仍成立（与族层无关的对照项）",
      r.rail.every((x) => E.railTitles[x.pid] === x.title),
-     "不符 " + r.rail.filter((x) => x.title !== E.railTitles[x.pid]).length + "/10；首行=「" + (r.rail[0] || {}).title + "」");
+     "不符 " + r.rail.filter((x) => x.title !== E.railTitles[x.pid]).length + "/11；首行=「" + (r.rail[0] || {}).title + "」");
   await shot(PAYLOAD.shotName || "retract1-rail");
 } else if (MODE === "quota") {
   /* 撤证②：额度列是否离开「尚未刷新」 */
@@ -1169,14 +1178,16 @@ if (MODE === "rail") {
     ck("QL0b", "产品级装配：卡头「刷新额度」= 1 击 + 1 次 quota-all 响应",
        a2 && nOf(await reqs(), allPath) === 1,
        "响应到位=" + a2 + " POST 计数=" + nOf(await reqs(), allPath));
-    await shot("quota-leg-after-all");
-
     /* 🔴 2026-10-03 用户裁定（实拍 Raccoon 面板上那块常驻的「刷新 0 · 失败 0 · 未发起 2」）：
        「各类处理结果，不允许用这种形式固化显示。执行完毕，弹窗提示具体执行结果，3s 后自动消失，
         也可以手动关闭。」⇒ 批量结果**既不是弹窗、也不是面板里的一块**，而是结果浮层。
-       旧 QL0c 钉的"无遮罩时开一层回执弹窗"随之作废（反转而不是删条目）：现在遮罩数必须恒为 0。 */
+       旧 QL0c 钉的"无遮罩时开一层回执弹窗"随之作废（反转而不是删条目）：现在遮罩数必须恒为 0。
+       🔴 2026-10-11：原「截图在浮层读取之前」挪到**之后**——CDP 截图慢时会把读取推过浮层
+       3s 寿命 ⇒ 偶发假红（本轮第一/三跑各红一次、第二跑绿 = 边缘竞态实证）。读取是证据本体，
+       截图只是辅助；判据一字未改。 */
     const masksW2 = await page.evaluate(() => document.querySelectorAll(".modal-mask").length);
     const rW2 = await read();
+    await shot("quota-leg-after-all");
     ck("QL0c", "产品级回执**不开弹窗**（遮罩数 === 0）且结果浮层恰一张、住在 #toast-wrap 里"
        + "（旧判据「无遮罩时开单层弹窗」随本轮裁定反转）",
        masksW2 === 0 && rW2.toastCount === 1 && !!rW2.toastCard
@@ -1262,8 +1273,8 @@ await instrument();
 let r = await read();
 
 await section("rail", async () => {
-  ck("B1", "rail 行数：.anchor-item 计数 === 在册产品数 10（扁平、无族层）",
-     r.rail.length === 10, "计数=" + r.rail.length + " pids=" + r.rail.map((x) => x.pid).join(","));
+  ck("B1", "rail 行数：.anchor-item 计数 === 在册产品数 11（扁平、无族层；Q44 起）",
+     r.rail.length === 11, "计数=" + r.rail.length + " pids=" + r.rail.map((x) => x.pid).join(","));
   ck("B2", "rail 顺序 === registry.PRODUCT_IDS 原序（深链稳定）",
      j(r.rail.map((x) => x.pid)) === j(E.productIds), "实测=" + r.rail.map((x) => x.pid).join(" › "));
   ck("B0", "族层消失：真浏览器下 .group-card 与 .mode-btn 计数都为 0",
@@ -1289,21 +1300,33 @@ await section("rail", async () => {
   ck("B4e", "四态互不相同（绿/橙/灰 三色各异，杜绝「三态同形」）",
      new Set([dot("buddy"), dot("qodercn"), dot("workbuddy")]).size === 3,
      "green=" + dot("buddy") + " warn=" + dot("qodercn") + " off=" + dot("workbuddy"));
-  ck("B5", "rail 行 title 逐字 === 「产品名 · N 个账号（M 已启用）」（10/10）",
+  ck("B5", "rail 行 title 逐字 === 「产品名 · N 个账号（M 已启用）」（11/11）",
      r.rail.every((x) => x.title === E.railTitles[x.pid]),
-     "首行=「" + (r.rail[0] || {}).title + "」；不符 " + r.rail.filter((x) => x.title !== E.railTitles[x.pid]).length + "/10");
+     "首行=「" + (r.rail[0] || {}).title + "」；不符 " + r.rail.filter((x) => x.title !== E.railTitles[x.pid]).length + "/11");
   ck("B6", "rail 容器 role=tablist + aria-orientation=vertical + aria-label",
      r.railBox.role === "tablist" && r.railBox.orient === "vertical" && !!r.railBox.label,
      "role=" + r.railBox.role + " orientation=" + r.railBox.orient + " label=「" + r.railBox.label + "」");
-  ck("B6b", "每行 role=tab（10/10）",
-     r.rail.every((x) => E.railTitles[x.pid] !== undefined) && r.rail.length === 10,
+  ck("B6b", "每行 role=tab（11/11）",
+     r.rail.every((x) => E.railTitles[x.pid] !== undefined) && r.rail.length === 11,
      "行数=" + r.rail.length + "；tabindex 值集=" + j(Array.from(new Set(r.rail.map((x) => x.tab)))));
+  // 🔴 H6 · 窄栏宽度预算（frontend-spec §2.3 `.panel-split-narrow` 定版公式，Q44 起钉住；
+  //    2026-10-11 加宽 174→200：最长名 `WorkBuddy（国际版/中国版）` 实测 139.9px+徽章 ⇒
+  //    旧 174px 下名字被裁（国际版行自 09-30 起既已裁，本轮 H6 首次量出）。
+  //    200px = 10(subnav padding)+20(icon)+8+名字+8+徽章+8+圆点 ⇒ **名字+徽章 ≤ 146px**
+  //    （1px 容差）。撤证方向 = 往注册表 title 再塞两个字 ⇒ 本条当场红。
+  {
+    const over = r.rail.filter((x) => (x.textW || 0) + (x.badgeW || 0) > 146);
+    ck("H6", "窄栏宽度预算：每行 名字文本+徽章 ≤ 121px（174px 分解公式的判据化，P-040 量文本）",
+       over.length === 0 && r.rail.every((x) => (x.textW || 0) > 0),
+       over.map((x) => x.pid + "=名字" + x.textW + "+徽章" + x.badgeW).join(" | ")
+       + "｜全行 textW=" + r.rail.map((x) => x.pid + ":" + x.textW).join(","));
+  }
   const sel = r.rail.filter((x) => x.aria === "true");
   ck("B7", "aria-selected=true 恰好 1 行，且与 .active 同位",
      sel.length === 1 && sel[0].pid === act(r),
      "selected=" + sel.map((x) => x.pid).join(",") + " active=" + act(r));
-  ck("B8", "roving tabindex：active 行 tabindex=0，其余 9 行 = -1",
-     r.rail.filter((x) => x.tab === "0").length === 1 && r.rail.filter((x) => x.tab === "-1").length === 9,
+  ck("B8", "roving tabindex：active 行 tabindex=0，其余 10 行 = -1（Q44 起 11 行）",
+     r.rail.filter((x) => x.tab === "0").length === 1 && r.rail.filter((x) => x.tab === "-1").length === 10,
      "tab0=" + r.rail.filter((x) => x.tab === "0").map((x) => x.pid).join(",") + " tab-1 数=" + r.rail.filter((x) => x.tab === "-1").length);
   ck("B13", "「只看有账号」派生开关在空产品数 <5 时不渲染（§1.3 触发态；判据按**实际计数**，不写死个数）",
      r.filterSwitch === 0 && E.zeroAccountProducts.length < 5,
@@ -1606,26 +1629,43 @@ await section("renew", async () => {
   const hits = reqA.filter((x) => x === "POST /admin/api/accounts/buddy/ix-on/refresh");
   ck("E11", "行内「续期」= 1 击 + 1 请求（POST …/ix-on/refresh 恰好一次；结果由回执说真话）",
      hits.length === 1, "新增请求=" + j(reqA.slice(0, 6)) + "；refresh 命中=" + hits.length);
+  /* 🔴 2026-10-11 重定锚（P-079 处置①/门卫生 (b) 判据过期）：批量续期回执自 `showBulkReceipt`
+     起走**结果浮层**（#toast-wrap；2026-10-03 用户裁定「执行完毕，弹窗提示具体执行结果，3s 后
+     自动消失」的同款反转——quota 腿 QL0c 已改，renew 腿漏改）⇒ 旧 `waitForSelector(".modal")`
+     等的是一个**构造上不再存在**的弹窗，renew 段自那以后从未绿过（全量门整链在册债务期间
+     无人复跑，本轮 223/1 首次现形）。改为等 refresh-due 响应到位后读浮层；先等 E11 的行级
+     toast（3s 自灭）过期 ⇒ 浮层恰一张，判据才唯一。 */
+  await page.waitForTimeout(3400);
   const reqB2 = (await reqs()).length;
   await click("#ac-renew");
-  await page.waitForSelector(".modal", { timeout: 15000 });
+  // 等 refresh-due 响应到位（局部轮询：`waitResp` 是 quota 腿腿变体块内的局部助手，此处不可见）
+  let dueSeen = false;
+  for (let i = 0; i < 60 && !dueSeen; i++) {
+    await page.waitForTimeout(250);
+    dueSeen = (await reqs()).slice(reqB2)
+      .some((x) => x === "POST /admin/api/accounts/buddy/refresh-due");
+  }
   await page.waitForTimeout(400);
   const reqA2 = (await reqs()).slice(reqB2);
   const due = reqA2.filter((x) => x === "POST /admin/api/accounts/buddy/refresh-due");
   const rr = await read();
-  ck("E12", "卡头「批量续期」= 1 击 + 1 请求（POST …/refresh-due），回执走**单层**弹窗（mask==1）",
-     due.length === 1 && rr.modalMaskCount === 1 && rr.modalCount === 1,
-     "refresh-due 命中=" + due.length + " 遮罩=" + rr.modalMaskCount + " modal-root=" + rr.modalCount);
+  ck("E12", "卡头「批量续期」= 1 击 + 1 请求（POST …/refresh-due），回执走**结果浮层**"
+     + "（遮罩 0 · 恰一张 · 住 #toast-wrap · 不在任何弹窗里）",
+     due.length === 1 && rr.modalMaskCount === 0 && rr.toastCount === 1
+     && !!(rr.toastCard || {}).inWrap && (rr.toastCard || {}).inModal === false,
+     "refresh-due 命中=" + due.length + " 遮罩=" + rr.modalMaskCount
+     + " 浮层=" + rr.toastCount + " 卡=" + j((rr.toastCard || {}).text || "").slice(0, 90));
   ck("E12b", "批量续期回执如实报窗口与计数（续期/失败两类必报，跳过分类按需追加）",
-     (rr.wizardText || "").indexOf("窗口 5 小时内到期的账号") >= 0
-     && /续期 \d+ 个 · 失败 \d+ 个/.test(rr.wizardText || ""),
-     "回执=「" + (rr.wizardText || "").slice(0, 140) + "」");
+     ((rr.toastCard || {}).text || "").indexOf("窗口 5 小时内到期的账号") >= 0
+     && /续期 \d+ 个 · 失败 \d+ 个/.test((rr.toastCard || {}).text || ""),
+     "回执=「" + ((rr.toastCard || {}).text || "").slice(0, 140) + "」");
   await shot("1440-light-renew-result");
-  await click(".modal-foot .btn");
-  await page.waitForTimeout(300);
+  /* E12c：浮层 3s 自动消失（与 QL0c2 同一口径的"到期即灭"；不再有 .modal-foot 可点）。 */
+  await page.waitForTimeout(3400);
   const rz = await read();
-  ck("E12c", "回执弹窗关闭后 modal-root 归零（不留残层）",
-     rz.modalCount === 0, "modal-root 子节点=" + rz.modalCount);
+  ck("E12c", "回执浮层到期自动消失（浮层归零）且遮罩恒 0（不留残层）",
+     rz.toastCount === 0 && rz.modalMaskCount === 0,
+     "浮层=" + rz.toastCount + " 遮罩=" + rz.modalMaskCount);
 });
 
 await section("import-conflict", async () => {
@@ -2620,32 +2660,32 @@ await section("layout", async () => {
      + "px 页内 <style>=" + L1440.pageStyles);
   // 2026-09-30 用户要求「产品列表宽度缩短 30%」：248 × 0.7 = 174px（只作用于账号接入页的
   // `.panel-split-narrow`，模型/资源两页的 rail 仍是 248px）。判据跟着实现走，不是反过来。
-  ck("H1", ".subnav 计算宽度：1440→174px、1280→174px、375→全宽 375px",
-     L1440.subnav.w === "174px" && L1280.subnav.w === "174px" && L375.subnav.bw === 375,
+  ck("H1", ".subnav 计算宽度：1440→200px、1280→200px、375→全宽 375px（Q44 起加宽：最长名 139.9px，见 H6）",
+     L1440.subnav.w === "200px" && L1280.subnav.w === "200px" && L375.subnav.bw === 375,
      "1440=" + L1440.subnav.w + " 1280=" + L1280.subnav.w + " 375=" + L375.subnav.w + "/" + L375.subnav.bw + "px");
   ck("H2", "375px：骨架转竖排、rail 变横向条带（.subnav column + .subnav-scroll row + 横滚）",
      L375.subnav.fd === "column" && L375.railBox.fd === "row" && L375.railBox.overflowX === "auto",
      "subnav.fd=" + L375.subnav.fd + " rail.fd=" + L375.railBox.fd + " rail.overflow-x=" + L375.railBox.overflowX);
   const ys = L375.rail.map((x) => x.by);
   // 🔴 空过防线：值必须是**有限数**（缺字段时 Set{undefined} 的 size 也是 1，那就是死判据）
-  ck("H2b", "375px：10 行 rail 同处一条横带（同一 y，且 y 必须真读到）",
-     ys.length === 10 && ys.every((v) => typeof v === "number" && Number.isFinite(v))
+  ck("H2b", "375px：11 行 rail 同处一条横带（同一 y，且 y 必须真读到）",
+     ys.length === 11 && ys.every((v) => typeof v === "number" && Number.isFinite(v))
      && new Set(ys).size === 1, "y 值=" + j(Array.from(new Set(ys))) + "（" + ys.length + " 行）");
   ck("H3", "375px：主区未被挤扁（main ≥ 300px）且表格交给 .table-wrap 横滚",
      L375.main.bw >= 300 && !!L375.wrap && L375.wrap.overflowX === "auto" && L375.wrap.sw >= L375.wrap.cw,
      "main.bw=" + L375.main.bw + "px wrap sw=" + (L375.wrap || {}).sw + " cw=" + (L375.wrap || {}).cw);
-  ck("H4", "375px：rail 文案零折行（10/10 单行矩形）",
-     L375.rail.every((x) => !x.wrapped), "折行=" + L375.rail.filter((x) => x.wrapped).length + "/10");
+  ck("H4", "375px：rail 文案零折行（11/11 单行矩形）",
+     L375.rail.every((x) => !x.wrapped), "折行=" + L375.rail.filter((x) => x.wrapped).length + "/11");
   ck("H4b", "1440px：rail 文案零折行",
-     L1440.rail.every((x) => !x.wrapped), "折行=" + L1440.rail.filter((x) => x.wrapped).length + "/10");
+     L1440.rail.every((x) => !x.wrapped), "折行=" + L1440.rail.filter((x) => x.wrapped).length + "/11");
   const hs = L1440.rail.map((x) => x.h);
-  ck("H5", "rail 行高一致（≤1px 容差）：10 行同一高度档",
+  ck("H5", "rail 行高一致（≤1px 容差）：11 行同一高度档",
      new Set(hs).size === 1, "高度集合=" + j(Array.from(new Set(hs))));
   const marks = L1440.rail.filter((x) => x.markH).map((x) => x.markH);
-  ck("H5b", "rail 行内控件等高（mark-sm 徽章块 10/10 同档）",
-     marks.length === 10 && new Set(marks).size === 1, "mark-sm 高度=" + j(Array.from(new Set(marks))));
+  ck("H5b", "rail 行内控件等高（mark-sm 徽章块 11/11 同档）",
+     marks.length === 11 && new Set(marks).size === 1, "mark-sm 高度=" + j(Array.from(new Set(marks))));
   await shot("375-light");
-  ck("H7", "1280px 档：主区仍完整（.subnav 174px + main ≥ 900px）",
+  ck("H7", "1280px 档：主区仍完整（.subnav 200px + main ≥ 900px）",
      L1280.main.bw >= 900, "main.bw=" + L1280.main.bw + "px innerWidth=" + L1280.innerW);
   await setViewport(1440, 900);
   await page.waitForTimeout(300);
@@ -2710,7 +2750,7 @@ await section("injection", async () => {
     panel: (document.querySelector("#ac-panel") || {}).innerText ? document.querySelector("#ac-panel").innerText.replace(/\s+/g, " ").slice(0, 120) : "",
   }));
   ck("I0", "注入代理可达：页面在代理源上渲染出 10 行 rail 与 buddy 的账号表",
-     pre.rail === 10 && pre.rows.indexOf("ix-on") >= 0,
+     pre.rail === 11 && pre.rows.indexOf("ix-on") >= 0,
      "href=" + pre.href + " rail=" + pre.rail + " rows=" + j(pre.rows) + " 面板=「" + pre.panel + "」");
   const rn = await read();
   ck("C9", "resource:null（配置读不动）注入：界面零编造——展开行已废、resource 不再常驻展示，行照常渲染",
@@ -2724,7 +2764,7 @@ await section("injection", async () => {
   await page.waitForTimeout(1600);
   const re0 = await read();
   ck("G5a", "现状登记（缺陷 D-1）：行操作后视图重取失败**不**给 alert/过期注记，旧数据静默继续显示",
-     re0.alertErr === 0 && re0.retry === 0 && re0.rail.length === 10
+     re0.alertErr === 0 && re0.retry === 0 && re0.rail.length === 11
      && !re0.head.values.some((v) => v.indexOf("数据可能已过期") >= 0),
      "alert=" + re0.alertErr + " 重试钮=" + re0.retry + " rail=" + re0.rail.length
      + " values=" + j(re0.head.values) + " toasts=" + j(re0.toasts));
@@ -2732,7 +2772,7 @@ await section("injection", async () => {
   await page.waitForTimeout(1500);
   const re1 = await read();
   ck("G5", "§5 读失败（面板级重绘后到齐）：.alert.alert-err + 「重试」+ rail 保留上次数据 + 「数据可能已过期」",
-     re1.alertErr === 1 && re1.retry === 1 && re1.rail.length === 10
+     re1.alertErr === 1 && re1.retry === 1 && re1.rail.length === 11
      && re1.head.values.some((v) => v.indexOf("数据可能已过期") >= 0),
      "alert=" + re1.alertErr + " 重试钮=" + re1.retry + " rail=" + re1.rail.length + " values=" + j(re1.head.values));
   ck("G5b", "失败原因原文上屏（不吞异常）",
@@ -2813,7 +2853,7 @@ await section("final", async () => {
   ck("Z2", "收尾：#modal-root 归零（无泄漏弹窗）",
      rf.modalCount === 0, "modal-root 子节点=" + rf.modalCount);
   ck("Z3", "收尾：rail 仍 10 行（删除账号不洗选择轴）",
-     rf.rail.length === 10, "rail=" + rf.rail.length + " 计数=" + j(rf.rail.map((x) => E.railCounts[x.pid])));
+     rf.rail.length === 11, "rail=" + rf.rail.length + " 计数=" + j(rf.rail.map((x) => E.railCounts[x.pid])));
   extra.finalRailTitles = rf.rail.map((x) => x.title);
   extra.finalToasts = rf.toasts;
 });
@@ -3321,7 +3361,7 @@ def main() -> int:
 
     code, view = http("GET", f"http://127.0.0.1:{port}/admin/api/accounts")
     expect = build_expect(view, port)
-    want_counts = {"products": 10, "accounts": len(SEED),
+    want_counts = {"products": 11, "accounts": len(SEED),
                    "enabled": sum(1 for s in SEED if s["enabled"]),
                    "disabled": sum(1 for s in SEED if not s["enabled"])}
     emit(rep, "A3", "GET /admin/api/accounts 200 且 counts 与种子逐字相符",
@@ -3331,7 +3371,11 @@ def main() -> int:
          expect["emptyResource"] == [], f"qoder/ix-quota-exhausted resource={j0(expect['emptyResource'])}")
     raw = json.dumps(view, ensure_ascii=False)
     # 2026-10-02：种子新增 zcode 假 jwt（额度联网腿的前提）→ 外泄词表同步把它的**前缀**也钉上
-    leaks = [t for t in ("IXFAKE", "ix_fake_token", "credentials", "IX-SEED-JWT") if t in raw]
+    # 🔴 2026-10-11 重定锚（P-079 合法处置①）：`credentials` 这根针 10-05 起被合法字段名
+    #    `credentials_from`（能力枚举 "store"/"product"，非凭据值）误中 ⇒ 该条自 10-05 起从未
+    #    绿过。收紧为带引号的 `"credentials"`（JSON 键精确形，误报消除）；真实泄漏形状
+    #    （凭据对象/键 `"credentials": {…}`）依旧命中，意图不变、判据不放宽。
+    leaks = [t for t in ("IXFAKE", "ix_fake_token", '"credentials"', "IX-SEED-JWT") if t in raw]
     emit(rep, "A3c", "账号视图载荷零凭据（IXFAKE / ix_fake_token / credentials 均不外泄）",
          not leaks, f"命中={j0(leaks)}；载荷字节={len(raw.encode())}")
 

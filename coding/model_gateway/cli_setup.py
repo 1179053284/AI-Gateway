@@ -141,6 +141,11 @@ def run_setup(args: argparse.Namespace) -> int:
     target_dir, source = resolve_target_dir(tool)
     print(f"目标目录：{target_dir}")
     print(f"    （来源：{source}）")
+    # 命名澄清（Q44/D4，2026-10-11 用户拍板）：本命令是 **tool 轴**（往桌面端 App 的数据
+    # 目录写 models.json），与「接入账号资源」页的**产品轴**（把哪个产品的账号接成上游资源）
+    # 是两回事 —— `workbuddy` 这个键在两边都指中国版，但互不依赖、互不触达：
+    # 接了中国版账号 ≠ 中国版 App 已接网关（后者才是本命令做的事）。
+    print("    （注：本命令只写桌面端 App 的配置文件，与「接入账号资源」页的产品接入互不影响）")
 
     # 取一条启用的接入密钥（工具端用）
     tokens = [t for t in config.gateway.access_tokens if t.enabled]

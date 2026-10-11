@@ -31,10 +31,11 @@
 - `.cursor/rules/` — 项目规则；`.cursor/memory/` — 长期记忆（runbook / decisions / pitfalls）；`.cursor/skills/` — 场景手册（入口 INDEX，装配第 4 步）
 - `docs/` — `specs/` 需求真相 / `handoffs/` 待用户表态 / `backups/` 时点备份 / `changes/` 实测台账（**开/完结分离**：进行中住 `open/`、完结自主迁 `e2e-records/`，日期+内容 grep 可查；待办 ACTIVE.md 并行协调）
 - 近况（只留提炼；叙事原文一律在 `docs/changes/status-archive.md`）：
+  - 2026-10-11 · **WorkBuddy（中国版）接入已实现**（第 11 产品 `workbuddycn`，同族参数化；PRD Q44 用户拍板 D1–D5；方案 v2 = `docs/changes/plans/20261011-workbuddycn-integration-plan.md`；台账 `open/E2E-20261011-workbuddycn.md`；**登录/签到/推理真机验收待用户驱动**）+ 同轮修账号静态门 V15 时间炸弹（fixtures 写死日期 10-09 起误红）+ README 双语 2388
   - 2026-10-11 · **知识体系重构落地**（skill 归家 `.cursor/skills/` + 入口通用化 + 门禁分级 T0/T1/T2 + 开/完结生命周期 + 知识层入 git；台账 `E2E-20261011-knowledge-refit.md`）
   - 2026-10-09 · **资源池排序改版已交付**（置顶/置底 + 整行拖拽；台账 `E2E-20261009-pool-pin-drag.md`，交接单 `docs/handoffs/20261009-pool-pin-drag.md` 待验收；未生效事项见上 🔴）
   - 2026-09-30 · **M6 多产品账号接入已交付**（全文/面板证据/仍开放决策 = qoder wasm 转发三选一、zcode 转发 D1，见 status-archive「2026-10-11 出栈」节）
-  - **当前生效版本表**（spec 头行是本体，本表是入口速查；核对于 2026-10-08）：PRD **v1.31** · tech-design **v2.10** · test-cases **v1.25** · design-spec **v2.53** · frontend-spec **v2.54**。用法：开工前以本表定位各 spec 当前版本；版本间演进链在 spec 头部版本史行，不要在 AGENTS.md 里再堆版本引用。
+  - **当前生效版本表**（spec 头行是本体，本表是入口速查；核对于 2026-10-11）：PRD **v1.32** · tech-design **v2.11** · test-cases **v1.25** · design-spec **v2.53** · frontend-spec **v2.57**。用法：开工前以本表定位各 spec 当前版本；版本间演进链在 spec 头部版本史行，不要在 AGENTS.md 里再堆版本引用。
   - 🔴 **归档指针（2026-10-11 定版，decisions ⑤）**：已出栈叙事与历史证据链一律走 `docs/changes/status-archive.md` → 对应台账；**早于 2026-10-01 的台账/评审/调研文本**已迁 `docs/backups/20261011-pre-october-archive/`（原图像画面证据经用户指令清理；读法声明见 pitfalls 头部与归档 README）；入口快照只保留**带未决线程**的条目，纯完结条目由交付轮自主出栈（存证不改写）。
   - 2026-09-30 · **M6 多产品账号接入与模型转接已交付**（全文叙事 + 未实测清单 + 面板证据已出栈至 `status-archive.md`「2026-10-11 出栈」节）：仍开放 = qoder wasm 转发路线三选一、zcode 模型转发 D1。
 

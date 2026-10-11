@@ -703,12 +703,17 @@ select.in option { background: var(--surface); color: var(--text); }
 .panel-split > main { flex: 1; min-width: 0; overflow-y: auto; padding: 12px; }
 /* 窄栏变体：产品选择器那条 rail 只需容纳「图标 20 + gap 8 + 名字」，248px 有富余。
    2026-09-30 用户要求「产品列表宽度缩短 30%」→ 248 × 0.7 = 174px（**只给账号接入页**，
-   不动模型资源 / 资源池设置两页——它们的 rail 装的是更长的分组名）。 */
-.panel-split-narrow > .subnav { width: var(--rail-w, 174px); }
+   不动模型资源 / 资源池设置两页——它们的 rail 装的是更长的分组名）。
+   🔴 2026-10-11（Q44）：174px 的定版前提是「最长名 Qoder（中国版）实测 104px」——
+   `WorkBuddy（国际版/中国版）` 落位后最长名实测 139.9px（+徽章 4.8），174px 下
+   名字+徽章需 144.7 > 120 预算 ⇒ 名字被裁（国际版行自 09-30 起已被裁，live 门 H6
+   首次量出）。加宽到 200px = 名字+徽章预算 146（仍比 248 窄 19.4%）；量测与判据 =
+   live 门 H1/H6（`verify_accounts_ui_live.py`）。 */
+.panel-split-narrow > .subnav { width: var(--rail-w, 200px); }
 
 /* 子侧栏（参考 ProviderList：248px 白底 border-r #f6f7f8；
    滚动区 px-3 py-4；底区 border-t p-3）。
-   宽度取 --rail-w（拖拽调宽，默认 248px；账户页窄栏变体默认 174px，见上）。 */
+   宽度取 --rail-w（拖拽调宽，默认 248px；账户页窄栏变体默认 200px，见上）。 */
 .subnav { width: var(--rail-w, 248px); flex: none; display: flex; flex-direction: column; min-width: 0;
   background: var(--surface); border-right: 1px solid var(--side-border); }
 /* 窗口变窄的布局级兜底（v2.19）：栏宽最多吃到「wrap − 360px」（主区最低保留，与 JS 拖拽钳制同口径）。

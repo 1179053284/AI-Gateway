@@ -1,6 +1,7 @@
 # Model-Gateway 产品需求文档（PRD）
 
-> 版本：v1.31（2026-10-07 归档 **总览页新增「账号资源额度」板块**（Q43，用户指令：每产品一小卡、显示该产品维度可用总额度，积分制显积分余额 / token 制显 token 余额，数据每次刷新取当前值）：新增 `/admin/api/overview` 的只读聚合 `accounts_quota`（每次请求重算、进程不缓存）+ 总览板块渲染；🔴 **本板块零出站** —— 「每次刷新查询当前数据」实现为「每次重取当前落盘快照」，**不是**「打开页面即向全产品全账号发一遍上游请求」（那是新的自动出站腿，需用户明确点头；读法与反转触发见 §9-Q43-②）。判据 = v2 前端门 Q1~Q13（145/145·可红 203/203）+ pytest 8 例 + 真机隔离实例探针 15/15 双主题；证据 `docs/changes/e2e-records/E2E-20261007-overview-account-quota.md`。**含后端改动 ⇒ :8300 未重启前板块缺席是回落形状，不是坏界面**。）
+> 版本：v1.32（2026-10-11 归档 **Q44 WorkBuddy（中国版）账号产品接入**（用户拍板 D1–D5：方案+直接实施 / 兜底表不收 `auto` / D3 登录深链收敛为 `platform=cli` 已裁决 / D4 命名澄清在 UI+文档 / D5 编号由 AI 定 = 开新 Q44）：在册产品 10 → **11 实例**（`workbuddycn`，与 buddy/workbuddy 同族参数化新增）；签到 ✓（与国际版相反）、额度 ✓、模型 remote `/v3/config` + 中国版兜底表 16 条（2026-10-11 实测，剔除服务端别名 `auto`）；登录 `platform=cli`（CN 域名握手实测 200）。方案 v2 修订稿（含 v1 的 6 项问题修正）与全部实测证据 = `docs/changes/plans/20261011-workbuddycn-integration-plan.md`。🔴 含后端改动 ⇒ :8300 须重启；端到端登录/签到待用户真机驱动（Q29-⑤ 纪律），未实测不写已完成。）
+> 上一版 v1.31（2026-10-07 归档 **总览页新增「账号资源额度」板块**（Q43，用户指令：每产品一小卡、显示该产品维度可用总额度，积分制显积分余额 / token 制显 token 余额，数据每次刷新取当前值）：新增 `/admin/api/overview` 的只读聚合 `accounts_quota`（每次请求重算、进程不缓存）+ 总览板块渲染；🔴 **本板块零出站** —— 「每次刷新查询当前数据」实现为「每次重取当前落盘快照」，**不是**「打开页面即向全产品全账号发一遍上游请求」（那是新的自动出站腿，需用户明确点头；读法与反转触发见 §9-Q43-②）。判据 = v2 前端门 Q1~Q13（145/145·可红 203/203）+ pytest 8 例 + 真机隔离实例探针 15/15 双主题；证据 `docs/changes/e2e-records/E2E-20261007-overview-account-quota.md`。**含后端改动 ⇒ :8300 未重启前板块缺席是回落形状，不是坏界面**。）
 > 上一版 v1.30（2026-10-06 归档 **`/v1/models` 清单方言桥键 `context_length`**（Q42，用户批准的对外契约扩展）：OpenAI 兼容清单在能力位之外**仅在该面**追加 `context_length` = 能力位合并腿的输入窗口（与 `maxInputTokens` 同源同值；未知 ⇒ 整键缺省不印 null/0），供只认该 snake_case 键的清单读取方（实测 DSH `llm-pi-ai` discovery 解析序含 `context_length`，此前恒落 262144 缺省）拉到真实输入容量；不动 `build_model_caps` 共通契约（WorkBuddy 面不受影响）。判据 INT-120。）
 > 上一版 v1.29（2026-10-05 同一弹窗第四次改判 **Q41「模型映射」= 草稿制：AI 只回填不入库 + 「保存」是唯一写入口 + 「暂不设置」**
 > ——① 点「AI智能匹配」= 让网关把建议**填进下拉**，配置里一个字都不写；右侧黑色「保存」提交后才入库
@@ -1119,6 +1120,15 @@ WorkBuddy 通道对**首条不是 `system`** 的推理请求回 `400 {"code":111
 **Q43-④ 事故一条如实记（铁律 5）**：门载荷脚本 `make_overview_payload.py` 单独跑时**没有 pytest 的 `MG_CONFIG` 隔离** ⇒ 本轮为板块判据播种的 5 个假账号经 `store.commit_login` + `materialize.ensure_resource` **写进了用户正在使用的 `coding/data/`**（5 条资源 + 28 条继承的 `models[].resources[]` 映射条目）。已定点复原：假账号目录移出真实数据根（真实账号 buddy 2 / raccoon 2 / zcode 16 逐个核点未动），配置经**生产同一条 `load_config`→过滤→`save_config`** 路径清除，与污染态 `diff` = **177 行移除、0 行新增**，活实例 :8300 热重载复核 37 资源 / `acc-gate` 0 命中 / `product_models` 84 未变，当日运营流水与 `gateway.log` 对假账号**零命中**（从未被 cron 腿出站）。根因两层堵死：脚本自己钉 `MG_CONFIG`/`MGW_OPS_LOCK_DIR`，装配函数 `_overview_payload` 入口加**数据根守卫**（落在默认那份数据根上当场红）。⚠️ 这是 `.cursor/memory/pitfalls.md`「临时实例必须显式设 `MG_CONFIG`」那条坑的**第二处复发**（10-04 已犯过一次）—— 上次只修了当次调用点，这次把判据下沉到装配函数自己查。
 
 
+**Q44 WorkBuddy（中国版）账号产品接入（2026-10-11 用户拍板 D1–D5）**
+
+**需求来源**：`docs/research/28-WorkBuddy中国版接入方案.md`（另一 AI 会话 2026-10-10 首稿，现归档于 `docs/backups/20261011-pre-october-archive/research/`）经独立复核发现 6 项问题（2 项设计/数据级：登录 `platform` 取值、兜底表 9 个模型上下文窗口数值），修订为 v2 方案 `docs/changes/plans/20261011-workbuddycn-integration-plan.md`。**用户拍板（2026-10-11）**：D1 没问题（方案+直接实施）；D2 同意建议（兜底表**不收 `auto`**，16 条）；D3 已收敛（登录 `platform=cli`，与 2026-10-10 国际版修法同口径，CN 域名握手实测 200）；D4 同意建议（UI/文档加命名澄清，不改 tool 键）；D5 由 AI 定编号 = **开新 Q44**（新增产品是 Q29「多产品账号接入」范围之外的新接入决策，且 Q29 条目原文按存证纪律不改写）。
+
+**Q44-① 范围**：把腾讯 WorkBuddy 中国版桌面端（`WorkBuddy.app` / `workbuddy.cn` / 客户端声明 platform `workbuddy`）接成第 11 个账号产品：与 buddy/workbuddy **同族参数化新增**（共享 `buddy/hooks.py` + `buddy/protocol.py` + `buddy/out.py`，`hooks.py`/`out.py` 零改动），差异全在参数：基址 `https://www.workbuddy.cn`、`X-Product-Code=workbuddy`、UA = DSH `WORKBUDDY_UA_CN`、登录 `platform=cli`（深链规避）、**签到 ✓**（与国际版相反）、`system_first_text` 留空（实测无 11128 脾气）、兜底表 16 条（2026-10-11 实测，剔除 `auto`）。
+
+**Q44-② 命名澄清（D4）**：`mgw setup` 的 tool 键 `workbuddy`（= 中国版桌面端数据目录 `.workbuddy`）与账号产品 `workbuddycn` 是**两个轴**（tool 轴写桌面端配置文件 / 产品轴接账号成上游资源），互不依赖；`mgw setup` 输出加一行注记 + `setup_tools.py` 文档与 display 点名「桌面端」。
+
+**Q44-③ 判据与边界**：判据 = `tests/accounts/test_workbuddycn.py`（13 例，含 CN 参数/签到三态/兜底表数值/零复制护栏）+ `tests/integration/test_workbuddycn_out.py`（4 例：SSE-only 聚合 / 身份头归属名 / **不注入 system** / 未获批 400 换号）+ `test_registry.py` 矩阵扩 11 产品 + `test_v2_product_icons.py` 图标在位；共享面唯一改动 = `_ATTRIBUTION_BY_PRODUCT` 补一行（缺行 = 首次推理请求当场 ValueError）。🔴 **未验证清单（Q29-⑤ 纪律）**：端到端登录全程（platform=cli 浏览器授权 → 轮询取凭据）、`daily-checkin` 真实领取、`refresh` 续期、真机推理 —— 全部待 :8300 重启后由用户真机驱动，未实测不写已完成。
 
 ---
 

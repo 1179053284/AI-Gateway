@@ -1,6 +1,6 @@
-"""`accounts/registry.py` + 10 个产品模块的**契约判据**（tech-design v2.0 §22.3/§22.4）。
+"""`accounts/registry.py` + 11 个产品模块的**契约判据**（tech-design v2.11 §22.3/§22.4）。
 
-🔴 本文件是"后面 10 个产品各写一版"的**判据**：逐个产品逐条断言钩子签名与 §22.3
+🔴 本文件是"后面 11 个产品各写一版"的**判据**：逐个产品逐条断言钩子签名与 §22.3
    完全一致（参数名 / 参数种类 / `async` 性 / 返回注解），签名一漂就红。
 🔴 另一条：`_HOOKS` 契约表必须齐全（入口层按表调度，缺项当场 KeyError）。
 🔴 骨架纪律（M6-1 起，M6-6 收窄到**显式声明**）：未接线的钩子必须显式失败
@@ -101,10 +101,10 @@ def _annot(fn) -> str:
 
 # ============ 注册表本体 ============
 
-def test_registry_has_the_ten_products_and_no_codearts():
-    """§22.0：在册 10 实例 / 9 产品；**排除华为云 CodeArts**（用户指令明确不接）。"""
+def test_registry_has_the_eleven_products_and_no_codearts():
+    """§22.0：在册 11 实例 / 10 产品（Q44 起含 workbuddycn）；**排除华为云 CodeArts**（用户指令明确不接）。"""
     assert registry.PRODUCT_IDS == (
-        "buddy", "workbuddy", "lobsterai", "qoder", "qodercn",
+        "buddy", "workbuddy", "workbuddycn", "lobsterai", "qoder", "qodercn",
         "trae", "cline", "loomy", "raccoon", "zcode")
     assert set(registry.PRODUCTS) == set(registry.PRODUCT_IDS)
     assert "codearts" not in registry.PRODUCTS
@@ -318,13 +318,14 @@ def test_tests_takeover_needs_an_explicit_reason(monkeypatch):
 def test_matrix_login_and_models_source():
     """登录方式与目录来源逐条对照 §22.4 表。"""
     expect_login = {
-        "buddy": "external_link", "workbuddy": "external_link",
+        "buddy": "external_link", "workbuddy": "external_link", "workbuddycn": "external_link",
         "lobsterai": "local_callback", "qoder": "device_code", "qodercn": "device_code",
         "trae": "local_callback", "cline": "device_code",
         "loomy": "qr", "raccoon": "qr", "zcode": "device_code",
     }
     expect_source = {
-        "buddy": "remote", "workbuddy": "remote", "lobsterai": "remote",
+        "buddy": "remote", "workbuddy": "remote", "workbuddycn": "remote",
+        "lobsterai": "remote",
         "qoder": "static", "qodercn": "static", "trae": "remote",
         "cline": "remote", "loomy": "remote", "raccoon": "remote", "zcode": "static",
     }
@@ -342,7 +343,8 @@ def test_matrix_protocol():
     其 `Resource.protocol` 落最近协议族（openai），**分派以 `product` 优先**（§22.5-3）。
     """
     expect = {
-        "buddy": "openai", "workbuddy": "openai", "lobsterai": "openai",
+        "buddy": "openai", "workbuddy": "openai", "workbuddycn": "openai",
+        "lobsterai": "openai",
         "qoder": "custom", "qodercn": "custom", "trae": "custom",
         "cline": "openai", "loomy": "openai", "raccoon": "openai",
         "zcode": "anthropic",
@@ -355,7 +357,8 @@ def test_matrix_protocol():
 def test_matrix_device_fields():
     """设备字段逐条对照 §22.4 的「设备」列（`20 §2.7`）。"""
     expect = {
-        "buddy": ((), False), "workbuddy": ((), False), "cline": ((), False),
+        "buddy": ((), False), "workbuddy": ((), False), "workbuddycn": ((), False),
+        "cline": ((), False),
         "loomy": ((), False),
         "lobsterai": (("uuid",), False),                  # keyfrom 属元数据（W2-fix 裁决）
         "qoder": (("machine_id",), False), "qodercn": (("machine_id",), False),
@@ -369,12 +372,13 @@ def test_matrix_device_fields():
 
 
 def test_matrix_capabilities_from_research_3_1():
-    """能力位逐条对照 `20 §3.1`（balance 11/11、checkin 8/11、onboarding 2、永久锁 3、
-    refresh 除 loomy/zcode 外均可续期，`20 §2.6`）。"""
+    """能力位逐条对照 `20 §3.1` + Q44 增补（balance 12/12、checkin 9/12、onboarding 2、
+    永久锁 4、refresh 除 loomy/zcode 外均可续期，`20 §2.6`）。"""
     expect = {
         # pid: (balance, checkin, onboarding, permanent_lock, refresh)
         "buddy": (True, True, False, True, True),
         "workbuddy": (True, False, False, True, True),
+        "workbuddycn": (True, True, False, True, True),   # 中国版有签到端点，与国际版相反
         "lobsterai": (True, True, False, False, True),
         "qoder": (True, True, False, False, True),
         "qodercn": (True, True, False, False, True),

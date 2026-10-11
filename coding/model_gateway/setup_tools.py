@@ -11,6 +11,14 @@
     3. **按「产品标识 → `dataFolderName`」解析**（WorkBuddy=`.workbuddy`，WorkBuddy AI=`.workbuddy-ai`）
     ⚠️ **不得使用 `productName` 的子串判断** —— 实测其实现为 `includes("workbuddy")`，
        **对两个产品均返回 true，永远推不出 `.workbuddy-ai`**。
+
+🔴 **命名澄清（Q44 / D4，2026-10-11 用户拍板）**：本注册表是 **tool 轴**（往哪个**桌面端
+    App** 的数据目录写 `models.json`），与「接入账号资源」页的**产品轴**（`accounts/registry.py`，把
+    哪个产品的**账号**接成上游资源）是两回事 —— 两边各有一个「workbuddy」，恰好都指
+    **中国版**：tool 键 `workbuddy` 的 `dataFolderName=".workbuddy"` 正是中国版桌面端
+    （`WorkBuddy.app`，无 `customUserDataDir` ⇒ 默认 `.workbuddy`）的数据目录；账号产品
+    `workbuddycn` 接的也是中国版账号。**接了中国版账号 ≠ 中国版 App 已接网关**（后者才是
+    本 tool 做的事），两轴互不依赖、互不触达。
 """
 
 from __future__ import annotations
@@ -36,11 +44,12 @@ class ProductSpec:
 
 PRODUCTS: dict[str, ProductSpec] = {
     "workbuddy": ProductSpec(
-        key="workbuddy", display="WorkBuddy", data_folder_name=".workbuddy",
+        # display 点名「桌面端」：与账号产品轴的 workbuddycn 划清两轴（Q44 / D4）
+        key="workbuddy", display="WorkBuddy（中国版桌面端）", data_folder_name=".workbuddy",
         config_envs=("WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR"),
     ),
     "workbuddy-ai": ProductSpec(
-        key="workbuddy-ai", display="WorkBuddy AI", data_folder_name=".workbuddy-ai",
+        key="workbuddy-ai", display="WorkBuddy AI（国际版桌面端）", data_folder_name=".workbuddy-ai",
         config_envs=("WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR"),
     ),
 }

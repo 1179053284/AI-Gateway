@@ -109,7 +109,8 @@ class TestAccountsView:
         data = resp.json()
 
         assert [p["id"] for p in data["products"]] == list(account_registry.PRODUCT_IDS)
-        assert data["counts"] == {"products": 10, "accounts": 4, "enabled": 3, "disabled": 1}
+        # 产品数随注册表走（Q44 起 11）；accounts/enabled 只数本测试播种的 4 个假账号
+        assert data["counts"] == {"products": 11, "accounts": 4, "enabled": 3, "disabled": 1}
 
         buddy_p = _product_of(data, "buddy")
         assert buddy_p["title"] == "CodeBuddy"

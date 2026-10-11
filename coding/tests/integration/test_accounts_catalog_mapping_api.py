@@ -215,9 +215,10 @@ class TestProductCatalog:
         assert r.status_code == 400
         assert "未登记的产品" in r.json()["error"]["message"]
 
-    async def test_fallback_catalog_for_all_ten_products_without_network(
+    async def test_fallback_catalog_for_all_products_without_network(
             self, vendor, make_gateway, client, offline_upstream):
-        """🔴 逐产品验证（任务书判据）：10 产品的 `list_models` 对**空凭据**都回非空内置
+        """🔴 逐产品验证（任务书判据；Q44 起 11 个产品，遍历 PRODUCT_IDS 动态覆盖）：
+        全部产品的 `list_models` 对**空凭据**都回非空内置
         目录、都不抛；且全程零真实网络（`offline_upstream` 把出站换成 MockTransport 503，
         远端腿按其自身纪律回退兜底表）。
 

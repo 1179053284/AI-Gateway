@@ -1,4 +1,6 @@
-> 版本：**v2.10（2026-10-05 · §9-Q41 草稿制：`POST /admin/api/accounts/auto-map` 从此**不是写面**）**
+> 版本：**v2.11（2026-10-11 · §22 新增第 11 实例 `workbuddycn`（PRD Q44，用户拍板 D1–D5））**
+> ① §22.0 产品数 10 实例/9 产品 → **11 实例/10 产品**；② §22.4 矩阵新增 `workbuddycn` 行（external_link 轮询 / 无设备 / 额度 ✓ / **签到 ✓**（与国际版相反）/ remote `/v3/config` + 中国版兜底表(16，剔除服务端别名 `auto`) / openai）；③ 登录 `platform` 口径 = **`cli`**（客户端声明的 `workbuddy` 是登录页深链 `workbuddy://` 的键、本机 WorkBuddy.app 已注册该协议 ⇒ 照抄会复刻国际版 `workbuddy-ai://` 报障；同 2026-10-10 国际版修法，CN 域名 `platform=cli` 握手 2026-10-11 实测 200）；④ 共享实现唯一改动 = `buddy/protocol.py::_ATTRIBUTION_BY_PRODUCT` 补 `"workbuddycn": ("WorkBuddy","5.5.2")` 一行（缺行 = 该账号首次推理请求在 `auth_headers` 构造身份头时当场 `ValueError`，非静默降级）；⑤ `hooks.py`/`out.py`/国际版模块零改动（参数化新增的证明）。方案与实测证据：`docs/changes/plans/20261011-workbuddycn-integration-plan.md`（v2 修订稿，含 v1 方案的 6 项问题修正）。🔴 含后端改动 ⇒ 须重启 :8300；端到端登录/签到/续期待真机（方案 §7-R1/R2/R5）。
+> 上一版：**v2.10（2026-10-05 · §9-Q41 草稿制：`POST /admin/api/accounts/auto-map` 从此**不是写面**）**
 > ① 载荷新增可选 `models: [目录条目 id…]` = 界面当前显示为「暂不设置」的行；分析范围 =
 >   `models` ∩ `_map_enabled(...) is None`（两道闸门缺一不可：前者防"同一批行每次重烧额度"，
 >   后者防"覆盖用户逐行配好的"）。🔴 `models` **缺省**与**空数组**两种意思：缺省 = 旧调用方回落"全部未落位"，
@@ -1722,7 +1724,7 @@ nohup 后台拉起 → 日志重定向到 data/gateway.log → 打开管理页 �
 
 | 项 | 内容 |
 |---|---|
-| 在册产品（10 实例 / 9 产品） | `buddy`、`workbuddy`、`lobsterai`、`qoder`、`qodercn`、`trae`、`cline`、`loomy`、`raccoon`、`zcode` |
+| 在册产品（11 实例 / 10 产品；Q44 起含 `workbuddycn`） | `buddy`、`workbuddy`、`workbuddycn`、`lobsterai`、`qoder`、`qodercn`、`trae`、`cline`、`loomy`、`raccoon`、`zcode` |
 | **排除** | `codearts`（华为云；用户指令明确不接） |
 | 交付面 | 账号生命周期（登录/导入/列表/启停/删除/探活/备注与设备身份）＋ 余额与签到领取 ＋ 模型目录与**模型转发**（账号→资源→网关模型）＋ 管理 API 与「账号接入」页 |
 | 边界（不翻案） | GUI 自动化（§20 #16）、统一设备注册表（Q27-⑤）、非回环分享面板、外部购买/卡密入口（`22 §④`）、真实凭据类实测由用户驱动（§22.11） |
@@ -1875,6 +1877,7 @@ class ProductOutAdapter:
 |---|---|---|---|---|---|---|---|
 | `buddy` | external_link 轮询 | 无 | ✓ | ✓ 签到 + 永久锁定 | remote `/v3/config` + 兜底表 | openai | `20 §1.2/§3.1`；`21 §1.1` |
 | `workbuddy` | 同 buddy（同族） | 无 | ✓ | ✗（无签到端点） | 同上（国际版） | openai | 同上 |
+| `workbuddycn` | 同 buddy（auth/state 查询串 `platform=cli`，Q44） | 无 | ✓ | **✓ 签到**（与国际版相反）+ 永久锁定 | remote `/v3/config` + 中国版兜底表(16，剔除 `auto` 别名) | openai | 方案 `20261011-workbuddycn-integration-plan.md`（同族参数化） |
 | `lobsterai` | local_callback 两步 | `uuid`（keyfrom 属账号元数据，非身份字段） | ✓ | ✓ 三步 `check_in` | remote `/api/models/available` | openai | `20 §1.2/§3.1` |
 | `qoder` | device_code 轮询 | `machine_id` | ✓ | ✓ 每日 100 credits | **恒本地兜底表**（WASM 签名目录端点不实现） | custom（信封） | `20 §1.2`；`21 §1.1` |
 | `qodercn` | 同 qoder（`requireQoderFamily` 防串用） | 同 | ✓ | ✓（CR 分支若需强证据再调） | 同 | 同 | `20 §4.1` |

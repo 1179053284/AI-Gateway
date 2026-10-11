@@ -10,7 +10,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-171b22" alt="License: Apache-2.0">
   <img src="https://img.shields.io/badge/python-3.12%2B-171b22" alt="Python 3.12+">
-  <img src="https://img.shields.io/badge/tests-2349%2F2349-188038" alt="Tests: 2349/2349">
+  <img src="https://img.shields.io/badge/tests-2396%2F2396-188038" alt="Tests: 2396/2396">
   <img src="https://img.shields.io/badge/runtime-100%25%20local-188038" alt="100% local runtime">
 </p>
 
@@ -179,7 +179,7 @@ Supplier presets pre-fill protocol and endpoints (SenseNova ships both `api` and
 
 > **Note:** This project is under continuous development and provided for personal research use only. The feature set is still simple — it primarily targets the maintainer's own use cases. Ideas and feedback are welcome in [Issues](https://github.com/1179053284/AI-Gateway/issues).
 
-Current version: **v0.2.0** — matches `mgw --version` and `pyproject.toml`. Test suite: **2349 passed / 3 skipped** as of 2026-10-08; the count is refreshed with each tree (reproduce with `.venv/bin/python -m pytest -q`; the `test_v2_readme_claims.py` guard pins it to reality). Live-provider calls are verified for the OpenAI path; ZCode / Anthropic-path items that need real credentials remain **not yet verified**.
+Current version: **v0.2.0** — matches `mgw --version` and `pyproject.toml`. Test suite: **2396 passed / 3 skipped** as of 2026-10-11; the count is refreshed with each tree (reproduce with `.venv/bin/python -m pytest -q`; the `test_v2_readme_claims.py` guard pins it to reality). Live-provider calls are verified for the OpenAI path; ZCode / Anthropic-path items that need real credentials remain **not yet verified**.
 
 Planned next:
 
