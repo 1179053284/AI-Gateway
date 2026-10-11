@@ -20,7 +20,10 @@ import {
  * → **进行段**（M7-E 修正轮：官方登录页在**弹窗**里打开（`openLoginWindow`，为什么不是
  *   iframe 见其上方契约块）；本页 = 提示 / 「登录窗口」面板 / 设备码 / 二维码 / 兜底粘贴
  *   + 状态 / TTL 倒计时）
- * → **确认段**（`success` 后：正文与页脚都出「确定接入」→ `login/commit` 才真正落盘）。
+ * → **确认段**（`success` 后：**页脚**出唯一一颗「确定接入」→ `login/commit` 才真正落盘）。
+ *   🔴 单一入口（2026-10-11 修）：此前正文与页脚**各有一颗**同名同处理的「确定接入」，
+ *   用户看到两颗一模一样的按钮（且点哪颗都一样）只会以为界面坏了。现在正文只留**说明**，
+ *   动作统一归页脚 —— 与本应用其它弹窗（`confirmDialog` / 映射弹窗）的动作栏同构。
  * 五型展示物：
  *   device_code  设备码（复制）+ 授权页地址（面板）→ 弹窗 + 轮询
  *   external_link 授权页地址（面板）→ 弹窗 + 轮询
@@ -97,17 +100,21 @@ export function openWizard(p) {
 
 /** 页脚三态（M7-E）：
  *  · 未建会话 = 只有「关闭」；
- *  · 已建会话、未确认 = 「重新发起登录」+ TTL +「取消登录」；
+ *  · 已建会话、未确认 = 「重新发起登录」+ TTL +「取消登录」（`local_callback` 额外带
+ *    「确定接入」——那一型的确认块**恒出**，见 `wizardHTML` 注）；
  *  · **已登录待确认** = 追加主按钮「确定接入」（两阶段提交第二段）。
  *  🔴 按钮序：`取消登录` 在待确认态**不是最右**——最右留给确认落盘的肯定动作
  *  （与 `confirmDialog` 的「取消在前、确定在后」同序）；把"丢弃刚拿到的凭据"放在
- *  最右会撞上"右侧是主按钮"的肌肉记忆，风险高于收益。 */
+ *  最右会撞上"右侧是主按钮"的肌肉记忆，风险高于收益。
+ *  🔴 **本函数是「确定接入」的唯一渲染点**（2026-10-11）：正文 `confirmBlockHTML`
+ *  只出说明、不出按钮；两处各有一颗同名钮会让用户以为界面坏了（用户报障原话：
+ *  「为什么两个确认接入按钮」）。改这里就等于改那个动作，别再往正文加第二颗。 */
 export function paintFooter(st) {
   const footEl = st.footEl;
   if (!footEl) return;
   if (!st.session) {
     footEl.innerHTML = `<button class="btn" data-wz="cancel">关闭</button>`;
-  } else if (st.awaiting) {
+  } else if (st.awaiting || st.kind === "local_callback") {
     footEl.innerHTML = `
       <button class="btn" data-wz="restart">重新发起登录</button>
       <span data-wz="ttl" style="margin-left:auto;font-size:12px;font-weight:600;color:var(--text-faint)">${esc(ttlText(st))}</span>
@@ -256,12 +263,13 @@ function wizardHTML(st) {
   parts.push(accountLineHTML(st));
   parts.push(`<p class="form-hint" style="margin:8px 0 0" data-wz="ttl">${esc(ttlText(st))}</p>`);
   parts.push(`<div id="ac-wz-status">${st.status ? alertHTML(st.status) : ""}</div>`);
-  /* 待确认块：`awaiting`（轮询/粘贴通道已报 success）必出；local_callback 型**恒出** ——
+  /* 待确认**说明段**：`awaiting`（轮询/粘贴通道已报 success）必出；local_callback 型**恒出** ——
      🔴 它的主通道是接收端投递，服务端暂存后**没有推送**给本页（trae 的 `login_poll` 是显式
-     `NotImplementedError`，轮询这条路被 R-5/POLLABLE 与本页共同封死），所以这里把
-     「确定接入」留给用户自己按：还没接住时按钮会如实回报"没有待确认的凭据"（可重试），
-     接住之后按 = 正常落盘。这是本轮唯一一处"按了可能被业务拒绝"的按钮，理由与处置
-     写在已登记缺口 ⑧。 */
+     `NotImplementedError`，轮询这条路被 R-5/POLLABLE 与本页共同封死），所以说明段要一直在位，
+     让用户知道"接住之后去页脚按「确定接入」"。
+     🔴 本函数**只出说明、不出按钮**（2026-10-11）：按钮的唯一渲染点在 `paintFooter` —— 两处
+     各有一颗同名钮正是用户报障的那处「为什么两个确认接入按钮」。页脚那颗在还没接住时按了
+     会如实回报"没有待确认的凭据"（可重试），接住之后按 = 正常落盘（已登记缺口 ⑧）。 */
   if (st.awaiting || st.kind === "local_callback") parts.push(confirmBlockHTML(st));
   return parts.join("");
 }
@@ -364,17 +372,20 @@ function accountLineHTML(st) {
     <span class="mono">${esc(st.account)}</span></p>`;
 }
 
-/** 待确认接入块（M7-E 两阶段提交的确认步；页脚也有一颗，两处同一处理函数）。
- *  `st.awaiting` = 通道已报 success（按钮即落盘动作）；未 awaiting 时（local_callback 的
- *  自动回跳尚未到达，见 `wizardHTML` 注）文案改为"完成授权后点"，结果一律如实回报。 */
+/** 待确认接入块的**说明段**（M7-E 两阶段提交的确认步）。
+ *  🔴 **只有说明，没有按钮**（2026-10-11）：动作统一归页脚的「确定接入」
+ *  （`paintFooter` 的 awaiting / local_callback 两态）—— 此前这里也有一颗同名钮，
+ *  两处一模一样、点哪颗都一样，用户看到两颗只会以为界面坏了。
+ *  `st.awaiting` = 通道已报 success（此时页脚那颗即落盘动作）；未 awaiting 时
+ *  （local_callback 的自动回跳尚未到达，见 `wizardHTML` 注）文案改为"完成授权后点"，
+ *  结果一律如实回报。 */
 function confirmBlockHTML(st) {
   const hint = st.awaiting
-    ? "点确认后凭据才会写入本机账号目录并出现在左侧列表；在此之前关闭窗口不会保存任何东西。"
-    : "在登录窗口（弹窗被拦截时用面板里的链接）完成授权后点这颗按钮即可保存；若还没接住，会如实告诉你没有待确认的凭据。";
+    ? "点页脚的「确定接入」后，凭据才会写入本机账号目录并出现在左侧列表；在此之前关闭窗口不会保存任何东西。"
+    : "在登录窗口（弹窗被拦截时用面板里的链接）完成授权后，点页脚的「确定接入」即可保存；若还没接住，会如实告诉你没有待确认的凭据。";
   return `
     <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
-      <button class="btn btn-primary" data-wz="confirm" ${st.busy ? "disabled" : ""}>确定接入</button>
-      <p class="form-hint" style="margin:8px 0 0">${esc(hint)}</p>
+      <p class="form-hint" style="margin:0">${esc(hint)}</p>
     </div>`;
 }
 
@@ -600,7 +611,7 @@ async function smsSubmit(st, body) {
  */
 export async function settle(st, r) {
   if (r.state === "success") {
-    st.awaiting = true;                 // 待确认接入：页脚与正文都出「确定接入」
+    st.awaiting = true;                 // 待确认接入：页脚出唯一一颗「确定接入」+ 正文出说明段
     st.account = r.account || st.account;
     if (st.pollTimer) { clearInterval(st.pollTimer); st.pollTimer = null; }
     closeLoginWindow(st);               // 照参考实现（jet-hub.js:1344）：登录完成即收起弹窗
