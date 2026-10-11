@@ -2,7 +2,7 @@
 name: mgw-live-audit
 description: Model-Gateway 实盘「只读核查 / 就绪与可用性审计」的可复跑 playbook：只读基线探针 → 实盘分档复刻 → 隔离实例 + 假上游按账号身份头分派 → 事件流水对账（字段是 system_model）→ 契约 vs 现状刻画双标签 → 三态归因 → 运行时归属核查（谁在驱动这条自动腿）→ 读数纪律与未验证清单。触发语：只读核查 / 看实盘 / 可用性评估 / 就绪审计 / 为什么显示成这样 / 某号某通道能不能投用 / 这条自动更新是谁在驱动。边界：本支不用于改源码与写真实配置（全程只读，真出站需用户批准）；隔离实例配方由本支独占（mgw-delivery-round 引用本支，本支自闭环不依赖其他工程的文件）。
 metadata:
-  version: "1.0.1"
+  version: "1.0.2"
 ---
 
 # 实盘只读核查与就绪审计（Model-Gateway）
@@ -17,7 +17,7 @@ metadata:
 
 ## 1. 只读基线（先摆事实，再谈判断）
 
-命令字面在 `.cursor/memory/runbook.md`（§2/§4）；探针库存 = `bianyiandhuanjing/scripts/probe_*.py` **11 支**（含 `probe_mapping_census` / `probe_quota_sum_inline` / `probe_zcode_live_shape` / `probe_vendor_icons` 等，各有 docstring 说明用途）。
+命令字面在 `.cursor/memory/runbook.md`（§2/§4）；探针族 = `bianyiandhuanjing/scripts/probe_*.py`（数量随轮次增长，以 `ls` 现值为准；如 `probe_mapping_census` / `probe_quota_sum_inline` / `probe_zcode_live_shape` / `probe_vendor_icons` / `probe_trend_charts_geometry` 等，各有 docstring 说明用途）。
 
 最小基线四问（每条抄输出 + 采样时刻）：
 1. **后端真上线了吗**：`GET /health` + `/openapi.json` 路径计数（新端点不在册 = 没重启）。

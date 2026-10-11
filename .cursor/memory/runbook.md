@@ -1,7 +1,8 @@
 # Model-Gateway 操作手册（命令/链路 · 直接复制用）
 > 🔴 **术语读法（2026-10-04）**：本文件条目按写入当时的措辞保留（存证不改写）。旧条目里指接入方的「厂商」读作**供应商**、「系统模型」读作**网关模型**。定义源 = `docs/specs/prd.md` §2，细则 = `.cursor/rules/mg-terminology.mdc`，台账侧同读法说明见 `docs/changes/_TERMINOLOGY.md`。
-> 用途：**命令字面只在这里存一份**（人复制走本文件；AI 的执行顺序与判读见用户级 skill：`mgw-delivery-round` / `mgw-gate-hygiene` / `mgw-live-audit`——skill 不复制命令，只指针回本文件）。
+> 用途：**命令字面只在这里存一份**（人复制走本文件；AI 的执行顺序与判读见项目场景手册 `.cursor/skills/`——`mgw-delivery-round` / `mgw-gate-hygiene` / `mgw-live-audit`，入口 `INDEX.md`；skill 不复制命令，只指针回本文件）。
 > 目录布局真相源 = 根 `项目目录说明.md`；本文件命令全部实测可跑，改命令前先实跑（原文：无命令可复制前禁止凭印象写）。
+> 核验：2026-10-11 只读腿 5/5 实测通过（台账 `docs/changes/e2e-records/E2E-20261011-knowledge-refit.md` §5）；**全量门整链复跑为在册债务**（并行会话在飞，待收敛后首跑补账）——「全部实测可跑」按此口径读。
 
 ## 1 环境准备
 - 源码唯一区 `coding/`；venv 就地（Python 3.12）：`cd coding && ~/.local/bin/python3.12 -m venv .venv && .venv/bin/pip install -e .`
