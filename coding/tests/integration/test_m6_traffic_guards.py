@@ -330,7 +330,7 @@ async def test_f5_unwired_premises_are_not_published_and_are_explained(vendor, m
     assert "model_unservable_premise" in kinds, kinds
     msg = kinds["model_unservable_premise"]
     assert "qoder 签名未注入" in msg and "zcode 验证码未注入" in msg
-    assert "zcode 直连前提未验证（D1）" in msg          # F-4 的诚实标注（不宣称可用）
+    assert "D1 JWT 直连档已于 2026-10-07 实测通过" in msg   # T13（2026-10-11）：D1 已过，文案不再写"未验证"；隐藏行为与解除条件不变
     assert "qd-model" in msg and "zc-model" in msg      # 点名（隐藏必须解释去向）
     assert "model_unservable" not in kinds, "前提缺口与资源不可用（③）必须分开计数"
 

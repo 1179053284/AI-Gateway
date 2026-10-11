@@ -259,10 +259,13 @@ def _outbound_premise_gap(r) -> str | None:
       现在只意味着**本机没配 wasm 桥目录**（`MGW_QODER_WASM_GLUE`）或没有 node —— 旧文案写
       "未移植/等后续波次"会把用户支到一条不存在的路上。配齐并重启后本判据自动放行。
     - **zcode**：每请求验证码（`CAPTCHA_PROVIDER=None`）未注入 → 走 §17 降级链的
-      「JWT 直连」档，**该直连是否成立（D1）尚未裁决**（`docs/research/24 §2-D1`）。
-      F-4 的处置是**如实标注、不实现绕过、不加熔断**：本判据让 zcode 模型在前提未注入时
-      不对外声明，横幅文案明确写出"zcode 直连前提未验证（D1）"—— 交付话术不得宣称
-      "zcode 模型转发可用"。注入验证码 provider 后本判据自动放行（语义即"前提已就位"）。
+      「JWT 直连」档。F-4 的处置是**如实标注、不实现绕过、不加熔断**：本判据让 zcode
+      模型在前提未注入时不对外声明。注入验证码 provider 后本判据自动放行（语义即
+      "前提已就位"）。
+      🔴 状态更新（2026-10-11 T13）：D1 直连前提已于 2026-10-07 实测通过
+      （`E2E-20261007-zcode-3012-defense.md` §5，"zcode 转发可用"自此可宣称）；
+      **本判据保留**（横幅解除条件 = 注入 provider，按设计不变），仅文案不再写
+      "D1 未验证"（原文案已过时，2026-10-10 会话登记）。
     """
     prod = str(getattr(r, "product", "") or "").strip()
     if not prod:
@@ -866,7 +869,9 @@ class Runtime:
                        f"或等待出站通道接线"
                        f"（{'、'.join(names[:5])}{'…' if len(names) > 5 else ''}）")
             if any("zcode" in c for c in causes):
-                message += "；注意：zcode 直连前提未验证（D1），当前不代表 zcode 转发可用"
+                message += ("；注意：zcode 未注入验证码 provider，按保守口径隐藏"
+                            "（D1 JWT 直连档已于 2026-10-07 实测通过、转发可用，"
+                            "E2E-20261007-zcode-3012-defense.md §5；注入后本提示解除）")
             out.append({"kind": "model_unservable_premise", "message": message})
         # ⑥ B-1（M6-6 Fix-γ）+ F1（面板修复轮-2）：**没有可用出站适配器**的已启用资源
         #    —— 空 `base_url`（原先零横幅静默跳过）/ 构造失败（未登记产品名 /
